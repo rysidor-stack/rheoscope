@@ -1,0 +1,18 @@
+[
+  {
+    "event": "raw/ryan-flock.md",
+    "origin": "human",
+    "origin_evidence": "fixture: ryan-* raw",
+    "event_class": "informed_by",
+    "event_class_origin": "explicit",
+    "asserts_corpus_state": false
+  },
+  {
+    "event": "receipts/compile.md",
+    "origin": "corpus",
+    "origin_evidence": "fixture: receipt type: frontmatter",
+    "event_class": "compile",
+    "event_class_origin": "explicit",
+    "asserts_corpus_state": true
+  }
+]

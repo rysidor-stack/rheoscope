@@ -1,0 +1,3323 @@
+#!/usr/bin/env python3
+"""compile-v2.py -- the memory-engine v3 compile orchestration loop (P2).
+
+Implements spec sec.7's judgment-verb ORCHESTRATION with the LLM stages behind
+injectable backends, so every mechanical discipline is real and gate-checkable
+before any model is wired in (fixture-first doctrine):
+
+  ABSORB     for each work item (stale view + delta events) call the absorb
+             backend; VALIDATE its output mechanically (new text parses/bounded,
+             merge manifest matches the REAL diff section-for-section, every
+             corpus_support line appears verbatim in the cited artifact); no-op
+             answers route through the PENDING_NOOP_CANDIDATE discipline -- an
+             event whose event_class is T1/correction/lock/informed_by, OR whose
+             class was judgment-assigned (F6 conservative default), is NEVER
+             consumed on a no-op: it lands as a noop_candidate with verified=false
+             until VERIFY confirms against the full event body. Circuit breaker:
+             15 rebuilds per run.
+  RECONCILE  scripts flag, the backend judges ONLY flags (entity-overlapping
+             changed pairs; shipped-state prose changed without corpus_support).
+  VERIFY     packet assembly + verdict ingestion behind the verify backend;
+             a noop_candidate flips verified=true only on a confirmed verdict
+             whose substrate satisfies check-substrate (wired at P2-entry).
+
+Run mechanics (all real, all gate-checked):
+  lockfile -> work -> content writes -> ONE journal record (run_window, absorbed
+  entries with real pre/post blobs written into the git odb, per-event section
+  manifests, no-op justification hashes) -> per-path stage-only commit carrying
+  views + record -> release lock. check-run-diff.py --commit <sha> --sections
+  passes on every commit this loop produces (asserted by the self-test).
+
+Backends: AbsorbBackend.absorb(view_rel, view_text, events:{rel:text}) ->
+  {"new_text": str|None (None = no-op for all events),
+   "manifest": [{"event", "section"}], "corpus_support": [{"artifact",
+   "support_lines": [str]}], "noops": [{"event", "justification_note"}]}
+The FIXTURE backend used by --self-test is deterministic; the agent-dispatch
+backend is P2-entry wiring (LLM-2/LLM-1 live legs), not this file's scope.
+
+Usage: compile-v2.py --self-test | --run --root DIR --plan PLAN.json
+  [--run-type compile] [--break-stale-lock]
+PLAN.json: {"items": [{"view": rel, "events": [rel...],
+  "event_class": {rel: {"class": str, "origin": "explicit"|"judgment"}}}]}
+Exit: 0 clean run | 3 lock held | 1 validation/gate failure | 2 inconclusive.
+
+2026-07-06 P5 note (memory-engine-v3-p5-typed-events-design-2026-07-06.md,
+component C4): this file gains the REGISTRATION CONSULTATION SEAM +
+POINTER-CLASS WRITE CEILING + PLAN-PRECEDENCE RULE (adjudications 3 and 4
+of the dated design sibling). PRE-MINT INERTNESS: `receipts/registrations/`
+does not exist on the live tree yet (the mint is a separate, not-yet-run
+step -- C1/backfill-registrations.py). `run()` loads the effective
+registration map ONCE per run via `_load_registration_seam` -- if the store
+is absent, the map is `{}` and every rule below is inert, so ALL existing
+behavior for events without a registration (which today is EVERY event) is
+byte-identical to pre-P5. Inertness ends the moment the atomic-flip commit
+(component C6/adjudication 6) mints the store and flips the enlargement
+default; nothing in this file needs to change at that point.
+
+PLAN-PRECEDENCE RULE (adjudication 4, pre-journal, fixture-first): at
+`run()` entry, for every event named in the plan that HAS a registration,
+the plan's supplied event_class must not LOOSEN the registered treatment.
+"Registered lock-class treatment" = registered event_class in
+LOCK_CLASSES, OR registered event_class_origin == "judgment" (F6's
+conservative rule, mirrored from the registration side). "Loosens" = the
+plan supplies a class NOT in LOCK_CLASSES with origin "explicit" (an
+explicit, deliberate downgrade). Loosening -> refused pre-journal, nothing
+written, lock released, naming the event/registered class/plan class.
+Plan stricter than or equal to the registration -> passes silently.
+Unregistered event -> today's behavior exactly (no seam consulted).
+
+POINTER-CLASS WRITE CEILING (adjudication 3 / spec sec.10, pre-journal,
+inside `validate_absorb_output`): for an absorb answer whose event(s)
+carry a registration with `asserts_corpus_state: true`, the ONLY changes
+`new_text` may make relative to `old_text` are (a) link-line changes
+(a changed/added Markdown line matching `_LINK_LINE_RE`) and (b)
+status-table row changes (a changed/added Markdown table row matching
+`_TABLE_ROW_RE`). Any other changed line (prose, heading, anything else)
+is refused, naming the section and this ceiling rule. An ADDED
+status-table row/cell whose content is attributable to a pointer-class
+event must carry the sec.10 attribution form VERBATIM:
+  "reported by receipt <event>"
+(the literal words "reported by receipt" immediately followed by the
+event's repo-relative path -- pinned mechanical form, `_ATTRIBUTION_RE`;
+rendered as a claim ABOUT the receipt, never as implementation fact).
+Detection is deliberately conservative: a changed line that is ambiguous
+between prose and link/table-row is FAIL-CLOSED (refused, named). This
+ADDS a ceiling on top of every existing validate_absorb_output check
+(CONTENT-1, last_updated, manifest-vs-diff, corpus_support, F16
+shipped-state gate) -- it relaxes none of them. Non-pointer events: zero
+behavior change (every branch below is gated on the event's registration
+carrying asserts_corpus_state=true).
+"""
+
+import hashlib
+import importlib.util
+import json
+import os
+import posixpath
+import re
+import subprocess
+import sys
+import time
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load(basename, alias):
+    spec = importlib.util.spec_from_file_location(alias,
+                                                  os.path.join(_HERE, basename))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+core = _load("compile-core.py", "compile_core_v2")
+crd = _load("check-run-diff.py", "check_run_diff_v2")
+rcensus = _load("routing-census.py", "routing_census_v2")
+ccs = _load("check-corpus-support.py", "check_corpus_support_v2")
+asm = _load("assemble.py", "assemble_v2")
+regs = _load("registrations.py", "registrations_v2")
+
+CIRCUIT_BREAKER_REBUILDS = 15
+LOCK_CLASSES = {"t1", "correction", "lock", "informed_by"}
+VIEW_BYTE_CAP = 200_000
+
+
+class ValidationError(Exception):
+    pass
+
+
+def _sha256(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _git(repo, *args):
+    p = subprocess.run(["git", "-C", repo] + list(args), capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    if p.returncode != 0:
+        raise ValidationError("git %s: %s" % (args[0], (p.stderr or "")[-200:]))
+    return p.stdout
+
+
+def _blob_of_text(repo, text):
+    """Write text into the object db (so blob-vs-blob diffs work pre-commit)."""
+    p = subprocess.run(["git", "-C", repo, "hash-object", "-w", "--stdin"],
+                       input=text, capture_output=True, text=True,
+                       encoding="utf-8")
+    return p.stdout.strip()
+
+
+def changed_sections(repo, pre_blob, post_blob):
+    return crd.changed_sections(repo, pre_blob, post_blob)
+
+
+def _strip_derivation_region(text):
+    """Body with the derivation region (DERIV_START..DERIV_END markers
+    inclusive) removed -- same convention check-derivation.py's
+    _strip_derivation_region uses ("Body" = full text minus the
+    engine-managed derivation region). Absent/malformed region: returns
+    text unchanged. Used so a `verified:` stamp (which only ever rewrites
+    bytes STRICTLY INSIDE this region -- see _stamp_verified_block) never
+    shows up as body content in a verify packet or as diff/pin noise: the
+    stamp is engine metadata about the body, not a body edit."""
+    lines = text.splitlines(keepends=True)
+    start = end = None
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if start is None and s.startswith(asm.DERIV_START):
+            start = i
+        elif start is not None and s.startswith(asm.DERIV_END):
+            end = i
+            break
+    if start is not None and end is not None and end > start:
+        return "".join(lines[:start] + lines[end + 1:])
+    return text
+
+
+_LAST_UPDATED_RE = re.compile(r"(?m)^last_updated:\s*(\S.*?)\s*$")
+
+
+def _frontmatter_last_updated(text):
+    """Extract the `last_updated:` frontmatter value from view text.
+    Returns None if the field is absent. Otherwise returns
+    (parsed_date_or_None, raw_value_str) -- parsed is None on a present but
+    unparseable value (caller fails closed on that case)."""
+    m = _LAST_UPDATED_RE.search(text or "")
+    if not m:
+        return None
+    raw = m.group(1).strip()
+    try:
+        parsed = time.strptime(raw, "%Y-%m-%d")
+    except ValueError:
+        return (None, raw)
+    return (parsed, raw)
+
+
+# --------------------------------------------------------------- P5 registration seam
+def _load_registration_seam(repo):
+    """Load the effective registration map for this run, ONCE. Pre-mint
+    inertness: if receipts/registrations/ does not exist under `repo`, the
+    store has not been minted yet -- return {} and every P5 rule downstream
+    is inert. If the directory DOES exist, `registrations.load_registrations`
+    runs the FULL chain check; a broken chain is a loud pre-journal refusal
+    of the WHOLE run (nothing journaled, lock released by run()'s existing
+    try/finally) -- never a silent partial map."""
+    if not os.path.isdir(regs.registrations_dir(repo)):
+        return {}
+    return regs.load_registrations(repo)
+
+
+def _registered_is_lock_class(record):
+    """Mirrors is_lock_class's F6 conservative rule against a REGISTRATION
+    record (not a plan event_class entry): registered lock-class treatment
+    is event_class in LOCK_CLASSES, OR event_class_origin == 'judgment'."""
+    if str(record.get("event_class_origin", "")).lower() == "judgment":
+        return True
+    return str(record.get("event_class", "")).lower() in LOCK_CLASSES
+
+
+def check_plan_precedence(plan, registrations_map):
+    """Adjudication 4's precedence rule, at plan-intake time, pre-journal.
+    For every event named anywhere in the plan that HAS a registration:
+    if the registration carries lock-class treatment (see
+    `_registered_is_lock_class`) and the plan's OWN event_class entry for
+    that event names a non-lock class with origin 'explicit', the plan is
+    LOOSENING a registered lock-class event -- refused, naming the event,
+    the registered class, and the plan class. Plan stricter-than-or-equal
+    to the registration passes silently. An event absent from
+    `registrations_map` (inert store, or simply never registered) is
+    untouched -- today's behavior exactly. Raises ValidationError on the
+    first violation found (deterministic order: items, then events, both
+    as given in the plan)."""
+    if not registrations_map:
+        return
+    for item in plan.get("items", []):
+        classes = item.get("event_class") or {}
+        for erel in item.get("events", []):
+            reg = registrations_map.get(erel)
+            if reg is None:
+                continue
+            if not _registered_is_lock_class(reg):
+                continue    # registration itself is not lock-class: inert
+            plan_entry = classes.get(erel)
+            if not plan_entry:
+                continue    # no plan class supplied for this event: inert
+            plan_class = str(plan_entry.get("class", "")).lower()
+            plan_origin = str(plan_entry.get("origin", "")).lower()
+            if plan_origin == "explicit" and plan_class not in LOCK_CLASSES:
+                raise ValidationError(
+                    "plan-precedence: event %r loosens a registered "
+                    "lock-class treatment (registered event_class=%r, "
+                    "event_class_origin=%r) with plan event_class=%r "
+                    "origin=explicit -- refused pre-journal"
+                    % (erel, reg.get("event_class"),
+                       reg.get("event_class_origin"), plan_class))
+
+
+# --------------------------------------------------------------- P5 pointer-class ceiling
+# Conservative, line-level detectors (spec sec.10 / adjudication 3): a
+# changed line must POSITIVELY match one of these to be allowed on a
+# pointer-class event; anything ambiguous is refused (fail-closed).
+_LINK_LINE_RE = re.compile(
+    r"\[[^\]\n]*\]\([^)\n]+\)"          # [text](target) inline link
+    r"|^\s*\[[^\]\n]+\]:\s*\S+"         # [ref]: target reference-style link
+)
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")   # a Markdown table row: | ... |
+_ATTRIBUTION_RE = re.compile(r"reported by receipt\s+\S+")
+
+
+def _pointer_class_changed_lines(repo, old_text, new_text):
+    """Every changed (added or removed) non-blank line between old_text and
+    new_text, as (sign, line_text_without_marker) pairs, via a real git
+    diff (blob-vs-blob, same mechanism changed_sections already uses).
+    Context/unchanged lines are excluded."""
+    pre_blob = _blob_of_text(repo, old_text)
+    post_blob = _blob_of_text(repo, new_text)
+    out = _git(repo, "diff", "--no-color", pre_blob, post_blob)
+    changed = []
+    for ln in out.splitlines():
+        if ln.startswith("+++") or ln.startswith("---") or ln.startswith("@@"):
+            continue
+        if ln.startswith("+") or ln.startswith("-"):
+            content = ln[1:]
+            if content.strip():
+                changed.append((ln[0], content))
+    return changed
+
+
+def _is_allowed_pointer_line(line_text):
+    """A changed line is allowed under the pointer-class ceiling iff it
+    POSITIVELY matches a link line or a status-table row. Ambiguous/other
+    lines are NOT allowed (fail-closed per adjudication 3)."""
+    if _TABLE_ROW_RE.match(line_text):
+        return True
+    if _LINK_LINE_RE.search(line_text):
+        return True
+    return False
+
+
+def check_pointer_class_ceiling(repo, view_rel, old_text, new_text, events,
+                                registrations_map):
+    """Adjudication 3 / spec sec.10, pre-journal, same refusal discipline as
+    validate_absorb_output's other checks. Applies ONLY when at least one of
+    `events` (this absorb answer's delta events) has a registration with
+    asserts_corpus_state=true -- non-pointer events are zero behavior change
+    (this function is a no-op: returns immediately). When it DOES apply:
+      - every changed line (added or removed) between old_text and new_text
+        must be a link line or a status-table row (see
+        `_is_allowed_pointer_line`); the first disallowed line found is
+        refused, naming the offending line and the ceiling rule (fail-closed
+        on ambiguity, never permissive).
+      - every ADDED status-table row must carry the literal attribution
+        form "reported by receipt <event>" (see `_ATTRIBUTION_RE`) --
+        missing it is refused, naming the row.
+    `registrations_map` is the pre-mint-inert seam: an empty map makes this
+    whole check inert (no events can have a pointer-class registration)."""
+    if not registrations_map:
+        return
+    pointer_events = [e for e in events
+                     if registrations_map.get(e, {}).get(
+                         "asserts_corpus_state") is True]
+    if not pointer_events:
+        return
+    changed = _pointer_class_changed_lines(repo, old_text, new_text)
+    for sign, content in changed:
+        if not _is_allowed_pointer_line(content):
+            raise ValidationError(
+                "pointer-class write ceiling: view %r changed by pointer-"
+                "class event(s) %s may only change link lines and status-"
+                "table rows; disallowed line: %r"
+                % (view_rel, pointer_events, content[:120]))
+        if (sign == "+" and _TABLE_ROW_RE.match(content)
+                and not _ATTRIBUTION_RE.search(content)):
+            raise ValidationError(
+                "pointer-class write ceiling: view %r has an ADDED status-"
+                "table row from pointer-class event(s) %s missing the "
+                "sec.10 attribution form ('reported by receipt <event>'): "
+                "%r" % (view_rel, pointer_events, content[:120]))
+
+
+# --------------------------------------------------------------- output validation
+def validate_absorb_output(repo, view_rel, old_text, out, events,
+                           registrations_map=None):
+    """The orchestrator validates BEFORE anything is journaled (spec sec.7:
+    'parses, bounds, manifest matches the real diff, corpus_support lines
+    actually appear in the cited artifact'). `registrations_map` (P5,
+    optional, defaults to None/treated as {}) gates the pointer-class write
+    ceiling -- see check_pointer_class_ceiling; absent/empty leaves this
+    function's behavior exactly as it was pre-P5."""
+    if out.get("new_text") is None:
+        for m in out.get("manifest") or []:
+            raise ValidationError("no-op output carries a merge manifest")
+        return None
+    new_text = out["new_text"]
+    if not isinstance(new_text, str) or not new_text.strip():
+        raise ValidationError("new_text empty/not a string")
+    if len(new_text.encode("utf-8")) > VIEW_BYTE_CAP:
+        raise ValidationError("new_text exceeds byte cap (%d)" % VIEW_BYTE_CAP)
+    if new_text == old_text:
+        raise ValidationError("new_text identical to old (should be a no-op)")
+    # CONTENT-1 deletion floor (test-plan ~230): headings preserved, <=30% shrink
+    # line-set membership, NOT substring containment: "## X" is a substring
+    # of "### X", so a heading DEMOTION would slip a containment check
+    # (red-team catch, 2026-07-05)
+    old_heads = [ln.strip() for ln in old_text.splitlines()
+                 if ln.lstrip().startswith("#")]
+    new_head_lines = {ln.strip() for ln in new_text.splitlines()
+                      if ln.lstrip().startswith("#")}
+    missing_heads = [h for h in old_heads if h not in new_head_lines]
+    if missing_heads:
+        raise ValidationError("deletion floor: heading(s) dropped: %s"
+                              % missing_heads[:3])
+    if old_text and len(new_text) < 0.7 * len(old_text):
+        raise ValidationError("deletion floor: view shrank >30%% (%d -> %d)"
+                              % (len(old_text), len(new_text)))
+    # last_updated must never backdate: new value = max(existing, event date).
+    # Missing on either side = no check (field is non-validated otherwise);
+    # a present-but-unparseable value fails closed.
+    old_lu = _frontmatter_last_updated(old_text)
+    new_lu = _frontmatter_last_updated(new_text)
+    if old_lu is not None and new_lu is not None:
+        old_lu_val, old_lu_raw = old_lu
+        new_lu_val, new_lu_raw = new_lu
+        if old_lu_val is None:
+            raise ValidationError(
+                "last_updated: existing view value unparseable: %r"
+                % old_lu_raw)
+        if new_lu_val is None:
+            raise ValidationError(
+                "last_updated: new value unparseable: %r" % new_lu_raw)
+        if new_lu_val < old_lu_val:
+            raise ValidationError(
+                "last_updated backdated: existing=%s new=%s (new_text must "
+                "not set last_updated earlier than the existing view's "
+                "value)" % (old_lu_raw, new_lu_raw))
+    # manifest vs REAL diff, section granularity, both directions
+    pre_blob = _blob_of_text(repo, old_text)
+    post_blob = _blob_of_text(repo, new_text)
+    actual = changed_sections(repo, pre_blob, post_blob)
+    claimed = {(m.get("section") or "").strip() for m in out.get("manifest") or []}
+    if claimed - actual:
+        raise ValidationError("manifest claims unchanged section(s): %s"
+                              % sorted(claimed - actual))
+    if actual - claimed:
+        raise ValidationError("diff touches unclaimed section(s): %s"
+                              % sorted(actual - claimed))
+    for me in out.get("manifest") or []:
+        if me.get("event") not in events:
+            raise ValidationError("manifest cites non-delta event %r"
+                                  % me.get("event"))
+    # corpus_support (F16): every support line is an EXACT line of the cited
+    # artifact, and the entry pins the artifact's content hash
+    for cs in out.get("corpus_support") or []:
+        art = cs.get("artifact", "")
+        ap = os.path.join(repo, art.replace("/", os.sep))
+        if not os.path.isfile(ap):
+            raise ValidationError("corpus_support artifact missing: %s" % art)
+        body = open(ap, encoding="utf-8", errors="replace").read()
+        want_sha = cs.get("artifact_sha256")
+        if not want_sha:
+            raise ValidationError("corpus_support entry for %s lacks "
+                                  "artifact_sha256 pin" % art)
+        if want_sha != _sha256(body):
+            raise ValidationError("corpus_support artifact_sha256 stale for %s"
+                                  % art)
+        art_lines = set(body.splitlines())
+        for ln in cs.get("support_lines") or []:
+            if ln not in art_lines:   # EXACT line, whitespace included
+                raise ValidationError("support line is not an exact line of %s:"
+                                      " %r" % (art, ln[:80]))
+    # shipped-state prose REQUIRES corpus_support at emit time (spec sec.7 ABSORB);
+    # the RECONCILE flag additionally catches prose-level cases post-hoc
+    shippy = [m for m in out.get("manifest") or []
+              if re.search(r"(shipped|live|as-built)",
+                           str(m.get("section", "")), re.I)]
+    if shippy and not out.get("corpus_support"):
+        raise ValidationError("shipped-state section(s) %s changed with no "
+                              "corpus_support entry"
+                              % sorted({m["section"] for m in shippy}))
+    # P5 pointer-class write ceiling (adjudication 3 / spec sec.10): applied
+    # LAST, after every pre-existing check has already passed, so it is
+    # purely additive on top of them (never relaxes an existing check, and
+    # never masks an existing refusal with a different one).
+    check_pointer_class_ceiling(repo, view_rel, old_text, new_text, events,
+                                registrations_map or {})
+    return pre_blob, post_blob
+
+
+def is_lock_class(event_class_entry):
+    """F6 conservative default: judgment-assigned -> lock-class regardless."""
+    if not event_class_entry:
+        return True     # unknown class = conservative
+    if str(event_class_entry.get("origin", "")).lower() == "judgment":
+        return True
+    return str(event_class_entry.get("class", "")).lower() in LOCK_CLASSES
+
+
+# --------------------------------------------------------------- reconcile flags
+def reconcile_flags(absorbed_rows, entity_index=None, repo=None):
+    """Scripts flag, backends judge only flags -- the FULL spec sec.7 flag set:
+    (a) entity-overlapping view pairs that BOTH changed this run;
+    (b) roadmap rows whose cited sources changed (roadmap/flight-plan views that
+        reference a raw absorbed this run);
+    (c) supersession chains (a changed view or absorbed event that carries
+        supersession markers);
+    (d) pathological hub entities (an entity fanning out over >= HUB_FANOUT
+        changed views this run);
+    (e) any changed view whose diff touched shipped-state prose without a
+        matching corpus_support entry."""
+    HUB_FANOUT = 4
+    flags = []
+    ent = entity_index or {}
+    changed = [r for r in absorbed_rows if r.get("post_blob")]
+    changed_views = {r["view"] for r in changed}
+    absorbed_events = sorted({e for r in changed for e in r.get("events", [])})
+    # (a) entity pairs
+    for i in range(len(changed)):
+        for j in range(i + 1, len(changed)):
+            a, b = changed[i], changed[j]
+            shared = set(ent.get(a["view"], [])) & set(ent.get(b["view"], []))
+            if shared:
+                flags.append({"kind": "entity-pair", "views": [a["view"],
+                              b["view"]], "entities": sorted(shared)})
+    # (b) roadmap rows citing this run's events
+    if repo:
+        roots = ["wiki/flight-plans", "wiki/roadmap", "roadmap"]
+        for rootrel in roots:
+            rd = os.path.join(repo, rootrel.replace("/", os.sep))
+            if not os.path.isdir(rd):
+                continue
+            for f in sorted(os.listdir(rd)):
+                if not f.endswith(".md"):
+                    continue
+                vrel = rootrel + "/" + f
+                body = open(os.path.join(rd, f), encoding="utf-8",
+                            errors="replace").read()
+                cited = [e for e in absorbed_events if e in body]
+                if cited and vrel not in changed_views:
+                    flags.append({"kind": "roadmap-cited-source-changed",
+                                  "view": vrel, "events": cited})
+    # (c) supersession chains
+    if repo:
+        for e in absorbed_events:
+            ep = os.path.join(repo, e.replace("/", os.sep))
+            if os.path.isfile(ep):
+                head = open(ep, encoding="utf-8", errors="replace").read(4000)
+                if re.search(r"supersede[sd]?|superseded_by", head, re.I):
+                    flags.append({"kind": "supersession-chain", "event": e})
+    # (d) pathological hub entities
+    fanout = {}
+    for v in changed_views:
+        for en in ent.get(v, []):
+            fanout.setdefault(en, set()).add(v)
+    for en, vs in sorted(fanout.items()):
+        if len(vs) >= HUB_FANOUT:
+            flags.append({"kind": "hub-entity", "entity": en,
+                          "views": sorted(vs)})
+    # (e) shipped-state prose without corpus_support
+    for r in changed:
+        shippy = [m for m in r.get("manifest", [])
+                  if re.search(r"(shipped|live|as-built)",
+                               str(m.get("section", "")), re.I)]
+        if shippy and not r.get("corpus_support"):
+            flags.append({"kind": "shipped-state-no-support", "view": r["view"],
+                          "sections": sorted({m["section"] for m in shippy})})
+    return flags
+
+
+# --------------------------------------------------------------- the run
+def run(repo, plan, absorb_backend, run_type="compile", break_stale=False,
+        entity_index=None):
+    """One compile run. Returns {"sha", "seq", "flags", "noop_candidates",
+    "rebuilds"}; raises core.LockHeld / ValidationError."""
+    t0 = time.strftime("%Y-%m-%dT%H:%M:%S")
+    _lp, broken = core.acquire_lock(repo, run_type, break_stale=break_stale)
+    try:
+        # P5 registration consultation seam (adjudication 4): loaded ONCE per
+        # run, pre-mint inert (see _load_registration_seam's docstring). A
+        # broken registration chain raises loudly here, before anything is
+        # journaled -- the existing try/finally below still releases the
+        # lock on the way out.
+        registrations_map = _load_registration_seam(repo)
+        check_plan_precedence(plan, registrations_map)
+        # v3.0-22 structural refusal, plan-intake time, pre-journal (same
+        # discipline as check_plan_precedence above): two plan items
+        # resolving to the SAME view path would make the later item absorb
+        # against the view's ORIGINAL on-disk text (the earlier item's write
+        # is pending under the two-phase discipline below) and the later
+        # deferred write would silently clobber the earlier one. Proven
+        # practice never plans this (multi-event-per-view = joint citation
+        # in ONE item) -- refused structurally rather than left to luck.
+        # The dedup KEY is canonicalized, never the raw spelling: the write
+        # loop below resolves item["view"] as os.path.join(repo,
+        # view.replace("/", os.sep)), so aliased spellings ("wiki/./a.md",
+        # backslash variants, and -- on case-insensitive filesystems -- case
+        # variants) all land on ONE file. The key normalizes exactly the way
+        # _harvest_verdict_evidence_paths does (posixpath.normpath over
+        # posix separators, the 2026-07-06 fail-closed convention: check
+        # what the path RESOLVES to, not its surface spelling) plus
+        # casefold() -- KEY only, the item's own spelling is what run()
+        # keeps using; a case-aliased duplicate is refused even on a
+        # case-SENSITIVE host (stricter is safer, costs nothing legitimate).
+        # The dedup key is LEXICAL -- symlinked or platform-exotic aliases
+        # (trailing dots/spaces) are outside its scope; plan views are
+        # repo-relative engine-authored paths and the write side is governed
+        # by path-containment, so those spellings are adversarial-plan
+        # territory, not operating territory.
+        seen_views = set()
+        for item in plan["items"]:
+            vkey = posixpath.normpath(
+                item["view"].replace("\\", "/")).casefold()
+            if vkey in seen_views:
+                raise ValidationError(
+                    "duplicate view target: %r resolves to the same view "
+                    "file as an earlier plan item -- absorb multiple events "
+                    "into a view via joint citation in a SINGLE item"
+                    % item["view"])
+            seen_views.add(vkey)
+        rebuilds = 0
+        absorbed = []
+        noop_candidates = []
+        touched_paths = []
+        # v3.0-22 fix: (vp, new_text) pairs, flushed to the working tree ONLY
+        # after every item below has validated -- see the write loop below
+        # the item loop for why (a mid-plan ValidationError must leave NO
+        # earlier item's edit on disk, not even uncommitted).
+        pending_writes = []
+        for item in plan["items"]:
+            if rebuilds >= CIRCUIT_BREAKER_REBUILDS:
+                raise ValidationError("circuit breaker: %d rebuilds"
+                                      % CIRCUIT_BREAKER_REBUILDS)
+            view = item["view"]
+            vp = os.path.join(repo, view.replace("/", os.sep))
+            old = open(vp, encoding="utf-8").read() if os.path.isfile(vp) else ""
+            events = {}
+            for erel in item["events"]:
+                ep = os.path.join(repo, erel.replace("/", os.sep))
+                if not os.path.isfile(ep):
+                    raise ValidationError("delta event missing: %s" % erel)
+                events[erel] = open(ep, encoding="utf-8").read()
+            out = absorb_backend.absorb(view, old, events)
+            blobs = validate_absorb_output(repo, view, old, out, events,
+                                          registrations_map=registrations_map)
+            classes = item.get("event_class") or {}
+            for noop in out.get("noops") or []:
+                erel = noop["event"]
+                lockish = is_lock_class(classes.get(erel))
+                noop_candidates.append({
+                    "view": view, "event": erel,
+                    "verified": False,
+                    "disposition": "PENDING_NOOP_CANDIDATE" if lockish
+                                   else "CONSUMED",
+                    "event_class": str((classes.get(erel) or {}).get("class",
+                                                                    "unknown")),
+                    "event_class_origin": str((classes.get(erel) or {}).get(
+                        "origin", "judgment")),
+                    "artifact": "",       # VERIFY fills artifact + hash + time
+                    "packet_sha256": "",
+                    "justification": {
+                        "event_sha256": _sha256(events[erel]),
+                        "view_sha256": _sha256(out.get("new_text") or old),
+                        "note": noop.get("justification_note", "")},
+                })
+            if blobs is None:
+                continue    # pure no-op item: nothing written, nothing rebuilt
+            pre_blob, post_blob = blobs
+            pending_writes.append((vp, out["new_text"]))
+            rebuilds += 1
+            touched_paths.append(view)
+            absorbed.append({"view": view,
+                             "events": sorted(events),
+                             "pre_blob": pre_blob, "post_blob": post_blob,
+                             "manifest": out.get("manifest") or [],
+                             "corpus_support": out.get("corpus_support") or []})
+        # v3.0-22 fix: every item above validated (nothing raised) -- ONLY
+        # NOW do we touch the working tree. Previously this write happened
+        # inline per-item, so a LATER item's ValidationError left an EARLIER
+        # item's view already written to disk (uncommitted, since the whole
+        # run still refuses -- the journal/commit below are never reached).
+        # Same write order as before (item order); still writes nothing at
+        # all for a run that ends up all-no-op (pending_writes empty).
+        # Documented residual: a write-phase I/O failure (OSError mid-loop)
+        # can still leave a PARTIALLY written tree -- nothing is journaled
+        # or committed (the stage-only discipline holds), recovery is `git
+        # checkout --` of the touched paths. Full write-atomicity (temp
+        # overlay) was considered and rejected as beyond-minimal for this
+        # hygiene-class defect.
+        for vp, new_text in pending_writes:
+            os.makedirs(os.path.dirname(vp), exist_ok=True)
+            with open(vp, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(new_text)
+        flags = reconcile_flags(absorbed, entity_index, repo=repo)
+        rec = core.minimal_record(run_type,
+                                  _git(repo, "rev-parse", "HEAD").strip())
+        rec["absorbed"] = absorbed
+        rec["noop_candidates"] = noop_candidates
+        rec["run_window"] = {"start": t0,
+                             "end": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        rec["reconcile_flags"] = flags
+        if broken:
+            rec["notes"] = {"broken_stale_lock": broken}
+        seq, jpath = core.append_record(repo, rec)
+        sha = core.stage_only_commit(
+            repo, touched_paths
+            + [os.path.relpath(jpath, repo).replace(os.sep, "/")],
+            "compile-v2 run seq %d (%d view(s), %d no-op candidate(s))"
+            % (seq, len(absorbed), len(noop_candidates)))
+        return {"sha": sha, "seq": seq, "flags": flags,
+                "noop_candidates": noop_candidates, "rebuilds": rebuilds}
+    finally:
+        core.release_lock(repo)
+
+
+# --------------------------------------------------------------- verify stage
+def _routed_views_for_event(rec, event):
+    """Mechanically derive event E's routed views from the VERIFIED compile
+    record: every noop_candidates[].view naming E, PLUS every absorbed[]
+    entry whose events list contains E (that view's post-absorb state
+    carries E's content). Sorted, deduplicated."""
+    views = set()
+    for nc in rec.get("noop_candidates", []):
+        if nc.get("event") == event:
+            views.add(nc["view"])
+    for a in rec.get("absorbed", []):
+        if event in (a.get("events") or []):
+            views.add(a["view"])
+    return sorted(views)
+
+
+# ---------------------------------------------------- F15: routing census journal
+def _run_routing_census(repo, events):
+    """F15: compute the routing census over EVENTS (the verify pass's ledger
+    slice: every event this verify_run touches) via the STANDALONE
+    routing-census.py primitive -- never self-graded inside this file. Returns
+    (census_input_hash, census_output_hash) -- sha256 of routing-census's own
+    canonical input_manifest / output serializations, exactly as that script
+    computes and would print them (spec sec.7 full-VERIFY: 'the standalone
+    reproducible routing-census script with journaled input/output hashes').
+    Empty ledger slice (no pending events this pass) -> both hashes empty
+    string, clearly distinguishable from a real (possibly-empty) census."""
+    if not events:
+        return "", ""
+    _im, ims, _out, osha = rcensus.compute_census(repo, events)
+    return ims, osha
+
+
+# ---------------------------------------------------- F16: corpus excerpt embed
+def _corpus_excerpts_for_event(repo, rec, event, routed_views, context=2):
+    """F16 read-side: for EVENT's routed views, collect every corpus_support
+    entry (from absorbed[] entries whose events list contains EVENT) and
+    mechanically resolve each cited artifact AT ITS PINNED artifact_sha256,
+    reusing check-corpus-support.py's resolve_artifact (current/historical/
+    UNRESOLVED, incl. the rename-heuristic-independent diff-tree fallback --
+    see that script's docstring for why --name-status R-lines are never
+    parsed here). Returns a list of section dicts:
+      {"view", "artifact", "artifact_sha256", "resolution", "excerpt"|None,
+       "support_line"}
+    UNRESOLVED pins are returned with resolution="UNRESOLVED" and
+    excerpt=None -- the caller renders these as an explicit UNRESOLVED
+    declaration, never silently drops them (fail-honest)."""
+    out = []
+    for a in rec.get("absorbed", []):
+        if event not in (a.get("events") or []):
+            continue
+        if a.get("view") not in routed_views:
+            continue
+        for cs in a.get("corpus_support") or []:
+            artifact = cs.get("artifact", "")
+            pinned = cs.get("artifact_sha256", "")
+            resolution, body = ccs.resolve_artifact(repo, artifact, pinned)
+            lines = (cs.get("support_lines") or [])
+            if resolution == "UNRESOLVED" or body is None:
+                for ln in lines or [""]:
+                    out.append({"view": a["view"], "artifact": artifact,
+                               "artifact_sha256": pinned,
+                               "resolution": "UNRESOLVED",
+                               "support_line": ln, "excerpt": None})
+                continue
+            body_lines = body.splitlines()
+            for ln in lines:
+                excerpt = ln
+                if ln in body_lines:
+                    idx = body_lines.index(ln)
+                    lo = max(0, idx - context)
+                    hi = min(len(body_lines), idx + context + 1)
+                    excerpt = "\n".join(body_lines[lo:hi])
+                out.append({"view": a["view"], "artifact": artifact,
+                           "artifact_sha256": pinned, "resolution": resolution,
+                           "support_line": ln, "excerpt": excerpt})
+    return out
+
+
+def _render_corpus_excerpt_section(excerpts):
+    """Render F16's ADDITIVE 'CORPUS EXCERPTS' packet section: one block per
+    resolved/UNRESOLVED corpus_support entry. Placed AFTER the mandated
+    FULL EVENT BODY / FULL VIEW BODY sections (additive-only packet change;
+    never before them, never replacing them)."""
+    if not excerpts:
+        return ""
+    blocks = ["## CORPUS EXCERPTS (F16 mechanically-resolved, read-side)"]
+    for e in excerpts:
+        if e["resolution"] == "UNRESOLVED":
+            blocks.append(
+                "### UNRESOLVED artifact=%s artifact_sha256=%s\n"
+                "support_line: %s\n"
+                "UNRESOLVED: pinned artifact_sha256 could not be resolved to "
+                "any candidate blob (current or historical)."
+                % (e["artifact"], e["artifact_sha256"], e["support_line"]))
+        else:
+            blocks.append(
+                "### view=%s artifact=%s artifact_sha256=%s resolution=%s\n"
+                "support_line: %s\n"
+                "excerpt:\n%s"
+                % (e["view"], e["artifact"], e["artifact_sha256"],
+                   e["resolution"], e["support_line"], e["excerpt"]))
+    return "\n\n".join(blocks)
+
+
+def _render_absorption_excerpt_section(excerpts):
+    """Render the ABSORPTION packet's section 5 (2026-07-06 categorical-
+    sections amendment): unlike the no-op union packet's F16 section (still
+    OMITTED when there are no excerpts -- a different contract, LLM-6
+    integration, untouched here), the amendment mandates sections 1-6
+    categorically on every absorption-verify packet. This section header is
+    therefore ALWAYS rendered; when there are no resolvable corpus_support
+    entries for these events the body is the single explicit line below,
+    never a silently-omitted section (fail-honest, matches the F16
+    UNRESOLVED convention of never silently dropping an absent case)."""
+    header = "## CORPUS EXCERPTS (F16 mechanically-resolved, read-side)"
+    if not excerpts:
+        return header + "\n\n(no corpus_support entries for these events)"
+    blocks = [header]
+    for e in excerpts:
+        if e["resolution"] == "UNRESOLVED":
+            blocks.append(
+                "### UNRESOLVED artifact=%s artifact_sha256=%s\n"
+                "support_line: %s\n"
+                "UNRESOLVED: pinned artifact_sha256 could not be resolved to "
+                "any candidate blob (current or historical)."
+                % (e["artifact"], e["artifact_sha256"], e["support_line"]))
+        else:
+            blocks.append(
+                "### view=%s artifact=%s artifact_sha256=%s resolution=%s\n"
+                "support_line: %s\n"
+                "excerpt:\n%s"
+                % (e["view"], e["artifact"], e["artifact_sha256"],
+                   e["resolution"], e["support_line"], e["excerpt"]))
+    return "\n\n".join(blocks)
+
+
+# ---------------------------------------------- absorption-verify (full VERIFY)
+def _iter_all_journal_records(repo):
+    """Yield (seq, record) for EVERY journal record, in seq order. Used only
+    to derive absorption-verify trigger/diff state -- never to re-validate
+    chain integrity (append_record/check_chain already own that); missing
+    files are simply absent (best-effort read of an already-append-only
+    store)."""
+    jd = core.journal_dir(repo)
+    if not os.path.isdir(jd):
+        return
+    names = [f for f in os.listdir(jd) if f.endswith(".json")]
+    seqs = sorted(int(f[:-5]) for f in names if f[:-5].isdigit())
+    for seq in seqs:
+        with open(os.path.join(jd, "%d.json" % seq), encoding="utf-8") as fh:
+            yield seq, json.load(fh)
+
+
+def _absorption_trigger_state(repo, compile_seq):
+    """Mechanically derive per-view trigger state used by the absorption-
+    verify pass over `compile_seq`:
+
+    (a) the seq of the view's LAST absorption_verified[] stamp anywhere in
+        journal history (or None if never verified) and the view_sha256
+        pinned there (the post-absorb body AT THAT VERIFY) -- this must
+        scan the FULL journal, not just seq<=compile_seq, because a verify
+        record covering an EARLIER compile record always lives at a HIGHER
+        seq than the compile record it verifies (verify is a follow-up
+        record); capping this scan at compile_seq would make a view's own
+        prior verification invisible to a later re-check of the SAME
+        compile record (idempotent re-run safety) or to a subsequent
+        compile record's trigger decision.
+    (b) the pre_blob of the view's FIRST-EVER absorption on or before
+        compile_seq (the pre-first-absorb blob, used as the never-verified
+        diff base per the amendment) and every seq (<= compile_seq) at
+        which it was (re-)absorbed.
+
+    Returns {view: {"last_verified_seq": int|None,
+    "last_verified_view_sha256": str|None, "last_verified_commit": str|None,
+    "first_pre_blob": str, "absorbed_seqs": [seq...] sorted}}.
+
+    last_verified_commit (2026-07-06 recovery-fix amendment): the git commit
+    sha of the verify record that produced the last_verified_seq stamp --
+    recovery (_recover_verified_body) reads the pinned body via `git show
+    <commit>:<view>`, NEVER by re-parsing packet files (packets are named by
+    the COMPILE seq being verified, not the verify record's own seq, so a
+    seq-keyed packet lookup silently mismatches; see verify_commit below).
+    Older journal records written before this amendment carry no
+    verify_commit field -- last_verified_commit is then None and recovery
+    fails honest (CUMULATIVE DIFF UNAVAILABLE), never a silent wrong guess."""
+    state = {}
+    for seq, rec in _iter_all_journal_records(repo):
+        if seq <= compile_seq:
+            for a in rec.get("absorbed", []):
+                v = a.get("view")
+                if not v:
+                    continue
+                st = state.setdefault(v, {"last_verified_seq": None,
+                                          "last_verified_view_sha256": None,
+                                          "last_verified_commit": None,
+                                          "first_pre_blob": a.get("pre_blob", ""),
+                                          "absorbed_seqs": []})
+                st["absorbed_seqs"].append(seq)
+        for av in rec.get("absorption_verified", []):
+            v = av.get("view")
+            if not v:
+                continue
+            st = state.setdefault(v, {"last_verified_seq": None,
+                                      "last_verified_view_sha256": None,
+                                      "last_verified_commit": None,
+                                      "first_pre_blob": "",
+                                      "absorbed_seqs": []})
+            if st["last_verified_seq"] is None or seq > st["last_verified_seq"]:
+                st["last_verified_seq"] = seq
+                st["last_verified_view_sha256"] = av.get("view_sha256")
+                st["last_verified_commit"] = av.get("verify_commit")
+    for st in state.values():
+        st["absorbed_seqs"].sort()
+    return state
+
+
+def _triggered_absorption_views(repo, compile_seq, rec):
+    """Views to absorption-verify THIS pass: every view named in `rec`'s own
+    absorbed[] (the compile record verify_run is covering) whose last-
+    absorbed seq (compile_seq itself, since it's IN absorbed[] here) is
+    greater than its last-verified seq, or that has never been verified.
+    Sorted, deduplicated -- this pass's absorbed[] is always seq==compile_seq
+    so the condition reduces to: trigger unless already verified AT this
+    exact seq or later (idempotent re-run safety)."""
+    state = _absorption_trigger_state(repo, compile_seq)
+    views = sorted({a["view"] for a in rec.get("absorbed", []) if a.get("view")})
+    triggered = []
+    for v in views:
+        st = state.get(v) or {}
+        lvs = st.get("last_verified_seq")
+        if lvs is None or compile_seq > lvs:
+            triggered.append(v)
+    return triggered
+
+
+def _absorbed_events_for_view(rec, view):
+    """Sorted, deduplicated event list absorbed into VIEW by this compile
+    record (may span more than one absorbed[] entry if the view was
+    rebuilt more than once in a single pass -- defensive, not the common
+    case)."""
+    events = set()
+    for a in rec.get("absorbed", []):
+        if a.get("view") == view:
+            events.update(a.get("events") or [])
+    return sorted(events)
+
+
+def _cumulative_diff(repo, view, current_body, state):
+    """Unified diff of view's BODY (derivation region stripped on both
+    sides -- see _strip_derivation_region) from its diff-BASE to CURRENT.
+    Base = last-verified body, recovered via git-show against the journaled
+    verify_commit (see _recover_verified_body), if ever verified; else the
+    pre-first-absorb blob (a real git blob sha, diffable directly; also
+    stripped for symmetry with the verified-base branch). Fail-honest: if a
+    previously-verified base body cannot be recovered (no verify_commit on
+    record, commit unreachable, or recovered content disagrees with the
+    pinned hash), the diff section says so explicitly (UNAVAILABLE marker)
+    rather than silently diffing from empty or from the wrong base."""
+    st = state.get(view) or {}
+    lvs = st.get("last_verified_seq")
+    if lvs is None:
+        pre_blob = st.get("first_pre_blob", "")
+        if not pre_blob:
+            return "(never-verified, no prior absorption on record -- "\
+                   "cumulative diff is the full body)\n" + current_body
+        pre_text = _git(repo, "cat-file", "-p", pre_blob)
+        cur_blob = _blob_of_text(repo, _strip_derivation_region(current_body))
+        pre_stripped_blob = _blob_of_text(
+            repo, _strip_derivation_region(pre_text))
+        return _git(repo, "diff", "--no-color", pre_stripped_blob, cur_blob)
+    base_sha256 = st.get("last_verified_view_sha256")
+    verify_commit = st.get("last_verified_commit")
+    base_body, reason = _recover_verified_body(repo, view, verify_commit,
+                                               base_sha256)
+    if base_body is None:
+        return ("(CUMULATIVE DIFF UNAVAILABLE: last-verified body at seq %d "
+                "could not be recovered -- %s; full current body follows)\n"
+                "%s" % (lvs, reason, current_body))
+    pre_blob = _blob_of_text(repo, _strip_derivation_region(base_body))
+    cur_blob = _blob_of_text(repo, _strip_derivation_region(current_body))
+    return _git(repo, "diff", "--no-color", pre_blob, cur_blob)
+
+
+def _recover_verified_body(repo, view, verify_commit, expected_sha256):
+    """Recover the FULL body of VIEW as it was pinned by the absorption
+    verify that produced `verify_commit` (2026-07-06 recovery-fix amendment
+    -- REPLACES the earlier packet-file lookup, which keyed off the verify
+    RECORD's seq but packet files on disk are named by the COMPILE seq being
+    verified; those two seqs are different numbers, so the old lookup could
+    silently miss or -- worse -- match the wrong packet. git-show against
+    the journaled verify_commit has no such seq-identity ambiguity: it reads
+    the exact commit the stamp was made in.
+
+    Returns (body, None) on success, or (None, reason_str) fail-honest --
+    NEVER a silent wrong guess:
+      - no verify_commit on record (older journal, pre-amendment): reason
+        names that.
+      - `git show <verify_commit>:<view>` fails (commit/path unreachable):
+        reason carries git's own error.
+      - recovered content's sha256 (post-stamp, matching how the pin itself
+        is computed -- see absorption_verified[].view_sha256) disagrees with
+        the journaled pin: reason says so explicitly (corrupt pin or
+        rewritten history), never treated as a fuzzy/best-effort match."""
+    if not verify_commit:
+        return None, "no verify_commit recorded for this view's last stamp"
+    p = subprocess.run(
+        ["git", "-C", repo, "show", "%s:%s" % (verify_commit, view)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if p.returncode != 0:
+        return None, ("git show %s:%s failed: %s"
+                      % (verify_commit, view, (p.stderr or "").strip()[-200:]))
+    body = p.stdout
+    if expected_sha256 and _sha256(body) != expected_sha256:
+        return None, ("recovered body at commit %s has sha256 %s, does not "
+                      "match the journaled pin %s"
+                      % (verify_commit, _sha256(body), expected_sha256))
+    return body, None
+
+
+_VERIFIED_BLOCK_RE = re.compile(
+    r"(?ms)^verified:[ \t]*(?:\S.*)?\n((?:^[ \t]+.*\n?)*)")
+
+
+def _stamp_verified_block(text, status, at, verifier_vendor, verifier_model_id,
+                          absorb_vendor, absorb_model_id, packet_hash,
+                          artifact):
+    """Rewrite the `verified:` sub-block inside the view's derivation region
+    (spec sec.5) IN PLACE -- every other top-level key (tier, entities,
+    consumed_status, ...) is left byte-untouched. Fails closed
+    (ValidationError) if the view carries no derivation region or no
+    `verified:` key inside it (never silently appends a second one)."""
+    region_lines = asm._extract_derivation(text)
+    if region_lines is None:
+        raise ValidationError(
+            "cannot stamp verified: view has no derivation region")
+    region = "\n".join(region_lines)
+    if not re.search(r"(?m)^verified:", region):
+        raise ValidationError(
+            "cannot stamp verified: derivation region has no verified: key")
+    new_block = (
+        "verified:\n"
+        "  status: %s\n"
+        "  at: %s\n"
+        "  verifier_vendor: %s\n"
+        "  verifier_model_id: %s\n"
+        "  absorb_vendor: %s\n"
+        "  absorb_model_id: %s\n"
+        "  packet_hash: %s\n"
+        "  artifact: %s\n"
+        % (status, at, verifier_vendor, verifier_model_id, absorb_vendor,
+           absorb_model_id, packet_hash, artifact))
+    new_region, n = _VERIFIED_BLOCK_RE.subn(new_block, region + "\n", count=1)
+    if n != 1:
+        raise ValidationError(
+            "cannot stamp verified: verified: key found but block pattern "
+            "did not match (malformed derivation region)")
+    new_region = new_region[:-1] if new_region.endswith("\n") else new_region
+    si = text.find(asm.DERIV_START)
+    ei = text.find(asm.DERIV_END, si)
+    if si == -1 or ei == -1:
+        raise ValidationError(
+            "cannot stamp verified: derivation delimiters not found "
+            "verbatim (unexpected -- _extract_derivation found a region)")
+    region_start = text.index("\n", si) + 1
+    return text[:region_start] + new_region + "\n" + text[ei:]
+
+
+def _absorb_substrate_fields(verdict):
+    """Pull verifier/absorb vendor+model_id STRICTLY from the verdict's own
+    substrate block (F17 attestation channel) -- never an orchestrator
+    string. Returns None if the verdict carries no usable substrate block
+    (e.g. a non-confirm/substrate-gated verdict) -- callers must not stamp
+    in that case."""
+    sub = verdict.get("substrate")
+    if not isinstance(sub, dict):
+        return None
+    fields = ("verifier_vendor", "verifier_model_id", "absorb_vendor",
+             "absorb_model_id")
+    if not all(sub.get(f) for f in fields):
+        return None
+    return {f: sub[f] for f in fields}
+
+
+def _harvest_verdict_evidence_paths(repo, verdict):
+    """Mechanically harvest repo-relative evidence artifact paths a verify
+    backend's verdict dict may carry, so verify_run can fold them into the
+    SAME stage-only commit as the verdict/journal records (2026-07-06
+    evidence-copy folding -- see verify_run's docstring). Purely mechanical:
+    reads exactly two documented keys, never judges packet contents.
+
+      - verdict.get("evidence_file")
+      - verdict.get("substrate", {}).get("attestation", {}).get("artifact")
+        (guarded: "substrate"/"attestation" may be absent or not a dict on
+        any verdict shape that isn't BridgeVerifyBackend's -- e.g. the
+        FixtureVerifyBackend used by --self-test carries neither key, and
+        that absence must never fail the run)
+
+    A candidate is folded only if it is a non-empty string, repo-relative
+    (not absolute, no drive letter, does not start with ".."), and names a
+    file that actually exists under `repo` -- never absolute/escaping paths,
+    and never a path a fixture backend simply chose not to write (a missing
+    evidence/attestation artifact is silently skipped, not an error: this
+    harvest augments the commit, it never gates the run over what a backend
+    did or didn't return). Returns a list of repo-relative POSIX paths,
+    deduplicated and order-preserving.
+
+    FAIL-CLOSED NORMALIZATION (2026-07-06, closes an embedded-traversal gap
+    found by cross-vendor review): the candidate is posixpath.normpath'd
+    BEFORE the reject checks below run, and the NORMALIZED form is what gets
+    checked, joined, and returned. Checking the raw string alone let an
+    embedded-traversal shape like "receipts/../../outside.md" slip past --
+    it does not start with ".." or look absolute as written, but normalizes
+    to something that walks above `repo`. Normalizing first means the reject
+    checks see what the path actually resolves to, not its surface spelling."""
+    out = []
+    if not isinstance(verdict, dict):
+        return out
+    candidates = [verdict.get("evidence_file")]
+    substrate_block = verdict.get("substrate")
+    if isinstance(substrate_block, dict):
+        attestation_block = substrate_block.get("attestation")
+        if isinstance(attestation_block, dict):
+            candidates.append(attestation_block.get("artifact"))
+    for cand in candidates:
+        if not isinstance(cand, str) or not cand:
+            continue
+        posix_cand = posixpath.normpath(cand.replace("\\", "/"))
+        if posix_cand == ".." or posix_cand.startswith("../"):
+            continue
+        if os.path.isabs(posix_cand):
+            continue
+        # drive-letter absolute path (e.g. "C:/foo") -- os.path.isabs is
+        # sufficient on Windows but this guards the check on POSIX hosts too
+        if re.match(r"^[A-Za-z]:", posix_cand):
+            continue
+        ap = os.path.join(repo, posix_cand.replace("/", os.sep))
+        if not os.path.isfile(ap):
+            continue
+        if posix_cand not in out:
+            out.append(posix_cand)
+    return out
+
+
+def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
+    """VERIFY pass over a compile record's PENDING_NOOP_CANDIDATEs, unioned
+    per EVENT. Hub events whose content routes to sibling views (via other
+    no-op candidates or via absorption elsewhere) get ONE packet per event,
+    covering the UNION of every routed view's CURRENT body -- never a
+    per-(event,view) no-op claim that ignores where the event's content
+    actually landed. For each event E: routed views = every noop_candidates
+    view naming E plus every absorbed view whose events list contains E
+    (sorted). ONE backend call per event, over that union packet. A
+    confirmed verdict flips ALL of E's pending candidates together (same
+    artifact, same packet_sha256); any other verdict leaves all of them
+    PENDING with the attempt recorded. Journal is append-only: the flips
+    land in a NEW record (run_type=verify) whose noop_candidates carry
+    verified=true, artifact, packet_sha256, verified_at -- committed
+    stage-only with the artifacts.
+
+    EVIDENCE-COPY FOLDING (2026-07-06, closes the untracked-copies nit queued
+    2026-07-05/06): a verify backend's returned verdict dict may carry its
+    OWN evidence artifacts alongside the no-op/absorption verdict JSON this
+    function already writes -- e.g. BridgeVerifyBackend.verify() returns
+    verdict["evidence_file"] (the packet copy it staged) and, on a good
+    attestation, verdict["substrate"]["attestation"]["artifact"] (the F17
+    attest record). Those paths are NOT produced by this function, so they
+    must be harvested mechanically from each verdict dict and folded into
+    the SAME stage-only commit as the verdict/journal records -- otherwise
+    they are untracked worktree files that the committed journal references
+    by path but that never entered git history (evidence loss on worktree
+    cleanup, observed live twice). `_harvest_verdict_evidence_paths` performs
+    this harvest for every verify_backend.verify() call below (both the
+    no-op union loop and the absorption-verify loop): journal-referenced
+    evidence paths must resolve at the verify commit -- self-contained
+    history, never a separate untracked copy."""
+    t0 = time.strftime("%Y-%m-%dT%H:%M:%S")
+    _lp, _b = core.acquire_lock(repo, run_type)
+    try:
+        jd = core.journal_dir(repo)
+        rec = json.load(open(os.path.join(jd, "%d.json" % compile_seq),
+                             encoding="utf-8"))
+        outdir = os.path.join("receipts", "verify")
+        os.makedirs(os.path.join(repo, outdir), exist_ok=True)
+
+        ncs = rec.get("noop_candidates", [])
+        pending_idx = [i for i, nc in enumerate(ncs)
+                      if not (nc.get("verified")
+                             or nc.get("disposition") == "CONSUMED")]
+        events = sorted({ncs[i]["event"] for i in pending_idx})
+
+        out_ncs = list(ncs)   # start as a copy; pending entries get replaced
+        artifacts = []
+        confirmed_candidates = 0
+        events_confirmed = 0
+
+        def _body(rel):
+            p = os.path.join(repo, rel.replace("/", os.sep))
+            return open(p, encoding="utf-8").read() if os.path.isfile(p) else ""
+
+        for e_idx, event in enumerate(events):
+            routed_views = _routed_views_for_event(rec, event)
+            ebody = _body(event)
+            view_bodies = {v: _body(v) for v in routed_views}
+
+            claim = ("CLAIM: event %s carries zero load-bearing claims absent "
+                     "from the union of its routed views: %s."
+                     % (event, ", ".join(routed_views)))
+            sections = ["## FULL VIEW BODY: %s\n%s" % (v, view_bodies[v])
+                       for v in routed_views]
+            packet = ("# NOOP VERIFY PACKET seq%d-e%d\n\n%s\n\n"
+                      "## FULL EVENT BODY\n%s\n%s"
+                      % (compile_seq, e_idx, claim, ebody,
+                         "\n".join(sections)))
+
+            # F16 (additive): mechanically-resolved corpus excerpts for this
+            # event's routed views, appended AFTER the mandated sections above.
+            excerpts = _corpus_excerpts_for_event(repo, rec, event,
+                                                  routed_views)
+            excerpt_section = _render_corpus_excerpt_section(excerpts)
+            if excerpt_section:
+                packet = packet + "\n\n" + excerpt_section
+
+            verdict = verify_backend.verify(packet)
+            art_rel = "%s/noop-seq%d-e%d.json" % (
+                outdir.replace(os.sep, "/"), compile_seq, e_idx)
+            with open(os.path.join(repo, art_rel.replace("/", os.sep)), "w",
+                      encoding="utf-8", newline="\n") as fh:
+                json.dump(verdict, fh, indent=1, sort_keys=True)
+            artifacts.append(art_rel)
+            for ev_path in _harvest_verdict_evidence_paths(repo, verdict):
+                if ev_path not in artifacts:
+                    artifacts.append(ev_path)
+
+            packet_sha = _sha256(packet)
+            union_view_sha256 = {v: _sha256(view_bodies[v])
+                                 for v in routed_views}
+            confirm = str(verdict.get("verdict", "")).lower().startswith(
+                "confirm")
+            verified_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+            for i in pending_idx:
+                nc = ncs[i]
+                if nc["event"] != event:
+                    continue
+                vbody_own = _body(nc["view"])
+                nc2 = dict(nc, artifact=art_rel, packet_sha256=packet_sha,
+                          justification=dict(
+                              nc.get("justification") or {},
+                              event_sha256=_sha256(ebody),
+                              view_sha256=_sha256(vbody_own),
+                              union_views=routed_views,
+                              union_view_sha256=union_view_sha256))
+                if confirm:
+                    nc2["verified"] = True
+                    nc2["verified_at"] = verified_at
+                    nc2["disposition"] = "CONSUMED"
+                    confirmed_candidates += 1
+                out_ncs[i] = nc2
+            if confirm:
+                events_confirmed += 1
+
+        # ---------------------------------------------- absorption-verify
+        # (spec sec.7 full VERIFY; amendment 2026-07-05). Assembled AFTER the
+        # no-op union packets above, same run, same journal record. One
+        # packet per triggered T1 view: a view appears in THIS record's
+        # absorbed[] and has never been verified, or was last verified at a
+        # seq < compile_seq.
+        trigger_state = _absorption_trigger_state(repo, compile_seq)
+        triggered_views = _triggered_absorption_views(repo, compile_seq, rec)
+        absorption_verified = []
+        absorption_verify_attempts = []
+        absorption_checked = 0
+        absorption_confirmed = 0
+        touched_view_paths = []
+
+        packet_dir = os.path.join(repo, "receipts", "verify", "packets")
+        os.makedirs(packet_dir, exist_ok=True)
+
+        for v_idx, view in enumerate(triggered_views):
+            absorption_checked += 1
+            abs_events = _absorbed_events_for_view(rec, view)
+            current_body = _body(view)
+            cumulative_diff = _cumulative_diff(repo, view, current_body,
+                                               trigger_state)
+
+            claim = ("CLAIM: view %s at post-absorb state faithfully absorbs "
+                     "events %s: every manifest claim is supported by the "
+                     "absorbed events; every load-bearing claim in the "
+                     "events is represented or implied in the view "
+                     "(compression and paraphrase are permitted -- the "
+                     "represent-or-imply bar of the F13 precision "
+                     "amendment, NOT verbatim reproduction); and the "
+                     "cumulative diff shown contains no change unaccounted "
+                     "for by these events."
+                     % (view, ", ".join(abs_events)))
+
+            event_sections = []
+            for e in abs_events:
+                event_sections.append(
+                    "## ABSORBED EVENT: %s\n%s" % (e, _body(e)))
+
+            manifest_rows = []
+            for a in rec.get("absorbed", []):
+                if a.get("view") == view:
+                    manifest_rows.extend(a.get("manifest") or [])
+            manifest_text = "\n".join(
+                json.dumps(m, sort_keys=True) for m in manifest_rows)
+
+            excerpts = []
+            for e in abs_events:
+                excerpts.extend(_corpus_excerpts_for_event(repo, rec, e,
+                                                            [view]))
+            excerpt_section = _render_absorption_excerpt_section(excerpts)
+
+            census_input_hash_v, census_output_hash_v = _run_routing_census(
+                repo, abs_events)
+            census_slice = [e for e in abs_events]
+            census_section = (
+                "## ROUTING CENSUS (F15)\ncensus_input_hash: %s\n"
+                "census_output_hash: %s\ncensus_events: %s"
+                % (census_input_hash_v, census_output_hash_v,
+                   ", ".join(census_slice)))
+
+            # Amendment section order (2026-07-05): 1 diff, 2 full body,
+            # 3 absorbed events, 4 manifest claims, 5 CORPUS EXCERPTS (F16),
+            # 6 ROUTING CENSUS (F15) -- F16 mechanically-resolved excerpts
+            # MUST precede F15's census per the amendment's mandated order.
+            # Sections 1-6 are MANDATED CATEGORICALLY (2026-07-06 categorical-
+            # sections amendment): section 5 is ALWAYS rendered below, never
+            # conditionally omitted -- when there are no resolvable
+            # corpus_support entries for these events its body is the
+            # explicit none-line from _render_absorption_excerpt_section,
+            # not a missing section. (The no-op union packet's OWN F16
+            # section, built by _render_corpus_excerpt_section above in
+            # verify_run's earlier loop, is a separate contract -- LLM-6
+            # integration -- and keeps its additive/omit-when-empty
+            # behavior unchanged.)
+            # FULL VIEW BODY (POST-ABSORB) shows the body with the
+            # derivation region stripped (2026-07-06 recovery-fix
+            # amendment): the verified: stamp -- which lands INSIDE that
+            # region, conditionally, only once a confirm verdict is known --
+            # is engine metadata about the body, never a body edit
+            # (_stamp_verified_block touches nothing else). Showing the
+            # stripped body here means what the verifier reads is exactly
+            # the content whose fate this verdict decides, with no
+            # not-yet-known-verdict metadata in view; the diff section above
+            # is computed on the same stripped convention (_cumulative_diff)
+            # so the two sections are symmetric. The journaled pin
+            # (view_sha256) still covers the FULL post-stamp file, per spec.
+            packet = (
+                "# ABSORPTION VERIFY PACKET seq%d-v%d\n\n%s\n\n"
+                "## CUMULATIVE DIFF SINCE LAST VERIFIED\n%s\n\n"
+                "## FULL VIEW BODY (POST-ABSORB)\n%s\n\n%s\n\n"
+                "## MANIFEST CLAIMS\n%s"
+                % (compile_seq, v_idx, claim, cumulative_diff,
+                   _strip_derivation_region(current_body),
+                   "\n".join(event_sections), manifest_text))
+            packet = packet + "\n\n" + excerpt_section
+            packet = packet + "\n\n" + census_section
+
+            verdict = verify_backend.verify(packet)
+            art_rel = "receipts/verify/absorb-seq%d-v%d.json" % (compile_seq,
+                                                                  v_idx)
+            with open(os.path.join(repo, art_rel.replace("/", os.sep)), "w",
+                      encoding="utf-8", newline="\n") as fh:
+                json.dump(verdict, fh, indent=1, sort_keys=True)
+            artifacts.append(art_rel)
+            for ev_path in _harvest_verdict_evidence_paths(repo, verdict):
+                if ev_path not in artifacts:
+                    artifacts.append(ev_path)
+
+            packet_rel = "receipts/verify/packets/packet-absorb-seq%d-v%d.md" \
+                % (compile_seq, v_idx)
+            with open(os.path.join(repo, packet_rel.replace("/", os.sep)),
+                      "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(packet)
+            artifacts.append(packet_rel)
+
+            packet_sha = _sha256(packet)
+            confirm_v = str(verdict.get("verdict", "")).lower().startswith(
+                "confirm")
+            verified_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+            stamp_refusal_reason = None
+            if confirm_v:
+                substrate_fields = _absorb_substrate_fields(verdict)
+                if substrate_fields is None:
+                    confirm_v = False   # fail-closed: no usable attestation
+                    stamp_refusal_reason = ("no usable F17 attestation "
+                                            "substrate block on the verdict")
+
+            if confirm_v:
+                try:
+                    new_text = _stamp_verified_block(
+                        current_body, "passed", verified_at,
+                        substrate_fields["verifier_vendor"],
+                        substrate_fields["verifier_model_id"],
+                        substrate_fields["absorb_vendor"],
+                        substrate_fields["absorb_model_id"],
+                        packet_sha, art_rel)
+                except ValidationError as e:
+                    # Fail-closed PER VIEW, not per run: a malformed/missing
+                    # derivation region on THIS view must not crash the
+                    # whole verify pass (the no-op union flips already
+                    # computed above must still land). Record the attempt,
+                    # stamp nothing, move on to the next triggered view.
+                    confirm_v = False
+                    stamp_refusal_reason = "stamp refused: %s" % e
+                else:
+                    vp = os.path.join(repo, view.replace("/", os.sep))
+                    with open(vp, "w", encoding="utf-8", newline="\n") as fh:
+                        fh.write(new_text)
+                    touched_view_paths.append(view)
+                    absorption_verified.append({
+                        "view": view, "events": abs_events,
+                        "verified_at": verified_at, "artifact": art_rel,
+                        "packet_sha256": packet_sha,
+                        "view_sha256": _sha256(new_text),
+                        "substrate": verdict.get("substrate")})
+                    absorption_confirmed += 1
+
+            if not confirm_v:
+                absorption_verify_attempts.append({
+                    "view": view, "events": abs_events,
+                    "artifact": art_rel, "packet_sha256": packet_sha,
+                    "reason": stamp_refusal_reason or verdict.get(
+                        "reason", "")})
+
+        # F15: journal the standalone routing-census's input/output hashes for
+        # this verify pass's own ledger slice (the events this pass checked) --
+        # NEVER computed/graded by the LLM verify path itself, only recorded.
+        census_input_hash, census_output_hash = _run_routing_census(
+            repo, events)
+
+        vrec = core.minimal_record(run_type,
+                                   _git(repo, "rev-parse", "HEAD").strip())
+        vrec["noop_candidates"] = out_ncs
+        vrec["run_window"] = {"start": t0,
+                              "end": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        vrec["verifies_seq"] = compile_seq
+        vrec["census_input_hash"] = census_input_hash
+        vrec["census_output_hash"] = census_output_hash
+        if absorption_verified:
+            vrec["absorption_verified"] = absorption_verified
+        if absorption_verify_attempts:
+            vrec["absorption_verify_attempts"] = absorption_verify_attempts
+        seq, jpath = core.append_record(repo, vrec)
+        jrel = os.path.relpath(jpath, repo).replace(os.sep, "/")
+        sha = core.stage_only_commit(
+            repo, touched_view_paths + artifacts + [jrel],
+            "compile-v2 verify seq %d over seq %d (%d confirmed / %d checked, "
+            "%d events confirmed / %d events checked, %d absorption "
+            "confirmed / %d absorption checked)"
+            % (seq, compile_seq, confirmed_candidates, len(pending_idx),
+               events_confirmed, len(events), absorption_confirmed,
+               absorption_checked))
+
+        # verify_commit annotation (2026-07-06 recovery-fix amendment): the
+        # commit that just landed (`sha`) is the ONE place the stamped view
+        # bodies and this record live together -- exactly the commit later
+        # recovery (_recover_verified_body) needs to `git show <sha>:<view>`
+        # against. But `sha` is only known AFTER stage_only_commit returns,
+        # and the record's own bytes (committed as part of that same commit)
+        # cannot name a hash of themselves -- no journal record can predict
+        # its own resulting commit sha (the hash depends on the very bytes
+        # being written). So this is NOT foldable into the commit above by
+        # construction; it is captured in a small SEPARATE follow-up commit
+        # that touches ONLY the journal file (never a view), annotating each
+        # absorption_verified[] entry with verify_commit=sha (the CONTENT
+        # commit's real, permanent, reachable sha -- never rewritten,
+        # amend is deliberately NOT used here so `sha` stays valid and
+        # reachable, not a dangling predecessor object). This keeps
+        # stage_only_commit's one-real-commit-per-content-change discipline
+        # intact: `sha` (returned below, and what check-run-diff.check_acc4
+        # validates) still names exactly the commit that carries the views
+        # + this record; the follow-up commit is pure metadata annotation on
+        # top, never inspected by ACC-4 (it touches no wiki/ view).
+        if absorption_verified:
+            # Re-read the AS-WRITTEN record from disk rather than reusing
+            # the pre-append `vrec` in memory: append_record (compile-core)
+            # builds its own dict copy carrying the engine-owned seq/
+            # prev_record_hash fields that were never written back onto
+            # `vrec` -- patching `vrec` directly and re-dumping it would
+            # silently drop those two required fields from the file.
+            with open(jpath, encoding="utf-8") as fh:
+                on_disk_rec = json.load(fh)
+            for entry in on_disk_rec.get("absorption_verified", []):
+                entry["verify_commit"] = sha
+            with open(jpath, "w", encoding="utf-8", newline="\n") as fh:
+                json.dump(on_disk_rec, fh, indent=1, sort_keys=True)
+            core.stage_only_commit(
+                repo, [jrel],
+                "compile-v2 verify seq %d: annotate verify_commit=%s on "
+                "%d absorption_verified stamp(s)"
+                % (seq, sha, len(absorption_verified)))
+
+        return {"sha": sha, "seq": seq, "confirmed": confirmed_candidates,
+                "checked": len(pending_idx),
+                "events_checked": len(events),
+                "events_confirmed": events_confirmed,
+                "census_input_hash": census_input_hash,
+                "census_output_hash": census_output_hash,
+                "absorption_checked": absorption_checked,
+                "absorption_confirmed": absorption_confirmed,
+                # v3.0-84: per-view non-confirm reasons, surfaced so the driver
+                # can say WHICH failure class each leg hit -- a verifier
+                # rejection and a confirmed-verdict-whose-stamp-refused (e.g. a
+                # legacy view with no derivation region) previously printed
+                # identically as "0 of N confirmed", which cost a live session
+                # its diagnosis on 2026-07-31 (the verdict artifact said
+                # confirmed; the summary said non-confirm; nothing said why).
+                "absorption_attempts": [
+                    {"view": a.get("view", ""), "reason": a.get("reason", "")}
+                    for a in absorption_verify_attempts]}
+    finally:
+        core.release_lock(repo)
+
+
+class FixtureVerifyBackend:
+    """Deterministic: confirms iff the packet's event body contains
+    'already represented'; rejects otherwise."""
+
+    def verify(self, packet):
+        ok = "already represented" in packet
+        return {"verdict": "confirmed" if ok else "rejected",
+                "reason": "fixture", "uncertainty": "confident",
+                "verifier": {"vendor": "openai", "model": "fixture"}}
+
+
+# --------------------------------------------------------------- fixture backend
+class FixtureAbsorbBackend:
+    """Deterministic absorber for gates/self-test: appends each event's body
+    under a per-event section; events named *noop* are no-ops."""
+
+    def absorb(self, view_rel, view_text, events):
+        new = view_text if view_text.endswith("\n") or not view_text \
+            else view_text + "\n"
+        manifest, noops, support = [], [], []
+        changedany = False
+        for erel in sorted(events):
+            base = os.path.basename(erel)
+            if "noop" in base:
+                noops.append({"event": erel,
+                              "justification_note": "fixture no-op"})
+                continue
+            sec = "Absorbed %s" % base
+            body = events[erel].strip().splitlines()
+            first = body[-1] if body else ""
+            new += "\n## %s\n%s\n" % (sec, first)
+            manifest.append({"event": erel, "section": sec})
+            support.append({"artifact": erel,
+                            "artifact_sha256": _sha256(events[erel]),
+                            "support_lines": [first]})
+            changedany = True
+        return {"new_text": new if changedany else None,
+                "manifest": manifest if changedany else [],
+                "corpus_support": support if changedany else [],
+                "noops": noops}
+
+
+class BrokenManifestBackend(FixtureAbsorbBackend):
+    """Claims a section it never edits -- must be REFUSED pre-journal."""
+
+    def absorb(self, view_rel, view_text, events):
+        out = super().absorb(view_rel, view_text, events)
+        if out["new_text"] is not None:
+            out["manifest"].append({"event": sorted(events)[0],
+                                    "section": "Phantom Section"})
+        return out
+
+
+class FabricatedSupportBackend(FixtureAbsorbBackend):
+    def absorb(self, view_rel, view_text, events):
+        out = super().absorb(view_rel, view_text, events)
+        if out["new_text"] is not None:
+            e0 = sorted(events)[0]
+            out["corpus_support"].append(
+                {"artifact": e0, "artifact_sha256": _sha256(events[e0]),
+                 "support_lines": ["this line exists nowhere in the artifact"]})
+        return out
+
+
+# --------------------------------------------------------------- self-test
+def self_test():
+    import shutil
+    import tempfile
+    total = failed = 0
+    _RENDERED = {}
+
+    def case(name, ok):
+        nonlocal total, failed
+        total += 1
+        print("  %s %s" % ("ok " if ok else "XX ", name))
+        if not ok:
+            failed += 1
+
+    base = tempfile.mkdtemp(prefix="cv2-")
+    try:
+        for args in (["init", "-q"], ["config", "user.email", "t@t"],
+                     ["config", "user.name", "t"]):
+            subprocess.run(["git", "-C", base] + args, capture_output=True)
+        os.makedirs(os.path.join(base, "wiki"))
+        os.makedirs(os.path.join(base, "raw"))
+        open(os.path.join(base, "wiki", "a.md"), "w", newline="\n").write(
+            "# A\n\n## Intro\nhello\n")
+        open(os.path.join(base, "wiki", "b.md"), "w", newline="\n").write(
+            "# B\n\n## Intro\nworld\n")
+        open(os.path.join(base, "raw", "e1.md"), "w", newline="\n").write(
+            "fact one\n")
+        open(os.path.join(base, "raw", "e2.md"), "w", newline="\n").write(
+            "fact two\n")
+        open(os.path.join(base, "raw", "e3-noop.md"), "w", newline="\n").write(
+            "already represented\n")
+        open(os.path.join(base, "salt.md"), "w").write("salt\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "seed"],
+                       capture_output=True)
+
+        plan = {"items": [
+            {"view": "wiki/a.md", "events": ["raw/e1.md", "raw/e3-noop.md"],
+             "event_class": {"raw/e1.md": {"class": "t3", "origin": "explicit"},
+                             "raw/e3-noop.md": {"class": "t1",
+                                                "origin": "explicit"}}},
+            {"view": "wiki/b.md", "events": ["raw/e2.md"],
+             "event_class": {"raw/e2.md": {"class": "t3",
+                                           "origin": "judgment"}}},
+        ]}
+        open(os.path.join(base, "salt.md"), "a").write("dirty\n")
+
+        res = run(base, plan, FixtureAbsorbBackend())
+        case("run completes: 2 rebuilds, seq 1",
+             res["rebuilds"] == 2 and res["seq"] == 1)
+        case("lock released after run",
+             not os.path.isfile(core.lock_path(base)))
+        # the produced commit passes the REAL gates -- PENDING_NOOP_CANDIDATE
+        # entries are pre-VERIFY (verified=false), so check-run-diff's PENDING
+        # exemption means no artifact/hash gaps are reported here at all; VERIFY
+        # fills artifact+hash in its own append-only follow-up record below.
+        probs, _rec = crd.check_acc4(base, res["sha"])
+        case("ACC-4 on the produced commit: clean (PENDING no-op exemption)",
+             probs == [])
+        sprobs = crd.check_sections(base, res["sha"])
+        case("LLM-2 sections on the produced commit: clean", sprobs == [])
+        case("chain intact after run", core.check_chain(base) == 1)
+        # PENDING_NOOP_CANDIDATE discipline
+        ncs = res["noop_candidates"]
+        case("T1 no-op -> PENDING_NOOP_CANDIDATE, never consumed",
+             ncs and ncs[0]["disposition"] == "PENDING_NOOP_CANDIDATE"
+             and ncs[0]["verified"] is False)
+        case("no-op justification carries full event+view hashes",
+             ncs[0]["justification"]["event_sha256"]
+             and ncs[0]["justification"]["view_sha256"])
+        case("salt untouched by the run commit",
+             "dirty" in open(os.path.join(base, "salt.md")).read()
+             and "salt.md" in subprocess.run(
+                 ["git", "-C", base, "status", "--porcelain"],
+                 capture_output=True, text=True).stdout)
+
+        # VERIFY stage: pending no-op flips via a NEW append-only record
+        vres = verify_run(base, res["seq"], FixtureVerifyBackend())
+        case("verify run: 1 checked, 1 confirmed (fixture)",
+             vres["checked"] == 1 and vres["confirmed"] == 1)
+        case("verify record chains cleanly", core.check_chain(base) == 2)
+        vrec = json.load(open(os.path.join(core.journal_dir(base),
+                                           "%d.json" % vres["seq"]),
+                              encoding="utf-8"))
+        nc2 = vrec["noop_candidates"][0]
+        case("flipped candidate: verified + artifact + packet hash + same-run "
+             "timestamp", nc2["verified"] and nc2["artifact"]
+             and nc2["packet_sha256"]
+             and vrec["run_window"]["start"] <= nc2["verified_at"]
+             <= vrec["run_window"]["end"])
+        vprobs, _ = crd.check_acc4(base, vres["sha"])
+        case("ACC-4 clean on the verify commit", vprobs == [])
+        case("verdict artifact committed with the record",
+             any("receipts/verify/" in f
+                 for f in crd.commit_files(base, vres["sha"])))
+
+        # ------------------------------- evidence-copy folding (2026-07-06)
+        # A fixture verify backend that writes its OWN evidence artifacts
+        # (mirroring BridgeVerifyBackend: a packet copy at "evidence_file"
+        # and, on confirm, an F17-style attest record at
+        # substrate.attestation.artifact) under receipts/verify/ in the
+        # fixture repo. Both paths must be folded into the SAME stage-only
+        # verify commit -- never left as untracked worktree files the
+        # journal merely references by path.
+        class _EvidenceWritingVerifyBackend:
+            def __init__(self, repo_root):
+                self.repo_root = repo_root
+                self.n = 0
+
+            def verify(self, packet):
+                self.n += 1
+                evdir = os.path.join(self.repo_root, "receipts", "verify",
+                                     "staging")
+                os.makedirs(evdir, exist_ok=True)
+                ev_rel = "receipts/verify/staging/packet-fold-%d.md" % self.n
+                with open(os.path.join(self.repo_root,
+                                       ev_rel.replace("/", os.sep)), "w",
+                          encoding="utf-8", newline="\n") as fh:
+                    fh.write(packet)
+                attdir = os.path.join(self.repo_root, "receipts", "verify",
+                                      "attest")
+                os.makedirs(attdir, exist_ok=True)
+                att_rel = "receipts/verify/attest/fold-%d.attest.json" % self.n
+                with open(os.path.join(self.repo_root,
+                                       att_rel.replace("/", os.sep)), "w",
+                          encoding="utf-8", newline="\n") as fh:
+                    json.dump({"channel": "subprocess-runtime"}, fh)
+                return {"verdict": "confirmed", "reason": "fixture-fold",
+                        "uncertainty": "confident",
+                        "verifier": {"vendor": "openai", "model": "fixture"},
+                        "evidence_file": ev_rel,
+                        "substrate": {"attestation": {"artifact": att_rel}}}
+
+        # a fresh compile so this verify pass has its own pending no-op
+        # candidate to fire the evidence-writing backend over (via the
+        # NO-OP UNION loop -- FixtureAbsorbBackend treats an event as a
+        # no-op iff "noop" appears in its basename)
+        open(os.path.join(base, "raw", "e-fold-noop.md"), "w",
+             newline="\n").write("already represented\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "fold fixture"],
+                       capture_output=True)
+        fold_plan = {"items": [
+            {"view": "wiki/a.md", "events": ["raw/e-fold-noop.md"],
+             "event_class": {"raw/e-fold-noop.md": {"class": "t1",
+                                                     "origin": "explicit"}}},
+        ]}
+        fold_res = run(base, fold_plan, FixtureAbsorbBackend())
+        fold_backend = _EvidenceWritingVerifyBackend(base)
+        fold_vres = verify_run(base, fold_res["seq"], fold_backend)
+        fold_commit_files = crd.commit_files(base, fold_vres["sha"])
+        case("evidence-copy folding: verdict evidence_file path tracked in "
+            "the verify commit",
+             "receipts/verify/staging/packet-fold-1.md" in fold_commit_files)
+        case("evidence-copy folding: substrate.attestation.artifact path "
+            "tracked in the verify commit",
+             "receipts/verify/attest/fold-1.attest.json" in fold_commit_files)
+
+        # verdict carrying evidence_file="" and no substrate/attestation must
+        # not break the run (harvest silently skips both)
+        class _NoEvidenceVerifyBackend:
+            def verify(self, packet):
+                return {"verdict": "confirmed", "reason": "no-evidence",
+                        "uncertainty": "confident",
+                        "verifier": {"vendor": "openai", "model": "fixture"},
+                        "evidence_file": ""}
+
+        open(os.path.join(base, "raw", "e-fold2-noop.md"), "w",
+             newline="\n").write("already represented\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "fold fixture 2"],
+                       capture_output=True)
+        fold_plan2 = {"items": [
+            {"view": "wiki/a.md", "events": ["raw/e-fold2-noop.md"],
+             "event_class": {"raw/e-fold2-noop.md": {"class": "t1",
+                                                      "origin": "explicit"}}},
+        ]}
+        fold_res2 = run(base, fold_plan2, FixtureAbsorbBackend())
+        try:
+            fold_vres2 = verify_run(base, fold_res2["seq"],
+                                    _NoEvidenceVerifyBackend())
+            case("evidence-copy folding: empty evidence_file / absent "
+                "attestation does not break the run",
+                 fold_vres2["checked"] == 1)
+        except Exception as e:  # pragma: no cover -- must never raise
+            case("evidence-copy folding: empty evidence_file / absent "
+                "attestation does not break the run (raised %r)" % (e,),
+                 False)
+
+        # embedded-traversal evidence_file (2026-07-06 cross-vendor finding):
+        # a verdict naming "receipts/../../outside.md" reads, as WRITTEN,
+        # repo-relative (no leading "..", not absolute) -- the pre-fix checks
+        # ran against that raw spelling and reached os.path.isfile against a
+        # path that actually resolves OUTSIDE `base` entirely. A real file is
+        # planted a directory above `base` so the pre-fix code would have
+        # harvested (and the verify commit would have staged) a file the
+        # fixture repo never owns; post-fix this candidate must be dropped
+        # silently, same as any other missing/invalid candidate -- never a
+        # raised error, never a tracked path.
+        outside_dir = os.path.dirname(base)
+        outside_path = os.path.join(outside_dir, "cv2-outside-traversal.md")
+        open(outside_path, "w", newline="\n").write(
+            "content that must never enter the fixture repo's history\n")
+        try:
+            class _TraversalVerifyBackend:
+                def verify(self, packet):
+                    return {"verdict": "confirmed", "reason": "traversal",
+                            "uncertainty": "confident",
+                            "verifier": {"vendor": "openai",
+                                        "model": "fixture"},
+                            "evidence_file": "receipts/../../"
+                                             "cv2-outside-traversal.md"}
+
+            open(os.path.join(base, "raw", "e-fold3-noop.md"), "w",
+                 newline="\n").write("already represented\n")
+            subprocess.run(["git", "-C", base, "add", "-A"],
+                           capture_output=True)
+            subprocess.run(["git", "-C", base, "commit", "-qm",
+                            "fold fixture 3"], capture_output=True)
+            fold_plan3 = {"items": [
+                {"view": "wiki/a.md", "events": ["raw/e-fold3-noop.md"],
+                 "event_class": {"raw/e-fold3-noop.md": {
+                     "class": "t1", "origin": "explicit"}}},
+            ]}
+            fold_res3 = run(base, fold_plan3, FixtureAbsorbBackend())
+            try:
+                fold_vres3 = verify_run(base, fold_res3["seq"],
+                                        _TraversalVerifyBackend())
+                case("embedded-traversal evidence_file: run completes "
+                    "without error (fail-closed skip, not a raised "
+                    "failure)", fold_vres3["checked"] == 1)
+                fold_commit_files3 = crd.commit_files(base, fold_vres3["sha"])
+                case("embedded-traversal evidence_file: NOT harvested into "
+                    "the verify commit",
+                     not any("cv2-outside-traversal.md" in f
+                             for f in fold_commit_files3))
+            except Exception as e:  # pragma: no cover -- must never raise
+                case("embedded-traversal evidence_file: run completes "
+                    "without error (raised %r)" % (e,), False)
+        finally:
+            if os.path.isfile(outside_path):
+                os.remove(outside_path)
+
+        # evidence-copy folding over the ABSORPTION-VERIFY loop (2026-07-06
+        # cross-vendor finding): the folding fixtures above only ever drove
+        # the NO-OP UNION loop (a T1 no-op event trips FixtureAbsorbBackend's
+        # noop path, never absorbed[]). This leaves the absorption-verify
+        # loop's OWN call to _harvest_verdict_evidence_paths (verify_run's
+        # second loop, around the "absorb-seq%d-v%d.json" artifact writes)
+        # unproven -- a real absorb (view lands in the compile record's
+        # absorbed[], never verified) that the verify backend confirms while
+        # ALSO returning evidence_file + substrate.attestation.artifact.
+        # Independent view/event pair (never touches the av.md timeline
+        # exercised elsewhere) so this is a self-contained fixture.
+        os.makedirs(os.path.join(base, "wiki", "fold2"), exist_ok=True)
+        os.makedirs(os.path.join(base, "raw", "fold2"), exist_ok=True)
+        afold_view_text = (
+            "---\ntitle: AFold\n---\n"
+            "# --- derivation (engine-managed; strip region) ---\n"
+            "schema_version: 3.2\nview: topic\nsummary: \"AFold\"\n"
+            "entities: []\nstatus: active\ntier: T1\n"
+            "consumed_status: legacy-assumed\norigin_max: human\n"
+            "subscribes:\n  entities: []\n  corpus: []\nbundle: []\n"
+            "verified: null\n"
+            "# --- /derivation ---\n\n## Intro\noriginal body\n")
+        open(os.path.join(base, "wiki", "fold2", "afold.md"), "w",
+             newline="\n").write(afold_view_text)
+        open(os.path.join(base, "raw", "fold2", "eafold.md"), "w",
+             newline="\n").write("absorb fold fact\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "afold fixture"],
+                       capture_output=True)
+
+        class _AbsorbBackendFold(FixtureAbsorbBackend):
+            def absorb(self, view_rel, view_text, events):
+                new = view_text.rstrip("\n") + "\n\n## Absorbed\nfold fact\n"
+                return {"new_text": new,
+                        "manifest": [{"event": "raw/fold2/eafold.md",
+                                     "section": "Absorbed"}],
+                        "corpus_support": [], "noops": []}
+
+        afold_plan = {"items": [{"view": "wiki/fold2/afold.md",
+                                 "events": ["raw/fold2/eafold.md"],
+                                 "event_class": {"raw/fold2/eafold.md": {
+                                     "class": "t3", "origin": "explicit"}}}]}
+        afold_res = run(base, afold_plan, _AbsorbBackendFold())
+
+        class _EvidenceWritingAbsorbVerifyBackend:
+            """Mirrors BridgeVerifyBackend: a confirm verdict that carries
+            BOTH the substrate fields _stamp_verified_block needs (so the
+            absorption-verify loop actually confirms and stamps) AND its own
+            evidence_file / substrate.attestation.artifact paths (so the
+            harvest inside that SAME loop has something real to fold)."""
+            def __init__(self, repo_root):
+                self.repo_root = repo_root
+                self.n = 0
+
+            def verify(self, packet):
+                self.n += 1
+                evdir = os.path.join(self.repo_root, "receipts", "verify",
+                                     "staging")
+                os.makedirs(evdir, exist_ok=True)
+                ev_rel = "receipts/verify/staging/absorb-fold-%d.md" % self.n
+                with open(os.path.join(self.repo_root,
+                                       ev_rel.replace("/", os.sep)), "w",
+                          encoding="utf-8", newline="\n") as fh:
+                    fh.write(packet)
+                attdir = os.path.join(self.repo_root, "receipts", "verify",
+                                      "attest")
+                os.makedirs(attdir, exist_ok=True)
+                att_rel = ("receipts/verify/attest/absorb-fold-%d.attest.json"
+                          % self.n)
+                with open(os.path.join(self.repo_root,
+                                       att_rel.replace("/", os.sep)), "w",
+                          encoding="utf-8", newline="\n") as fh:
+                    json.dump({"channel": "subprocess-runtime"}, fh)
+                return {"verdict": "confirmed", "reason": "fixture-abs-fold",
+                        "uncertainty": "confident",
+                        "verifier": {"vendor": "openai", "model": "fixture"},
+                        "substrate": {
+                            "verifier_vendor": "openai",
+                            "verifier_model_id": "gpt-5.5",
+                            "absorb_vendor": "anthropic",
+                            "absorb_model_id": "claude-opus-4-8",
+                            "substrate_source": "invocation-metadata",
+                            "attestation": {"artifact": att_rel}},
+                        "evidence_file": ev_rel}
+
+        afold_backend = _EvidenceWritingAbsorbVerifyBackend(base)
+        afold_vres = verify_run(base, afold_res["seq"], afold_backend)
+        case("absorption-verify evidence-copy folding: the absorb view "
+            "actually confirmed (loop really fired, not skipped)",
+             afold_vres.get("absorption_checked") == 1
+             and afold_vres.get("absorption_confirmed") == 1)
+        afold_commit_files = crd.commit_files(base, afold_vres["sha"])
+        case("absorption-verify evidence-copy folding: verdict evidence_file "
+            "path tracked in the verify commit",
+             "receipts/verify/staging/absorb-fold-1.md" in afold_commit_files)
+        case("absorption-verify evidence-copy folding: "
+            "substrate.attestation.artifact path tracked in the verify "
+            "commit",
+             "receipts/verify/attest/absorb-fold-1.attest.json"
+             in afold_commit_files)
+
+        # ------------------------------------------------- per-EVENT union-verify
+        # Hub event E routes to multiple views (as a pending no-op AND/OR via
+        # absorption elsewhere). VERIFY must fire the backend ONCE per event,
+        # over the UNION of all routed views' CURRENT bodies, not once per
+        # (event,view) candidate.
+        os.makedirs(os.path.join(base, "wiki", "hub"), exist_ok=True)
+        os.makedirs(os.path.join(base, "raw", "hub"), exist_ok=True)
+        open(os.path.join(base, "wiki", "hub", "va.md"), "w",
+             newline="\n").write("# VA\nalready represented in A\n")
+        open(os.path.join(base, "wiki", "hub", "vb.md"), "w",
+             newline="\n").write("# VB\nalready represented in B\n")
+        open(os.path.join(base, "wiki", "hub", "vc.md"), "w",
+             newline="\n").write("# VC\npost-absorb content for C\n")
+        open(os.path.join(base, "raw", "hub", "eh.md"), "w",
+             newline="\n").write("hub event body\n")
+        open(os.path.join(base, "raw", "hub", "eh2.md"), "w",
+             newline="\n").write("second hub event body\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "hub fixture"],
+                       capture_output=True)
+
+        class _CallCountingBackend:
+            def __init__(self, confirm=True):
+                self.calls = []
+                self.confirm = confirm
+
+            def verify(self, packet):
+                self.calls.append(packet)
+                return {"verdict": "confirmed" if self.confirm else "rejected",
+                        "reason": "fixture-union", "uncertainty": "confident",
+                        "verifier": {"vendor": "openai", "model": "fixture"}}
+
+        def _hub_rec(seq, confirm_backend):
+            rec = core.minimal_record(
+                "compile", _git(base, "rev-parse", "HEAD").strip())
+            rec["noop_candidates"] = [
+                {"view": "wiki/hub/va.md", "event": "raw/hub/eh.md",
+                 "verified": False, "disposition": "PENDING_NOOP_CANDIDATE",
+                 "event_class": "t1", "event_class_origin": "explicit",
+                 "artifact": "", "packet_sha256": "",
+                 "justification": {"event_sha256": "", "view_sha256": "",
+                                   "note": "hub a"}},
+                {"view": "wiki/hub/vb.md", "event": "raw/hub/eh.md",
+                 "verified": False, "disposition": "PENDING_NOOP_CANDIDATE",
+                 "event_class": "t1", "event_class_origin": "explicit",
+                 "artifact": "", "packet_sha256": "",
+                 "justification": {"event_sha256": "", "view_sha256": "",
+                                   "note": "hub b"}},
+                {"view": "wiki/hub/va.md", "event": "raw/hub/eh2.md",
+                 "verified": False, "disposition": "PENDING_NOOP_CANDIDATE",
+                 "event_class": "t1", "event_class_origin": "explicit",
+                 "artifact": "", "packet_sha256": "",
+                 "justification": {"event_sha256": "", "view_sha256": "",
+                                   "note": "eh2 only"}},
+            ]
+            # partial-absorb: event eh also absorbed into vc.md (post-absorb
+            # state), so eh's routed views are {va, vb, vc} even though vc
+            # never appears as a noop_candidate. corpus_support carries one
+            # RESOLVABLE pin (current body of raw/hub/eh.md) and one
+            # UNRESOLVABLE pin (bogus sha256), to exercise F16's excerpt
+            # embedding + fail-honest UNRESOLVED declaration.
+            rec["absorbed"] = [{"view": "wiki/hub/vc.md",
+                               "events": ["raw/hub/eh.md"],
+                               "pre_blob": "", "post_blob": "x",
+                               "manifest": [],
+                               "corpus_support": [
+                                   {"artifact": "raw/hub/eh.md",
+                                    "artifact_sha256": _sha256(
+                                        "hub event body\n"),
+                                    "support_lines": ["hub event body"]},
+                                   {"artifact": "raw/hub/eh.md",
+                                    "artifact_sha256": "0" * 64,
+                                    "support_lines": ["phantom line"]},
+                               ]}]
+            rec["run_window"] = {"start": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                 "end": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            return core.append_record(base, rec)
+
+        # (a)/(a2): hub event pending against 2 noop views + 1 absorbed view
+        # -> ONE backend call, packet contains all THREE view bodies. The
+        # SAME record's absorbed[] also names wiki/hub/vc.md, never before
+        # verified -- absorption-verify (2026-07-05 amendment) additively
+        # fires ONE MORE call for that view's own packet on the SAME
+        # verify_backend, same run, after the no-op union packets. So the
+        # backend sees 2 no-op calls (one per distinct event) PLUS 1
+        # absorption call (one per triggered view) = 3 total.
+        confirm_backend = _CallCountingBackend(confirm=True)
+        hub_seq, _hp = _hub_rec("compile-hub-1", confirm_backend)
+        hres = verify_run(base, hub_seq, confirm_backend)
+        noop_calls = [p for p in confirm_backend.calls
+                     if p.startswith("# NOOP VERIFY PACKET")]
+        absorb_calls = [p for p in confirm_backend.calls
+                       if p.startswith("# ABSORPTION VERIFY PACKET")]
+        case("hub union-verify: ONE backend call total for 2 distinct events "
+             "(1 call/event)", len(noop_calls) == 2)
+        case("absorption-verify: ONE additive backend call for the record's "
+             "single triggered view (wiki/hub/vc.md, never verified)",
+             len(absorb_calls) == 1)
+        case("absorption-verify: additive calls land AFTER the no-op union "
+             "calls in the SAME backend/run (assembly ordering)",
+             confirm_backend.calls.index(absorb_calls[0])
+             > max(confirm_backend.calls.index(c) for c in noop_calls))
+        eh_calls = [p for p in confirm_backend.calls
+                   if "CLAIM: event raw/hub/eh.md " in p]
+        case("hub union-verify: exactly one call for hub event eh.md",
+             len(eh_calls) == 1)
+        packet = eh_calls[0]
+        case("hub union-verify: packet contains va.md body",
+             "already represented in A" in packet)
+        case("hub union-verify: packet contains vb.md body",
+             "already represented in B" in packet)
+        case("hub union-verify: packet contains vc.md POST-absorb body "
+             "(partial-absorb routed view)",
+             "post-absorb content for C" in packet)
+        case("hub union-verify: union CLAIM line names all routed views, "
+             "sorted, comma-joined",
+             re.search(r"^CLAIM: event raw/hub/eh\.md carries zero "
+                       r"load-bearing claims absent from the union of its "
+                       r"routed views: wiki/hub/va\.md, wiki/hub/vb\.md, "
+                       r"wiki/hub/vc\.md\.$", packet, re.M) is not None)
+        case("hub union-verify: exactly one line starts with 'CLAIM: '",
+             sum(1 for ln in packet.splitlines()
+                 if ln.startswith("CLAIM: ")) == 1)
+        hvrec = json.load(open(os.path.join(core.journal_dir(base),
+                                            "%d.json" % hres["seq"]),
+                               encoding="utf-8"))
+        eh_ncs = [nc for nc in hvrec["noop_candidates"]
+                 if nc["event"] == "raw/hub/eh.md"]
+        case("hub union-verify: confirm flips BOTH of eh.md's candidates",
+             len(eh_ncs) == 2 and all(nc["verified"] for nc in eh_ncs))
+        case("hub union-verify: both flipped candidates share the SAME "
+             "artifact path", len({nc["artifact"] for nc in eh_ncs}) == 1)
+        case("hub union-verify: both flipped candidates share the SAME "
+             "packet_sha256", len({nc["packet_sha256"] for nc in eh_ncs}) == 1)
+        case("hub union-verify: union pins recorded (union_views + "
+             "union_view_sha256)",
+             all(nc["justification"].get("union_views") ==
+                 ["wiki/hub/va.md", "wiki/hub/vb.md", "wiki/hub/vc.md"]
+                 for nc in eh_ncs)
+             and all(set(nc["justification"].get("union_view_sha256", {}))
+                    == {"wiki/hub/va.md", "wiki/hub/vb.md", "wiki/hub/vc.md"}
+                    for nc in eh_ncs))
+
+        # F16: mechanically-resolved corpus excerpts, additive section AFTER
+        # the mandated FULL EVENT BODY / FULL VIEW BODY sections.
+        case("F16: CORPUS EXCERPTS section present in the union packet",
+             "## CORPUS EXCERPTS (F16 mechanically-resolved" in packet)
+        case("F16: section lands AFTER the last FULL VIEW BODY section "
+             "(additive, never before mandated content)",
+             packet.index("## CORPUS EXCERPTS")
+             > packet.rindex("## FULL VIEW BODY:"))
+        case("F16: resolvable pin embeds a verbatim excerpt containing the "
+             "support line", "hub event body" in packet.split(
+                 "## CORPUS EXCERPTS", 1)[1])
+        case("F16: resolvable pin's resolution=current recorded in packet",
+             "resolution=current" in packet)
+        case("F16: unresolvable pin declared UNRESOLVED, not silently "
+             "dropped (fail-honest)",
+             "UNRESOLVED artifact=raw/hub/eh.md artifact_sha256="
+             + "0" * 64 in packet
+             and "phantom line" in packet)
+        case("F16: exactly one CLAIM line even with excerpt section appended "
+             "(invariant preserved)",
+             sum(1 for ln in packet.splitlines()
+                 if ln.startswith("CLAIM: ")) == 1)
+
+        # F15: routing-census input/output hashes journaled on the verify
+        # record as a whole (standalone script, never self-graded here).
+        case("F15: census_input_hash/census_output_hash returned from "
+             "verify_run", hres.get("census_input_hash")
+             and hres.get("census_output_hash"))
+        case("F15: census hashes journaled on the verify record itself",
+             hvrec.get("census_input_hash") == hres["census_input_hash"]
+             and hvrec.get("census_output_hash") == hres["census_output_hash"])
+        _im_check, ims_check, _out_check, os_check = rcensus.compute_census(
+            base, ["raw/hub/eh.md", "raw/hub/eh2.md"])
+        case("F15: journaled census hashes match an independent recompute "
+             "over the same ledger slice (byte-identical, standalone "
+             "script)", ims_check == hres["census_input_hash"]
+             and os_check == hres["census_output_hash"])
+        eh2_ncs = [nc for nc in hvrec["noop_candidates"]
+                  if nc["event"] == "raw/hub/eh2.md"]
+        case("hub union-verify: two distinct events -> two packets; "
+             "confirming does not touch eh2.md's own candidate identity",
+             len(eh2_ncs) == 1)
+        case("hub union-verify: events_checked/events_confirmed keys present "
+             "(additive)", hres.get("events_checked") == 2
+             and hres.get("events_confirmed") == 2)
+        case("hub union-verify: checked/confirmed stay CANDIDATE counts "
+             "(receipt-schema compat)", hres["checked"] == 3
+             and hres["confirmed"] == 3)
+
+        # save rendered packet text for the report
+        _RENDERED["union_packet"] = packet
+
+        # (b) non-confirm -> both stay PENDING, attempt recorded
+        reject_backend = _CallCountingBackend(confirm=False)
+        hub_seq2, _hp2 = _hub_rec("compile-hub-2", reject_backend)
+        hres2 = verify_run(base, hub_seq2, reject_backend)
+        hvrec2 = json.load(open(os.path.join(core.journal_dir(base),
+                                             "%d.json" % hres2["seq"]),
+                                encoding="utf-8"))
+        eh_ncs2 = [nc for nc in hvrec2["noop_candidates"]
+                  if nc["event"] == "raw/hub/eh.md"]
+        case("hub union-verify: non-confirm -> both candidates stay PENDING",
+             len(eh_ncs2) == 2
+             and all(not nc["verified"] for nc in eh_ncs2)
+             and all(nc["disposition"] == "PENDING_NOOP_CANDIDATE"
+                    for nc in eh_ncs2))
+        case("hub union-verify: non-confirm attempt still records "
+             "artifact+packet_sha256 (attempt recorded)",
+             all(nc["artifact"] and nc["packet_sha256"] for nc in eh_ncs2))
+        case("hub union-verify: non-confirm events_confirmed == 0",
+             hres2.get("events_confirmed") == 0
+             and hres2.get("events_checked") == 2)
+
+        # (c) mixed-verdict -> per-event outcome: eh.md confirmed (both its
+        # candidates flip), eh2.md rejected (its candidate stays PENDING)
+        class _MixedVerdictBackend:
+            def __init__(self):
+                self.calls = []
+
+            def verify(self, packet):
+                self.calls.append(packet)
+                if "CLAIM: event raw/hub/eh.md " in packet:
+                    return {"verdict": "confirmed", "reason": "fixture-mixed",
+                            "uncertainty": "confident",
+                            "verifier": {"vendor": "openai",
+                                        "model": "fixture"}}
+                return {"verdict": "rejected", "reason": "fixture-mixed",
+                        "uncertainty": "confident",
+                        "verifier": {"vendor": "openai", "model": "fixture"}}
+
+        mixed_backend = _MixedVerdictBackend()
+        hub_seq3, _hp3 = _hub_rec("compile-hub-3", mixed_backend)
+        hres3 = verify_run(base, hub_seq3, mixed_backend)
+        hvrec3 = json.load(open(os.path.join(core.journal_dir(base),
+                                             "%d.json" % hres3["seq"]),
+                                encoding="utf-8"))
+        eh_ncs3 = [nc for nc in hvrec3["noop_candidates"]
+                  if nc["event"] == "raw/hub/eh.md"]
+        eh2_ncs3 = [nc for nc in hvrec3["noop_candidates"]
+                   if nc["event"] == "raw/hub/eh2.md"]
+        case("mixed-verdict: both eh.md candidates verified/CONSUMED",
+             len(eh_ncs3) == 2
+             and all(nc["verified"] for nc in eh_ncs3)
+             and all(nc["disposition"] == "CONSUMED" for nc in eh_ncs3))
+        case("mixed-verdict: eh2.md candidate stays PENDING_NOOP_CANDIDATE, "
+             "unverified", len(eh2_ncs3) == 1
+             and not eh2_ncs3[0]["verified"]
+             and eh2_ncs3[0]["disposition"] == "PENDING_NOOP_CANDIDATE")
+        case("mixed-verdict: eh2.md rejection still records artifact+"
+             "packet_sha256 (attempt recorded)",
+             eh2_ncs3[0]["artifact"] and eh2_ncs3[0]["packet_sha256"])
+        case("mixed-verdict: events_checked==2, events_confirmed==1",
+             hres3.get("events_checked") == 2
+             and hres3.get("events_confirmed") == 1)
+        case("mixed-verdict: checked/confirmed CANDIDATE counts (3 total, "
+             "2 confirmed)",
+             hres3["checked"] == 3 and hres3["confirmed"] == 2)
+
+        # ============================================= absorption-verify
+        # (spec sec.7 full VERIFY; amendment 2026-07-05): one packet per
+        # triggered T1 view, additive after the no-op union packets above.
+        os.makedirs(os.path.join(base, "wiki", "abs"), exist_ok=True)
+        os.makedirs(os.path.join(base, "raw", "abs"), exist_ok=True)
+        av_view_text = (
+            "---\ntitle: AV\n---\n"
+            "# --- derivation (engine-managed; strip region) ---\n"
+            "schema_version: 3.2\nview: topic\nsummary: \"AV\"\n"
+            "entities: []\nstatus: active\ntier: T1\n"
+            "consumed_status: legacy-assumed\norigin_max: human\n"
+            "subscribes:\n  entities: []\n  corpus: []\nbundle: []\n"
+            "verified: null\n"
+            "# --- /derivation ---\n\n## Intro\noriginal body\n")
+        open(os.path.join(base, "wiki", "abs", "av.md"), "w",
+             newline="\n").write(av_view_text)
+        open(os.path.join(base, "raw", "abs", "ea1.md"), "w",
+             newline="\n").write("absorb fact one\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "av fixture"],
+                       capture_output=True)
+
+        class AbsorbBackendAV(FixtureAbsorbBackend):
+            def absorb(self, view_rel, view_text, events):
+                new = view_text.rstrip("\n") + "\n\n## Absorbed\nfact one\n"
+                return {"new_text": new,
+                        "manifest": [{"event": "raw/abs/ea1.md",
+                                     "section": "Absorbed"}],
+                        "corpus_support": [
+                            {"artifact": "raw/abs/ea1.md",
+                             "artifact_sha256": _sha256(
+                                 "absorb fact one\n"),
+                             "support_lines": ["absorb fact one"]},
+                        ], "noops": []}
+
+        av_plan = {"items": [{"view": "wiki/abs/av.md",
+                              "events": ["raw/abs/ea1.md"],
+                              "event_class": {"raw/abs/ea1.md": {
+                                  "class": "t3", "origin": "explicit"}}}]}
+        av_res = run(base, av_plan, AbsorbBackendAV())
+
+        class _GoodAttestBackend:
+            def __init__(self, confirm=True):
+                self.calls = []
+                self.confirm = confirm
+
+            def verify(self, packet):
+                self.calls.append(packet)
+                return {"verdict": "confirmed" if self.confirm else "rejected",
+                        "reason": "fixture-absorb", "uncertainty": "confident",
+                        "verifier": {"vendor": "openai", "model": "gpt-5.5"},
+                        "substrate": {
+                            "verifier_vendor": "openai",
+                            "verifier_model_id": "gpt-5.5",
+                            "absorb_vendor": "anthropic",
+                            "absorb_model_id": "claude-opus-4-8",
+                            "substrate_source": "invocation-metadata"}}
+
+        av_backend1 = _GoodAttestBackend(confirm=True)
+        av_vres1 = verify_run(base, av_res["seq"], av_backend1)
+        case("absorption-verify: additive keys present on the return shape",
+             av_vres1.get("absorption_checked") == 1
+             and av_vres1.get("absorption_confirmed") == 1)
+        av_packet1 = av_backend1.calls[0]
+        case("absorption-verify: header format seq<N>-v<M>",
+             av_packet1.startswith(
+                 "# ABSORPTION VERIFY PACKET seq%d-v0" % av_res["seq"]))
+        case("absorption-verify: exactly one CLAIM line",
+             sum(1 for ln in av_packet1.splitlines()
+                 if ln.startswith("CLAIM: ")) == 1)
+        case("absorption-verify: CLAIM text matches the amendment verbatim "
+             "shape (view/events named)",
+             re.search(r"^CLAIM: view wiki/abs/av\.md at post-absorb state "
+                       r"faithfully absorbs events raw/abs/ea1\.md: every "
+                       r"manifest claim is supported by the absorbed "
+                       r"events; every load-bearing claim in the events is "
+                       r"represented or implied in the view \(compression "
+                       r"and paraphrase are permitted -- the "
+                       r"represent-or-imply bar of the F13 precision "
+                       r"amendment, NOT verbatim reproduction\); and the "
+                       r"cumulative diff shown contains no change "
+                       r"unaccounted for by these events\.$",
+                       av_packet1, re.M) is not None)
+        _STRUCTURAL_HEADERS = ("## CUMULATIVE DIFF SINCE LAST VERIFIED",
+                              "## FULL VIEW BODY (POST-ABSORB)",
+                              "## ABSORBED EVENT:", "## MANIFEST CLAIMS",
+                              "## CORPUS EXCERPTS",
+                              "## ROUTING CENSUS (F15)")
+        sec_order = [ln for ln in av_packet1.splitlines()
+                    if any(ln.startswith(h) for h in _STRUCTURAL_HEADERS)]
+        case("absorption-verify: sections 1-4 in order (diff, full body, "
+             "absorbed event, manifest claims)",
+             sec_order[:4] == ["## CUMULATIVE DIFF SINCE LAST VERIFIED",
+                               "## FULL VIEW BODY (POST-ABSORB)",
+                               "## ABSORBED EVENT: raw/abs/ea1.md",
+                               "## MANIFEST CLAIMS"])
+        case("absorption-verify: routing census section present (F15)",
+             "## ROUTING CENSUS (F15)" in av_packet1)
+        case("absorption-verify: FULL section order 1-6 per the amendment "
+             "-- CORPUS EXCERPTS (F16, sec.5) strictly BEFORE ROUTING "
+             "CENSUS (F15, sec.6), all six headers present at strictly "
+             "increasing positions",
+             [av_packet1.index(h) for h in
+              ("## CUMULATIVE DIFF SINCE LAST VERIFIED",
+               "## FULL VIEW BODY (POST-ABSORB)",
+               "## ABSORBED EVENT:", "## MANIFEST CLAIMS",
+               "## CORPUS EXCERPTS (F16 mechanically-resolved",
+               "## ROUTING CENSUS (F15)")]
+             == sorted(av_packet1.index(h) for h in
+                       ("## CUMULATIVE DIFF SINCE LAST VERIFIED",
+                        "## FULL VIEW BODY (POST-ABSORB)",
+                        "## ABSORBED EVENT:", "## MANIFEST CLAIMS",
+                        "## CORPUS EXCERPTS (F16 mechanically-resolved",
+                        "## ROUTING CENSUS (F15)")))
+        case("absorption-verify: never-verified diff base is the "
+             "pre-first-absorb body (original body visible in the diff "
+             "section, not just the post-absorb body)",
+             "original body" in av_packet1.split(
+                 "## CUMULATIVE DIFF SINCE LAST VERIFIED", 1)[1].split(
+                 "## FULL VIEW BODY", 1)[0])
+        case("absorption-verify: full post-absorb body section carries the "
+             "new content", "fact one" in av_packet1.split(
+                 "## FULL VIEW BODY (POST-ABSORB)", 1)[1])
+        case("absorption-verify: absorbed event section carries the full "
+             "event body", "absorb fact one" in av_packet1)
+        case("absorption-verify: manifest claims section carries the "
+             "verbatim manifest row",
+             "Absorbed" in av_packet1.split("## MANIFEST CLAIMS", 1)[1])
+        case("absorption-verify HAS-EXCERPTS: section 5 header present and "
+             "carries the resolved corpus_support excerpt (2026-07-06 "
+             "categorical-sections amendment)",
+             "## CORPUS EXCERPTS (F16 mechanically-resolved" in av_packet1
+             and "absorb fact one" in av_packet1.split(
+                 "## CORPUS EXCERPTS (F16 mechanically-resolved", 1)[1].split(
+                 "## ROUTING CENSUS", 1)[0])
+
+        # CONFIRM stamping: derivation verified: block populated from the
+        # verdict's OWN substrate (F17 attestation-derived), never an
+        # orchestrator string; journal gains absorption_verified[].
+        av_view_path = os.path.join(base, "wiki", "abs", "av.md")
+        av_body_after = open(av_view_path, encoding="utf-8").read()
+        av_deriv = asm.parse_derivation(av_body_after)
+        case("absorption-verify CONFIRM: verified: stamped status=passed "
+             "via parse_derivation (assemble.py's own reader)",
+             av_deriv["has_block"] and av_deriv["consumed_status"]
+             == "legacy-assumed")
+        case("absorption-verify CONFIRM: verified_at present",
+             re.search(r"(?m)^\s*at: \S", av_body_after) is not None)
+        case("absorption-verify CONFIRM: verifier/absorb vendor+model_id "
+             "match the verdict's substrate block EXACTLY (never an "
+             "orchestrator-supplied string)",
+             "verifier_vendor: openai" in av_body_after
+             and "verifier_model_id: gpt-5.5" in av_body_after
+             and "absorb_vendor: anthropic" in av_body_after
+             and "absorb_model_id: claude-opus-4-8" in av_body_after)
+        case("absorption-verify CONFIRM: packet_hash + artifact stamped",
+             ("packet_hash: %s" % _sha256(av_packet1)) in av_body_after
+             and "artifact: receipts/verify/absorb-seq%d-v0.json"
+             % av_res["seq"] in av_body_after)
+        case("absorption-verify CONFIRM: non-derivation body content "
+             "untouched by the stamp",
+             "## Absorbed" in av_body_after and "fact one" in av_body_after)
+        av_vrec1 = json.load(open(os.path.join(core.journal_dir(base),
+                                               "%d.json" % av_vres1["seq"]),
+                                  encoding="utf-8"))
+        case("absorption-verify CONFIRM: journal record carries "
+             "absorption_verified[] with the documented fields",
+             len(av_vrec1.get("absorption_verified", [])) == 1
+             and av_vrec1["absorption_verified"][0]["view"]
+                 == "wiki/abs/av.md"
+             and av_vrec1["absorption_verified"][0]["events"]
+                 == ["raw/abs/ea1.md"]
+             and av_vrec1["absorption_verified"][0]["packet_sha256"]
+                 == _sha256(av_packet1)
+             and av_vrec1["absorption_verified"][0]["view_sha256"]
+                 == _sha256(av_body_after))
+        av_probs, _ = crd.check_acc4(base, av_vres1["sha"])
+        case("absorption-verify CONFIRM: produced verify commit passes "
+             "check-run-diff (derivation-only stamp exemption)",
+             av_probs == [])
+
+        # already-verified-no-new-absorb: re-running verify_run over the
+        # SAME compile seq again must NOT re-trigger (idempotent -- the
+        # view's last-verified seq now == this compile seq, not less than).
+        av_vres_again = verify_run(base, av_res["seq"], _GoodAttestBackend())
+        case("absorption-verify: already-verified-no-new-absorb -> no "
+             "re-trigger on a second verify_run over the same compile seq",
+             av_vres_again.get("absorption_checked") == 0
+             and av_vres_again.get("absorption_confirmed") == 0)
+
+        # non-confirm -> nothing flips, nothing stamped, attempt recorded
+        av_res2 = run(base, av_plan, AbsorbBackendAV())
+        av_backend_reject = _GoodAttestBackend(confirm=False)
+        av_vres2 = verify_run(base, av_res2["seq"], av_backend_reject)
+        case("absorption-verify non-confirm: absorption_confirmed == 0, "
+             "absorption_checked == 1",
+             av_vres2.get("absorption_checked") == 1
+             and av_vres2.get("absorption_confirmed") == 0)
+        av_vrec2 = json.load(open(os.path.join(core.journal_dir(base),
+                                               "%d.json" % av_vres2["seq"]),
+                                  encoding="utf-8"))
+        case("absorption-verify non-confirm: NO absorption_verified[] entry "
+             "(nothing flips, nothing stamped)",
+             not av_vrec2.get("absorption_verified"))
+        case("absorption-verify non-confirm: attempt recorded in "
+             "absorption_verify_attempts[] with artifact + packet_sha256 + "
+             "reason",
+             len(av_vrec2.get("absorption_verify_attempts", [])) == 1
+             and av_vrec2["absorption_verify_attempts"][0]["artifact"]
+             and av_vrec2["absorption_verify_attempts"][0]["packet_sha256"]
+             and av_vrec2["absorption_verify_attempts"][0]["reason"])
+        av_body_unchanged = open(av_view_path, encoding="utf-8").read()
+        case("absorption-verify non-confirm: view body's verified: block "
+             "STILL reflects the earlier CONFIRM (non-confirm never "
+             "touches the stamp)",
+             "verifier_model_id: gpt-5.5" in av_body_unchanged)
+
+        # cumulative-diff-from-pinned-blob correctness: a THIRD absorption
+        # onto the same view, now confirmed again -- the cumulative diff
+        # must be computed from the LAST-VERIFIED body (av_body_after, the
+        # seq-1 stamped state), not from the pre-first-absorb original body
+        # and not from an empty diff.
+        class AbsorbBackendAV2(FixtureAbsorbBackend):
+            def absorb(self, view_rel, view_text, events):
+                new = view_text.rstrip("\n") + "\n\n## Absorbed2\nfact two\n"
+                return {"new_text": new,
+                        "manifest": [{"event": "raw/abs/ea2.md",
+                                     "section": "Absorbed2"}],
+                        "corpus_support": [], "noops": []}
+
+        open(os.path.join(base, "raw", "abs", "ea2.md"), "w",
+             newline="\n").write("absorb fact two\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "ea2 fixture"],
+                       capture_output=True)
+        av_plan2 = {"items": [{"view": "wiki/abs/av.md",
+                               "events": ["raw/abs/ea2.md"],
+                               "event_class": {"raw/abs/ea2.md": {
+                                   "class": "t3", "origin": "explicit"}}}]}
+        # NOTE: av_res2's absorption never confirmed (non-confirm case
+        # above), so its last-verified state is STILL av_vres1/seq
+        # av_res["seq"] -- this third absorption is triggered again from
+        # that same pinned baseline, not from av_res2's unconfirmed body.
+        av_res3 = run(base, av_plan2, AbsorbBackendAV2())
+        av_backend3 = _GoodAttestBackend(confirm=True)
+        av_vres3 = verify_run(base, av_res3["seq"], av_backend3)
+        av_packet3 = av_backend3.calls[0]
+        diff_section3 = av_packet3.split(
+            "## CUMULATIVE DIFF SINCE LAST VERIFIED", 1)[1].split(
+            "## FULL VIEW BODY", 1)[0]
+        # NOTE ON FIXTURE TIMELINE (2026-07-06 recovery-fix amendment):
+        # av_res2's absorption (the one whose VERIFY was rejected above)
+        # still WROTE a real second "## Absorbed\nfact one" block to the
+        # view -- absorb and verify are separate gates; a rejected verify
+        # never un-writes already-absorbed content, it only withholds the
+        # stamp (see run()'s unconditional content write vs verify_run's
+        # conditional stamp). So the TRUE diff from the av_vres1-pinned
+        # baseline to the current (post-av_res3) body legitimately contains
+        # BOTH that duplicate "## Absorbed\nfact one" block (real content
+        # change since the pin, from av_res2) AND the new "## Absorbed2\n
+        # fact two" block (from av_res3) -- asserted here as the EXACT
+        # expected hunk body, not a substring/presence check (the r2
+        # cross-vendor conformance catch: a substring check can't tell a
+        # correctly-recovered diff from a UNAVAILABLE-fallback's raw body
+        # dump, since both happen to contain the word "fact one" somewhere).
+        expected_hunk_lines = [
+            " ", " ## Absorbed", " fact one", "+", "+## Absorbed",
+            "+fact one", "+", "+## Absorbed2", "+fact two"]
+        diff_body_lines = [ln for ln in diff_section3.splitlines()
+                           if ln and ln[0] in " +-" and not
+                           ln.startswith(("---", "+++"))]
+        case("cumulative-diff-from-pinned-blob: diff is a REAL git-recovered "
+             "diff (has a hunk header @@, not the UNAVAILABLE fallback's "
+             "raw current-body dump)",
+             "@@" in diff_section3
+             and "CUMULATIVE DIFF UNAVAILABLE" not in diff_section3)
+        case("cumulative-diff-from-pinned-blob: diff hunk body is EXACTLY "
+             "the expected lines (both the real av_res2 content-change "
+             "since the pin AND the new av_res3 content), not merely a "
+             "substring match that a broken recovery could accidentally "
+             "satisfy via the raw-body fallback",
+             diff_body_lines[-len(expected_hunk_lines):]
+             == expected_hunk_lines)
+        case("cumulative-diff-from-pinned-blob: confirmed again, new "
+             "view_sha256 pin advances past the first stamp",
+             av_vres3.get("absorption_confirmed") == 1)
+
+        # NO-EXCERPTS fixture (2026-07-06 categorical-sections amendment,
+        # r4 conformance catch): av_res3/av_packet3 absorbed raw/abs/ea2.md
+        # via AbsorbBackendAV2, whose corpus_support is [] -- this event
+        # carries no resolvable corpus_support entries at all. The amendment
+        # mandates sections 1-6 categorically on EVERY absorption-verify
+        # packet, so section 5's header must still be present here, with the
+        # explicit none-line as its body -- never a silently-omitted
+        # section. Scope: ABSORPTION packets only; the no-op union packet's
+        # own F16 section (a different contract, LLM-6 integration) keeps
+        # its additive/omit-when-empty behavior and is untouched.
+        case("absorption-verify NO-EXCERPTS: section 5 header present even "
+             "though this view's absorbed events carry no corpus_support "
+             "entries (categorical sections, never silently omitted)",
+             "## CORPUS EXCERPTS (F16 mechanically-resolved" in av_packet3)
+        case("absorption-verify NO-EXCERPTS: body is the single explicit "
+             "none-line, not an empty/missing section",
+             av_packet3.split(
+                 "## CORPUS EXCERPTS (F16 mechanically-resolved", 1)[1]
+             .split("## ROUTING CENSUS", 1)[0].strip().splitlines()[-1]
+             == "(no corpus_support entries for these events)")
+        case("absorption-verify NO-EXCERPTS: FULL section order 1-6 still "
+             "strictly increasing with section 5 present-but-empty (the "
+             "same categorical order the has-excerpts case holds)",
+             [av_packet3.index(h) for h in
+              ("## CUMULATIVE DIFF SINCE LAST VERIFIED",
+               "## FULL VIEW BODY (POST-ABSORB)",
+               "## ABSORBED EVENT:", "## MANIFEST CLAIMS",
+               "## CORPUS EXCERPTS (F16 mechanically-resolved",
+               "## ROUTING CENSUS (F15)")]
+             == sorted(av_packet3.index(h) for h in
+                       ("## CUMULATIVE DIFF SINCE LAST VERIFIED",
+                        "## FULL VIEW BODY (POST-ABSORB)",
+                        "## ABSORBED EVENT:", "## MANIFEST CLAIMS",
+                        "## CORPUS EXCERPTS (F16 mechanically-resolved",
+                        "## ROUTING CENSUS (F15)")))
+
+        # verify_commit annotation + git-show recovery, checked directly
+        # (2026-07-06 recovery-fix amendment): av_vrec1's stamp names a
+        # real, reachable commit whose OWN content at that path hashes to
+        # exactly the journaled view_sha256 pin -- the actual mechanism
+        # _recover_verified_body uses, exercised here at the unit level
+        # rather than only inferred from packet text.
+        av_vrec1_commit = av_vrec1["absorption_verified"][0].get(
+            "verify_commit")
+        case("verify_commit annotation: present on the journaled stamp, a "
+             "real non-empty commit sha",
+             isinstance(av_vrec1_commit, str) and len(av_vrec1_commit) == 40)
+        recovered, why = _recover_verified_body(
+            base, "wiki/abs/av.md", av_vrec1_commit,
+            av_vrec1["absorption_verified"][0]["view_sha256"])
+        case("verify_commit annotation: git-show against the stored commit "
+             "recovers a body whose sha256 matches the journaled pin "
+             "exactly (the real recovery mechanism, not packet-file "
+             "parsing)",
+             why is None and recovered is not None
+             and _sha256(recovered)
+             == av_vrec1["absorption_verified"][0]["view_sha256"])
+
+        # NEGATIVE fixture (r2-mandated): corrupt the stored pin so the
+        # recovered content's sha256 can never match -- recovery must fail
+        # HONEST (explicit reason), never silently accept a mismatched body.
+        bad_recovered, bad_why = _recover_verified_body(
+            base, "wiki/abs/av.md", av_vrec1_commit, "0" * 64)
+        case("NEGATIVE: corrupted stored pin (sha256 mismatch) -> recovery "
+             "refuses, names the mismatch explicitly, never returns a body",
+             bad_recovered is None and "does not match" in bad_why)
+
+        # NEGATIVE fixture: verify_commit pointing at a commit that does not
+        # carry the view at all (simulates a missing/unreachable commit ref)
+        # -> recovery refuses, names the git failure, never crashes/guesses.
+        missing_commit = "0" * 40
+        miss_recovered, miss_why = _recover_verified_body(
+            base, "wiki/abs/av.md", missing_commit,
+            av_vrec1["absorption_verified"][0]["view_sha256"])
+        case("NEGATIVE: verify_commit names an unreachable/missing commit -> "
+             "recovery refuses, names the git failure honestly",
+             miss_recovered is None and "git show" in miss_why)
+
+        # NEGATIVE fixture, full packet-level (r2-mandated): drop the
+        # verify_commit field entirely (simulating a pre-amendment journal
+        # record) and confirm the packet's diff section carries the EXACT
+        # UNAVAILABLE marker text, never a silent empty/wrong diff. This
+        # must corrupt av_vres3's record specifically -- that is the
+        # CURRENT last-verified stamp for wiki/abs/av.md at this point in
+        # the fixture timeline ("last stamp by seq wins": av_vres3 confirmed
+        # and so its stamp supersedes av_vrec1's for trigger/diff purposes),
+        # not av_vrec1's now-superseded one.
+        av_vrec3_path = os.path.join(core.journal_dir(base),
+                                     "%d.json" % av_vres3["seq"])
+        av_vrec3_ondisk = json.load(open(av_vrec3_path, encoding="utf-8"))
+        av_vrec3_ondisk["absorption_verified"][0].pop("verify_commit")
+        with open(av_vrec3_path, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(av_vrec3_ondisk, fh, indent=1, sort_keys=True)
+
+        open(os.path.join(base, "raw", "abs", "ea3.md"), "w",
+             newline="\n").write("absorb fact three\n")
+        subprocess.run(["git", "-C", base, "add", "-A"],
+                       capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "ea3 fixture"],
+                       capture_output=True)
+        av_plan4 = {"items": [{"view": "wiki/abs/av.md",
+                               "events": ["raw/abs/ea3.md"],
+                               "event_class": {"raw/abs/ea3.md": {
+                                   "class": "t3", "origin": "explicit"}}}]}
+
+        class AbsorbBackendAV3(FixtureAbsorbBackend):
+            def absorb(self, view_rel, view_text, events):
+                new = view_text.rstrip("\n") + "\n\n## Absorbed3\nfact three\n"
+                return {"new_text": new,
+                        "manifest": [{"event": "raw/abs/ea3.md",
+                                     "section": "Absorbed3"}],
+                        "corpus_support": [], "noops": []}
+
+        av_res4 = run(base, av_plan4, AbsorbBackendAV3())
+        av_backend4 = _GoodAttestBackend(confirm=True)
+        av_vres4 = verify_run(base, av_res4["seq"], av_backend4)
+        av_packet4 = av_backend4.calls[0]
+        diff_section4 = av_packet4.split(
+            "## CUMULATIVE DIFF SINCE LAST VERIFIED", 1)[1].split(
+            "## FULL VIEW BODY", 1)[0]
+        case("NEGATIVE (packet-level): missing verify_commit on the prior "
+             "stamp -> packet's diff section carries the EXACT "
+             "'CUMULATIVE DIFF UNAVAILABLE' marker, loudly, never a silent "
+             "empty or fabricated diff",
+             "CUMULATIVE DIFF UNAVAILABLE: last-verified body at seq %d "
+             "could not be recovered -- no verify_commit recorded for this "
+             "view's last stamp" % av_vres3["seq"] in diff_section4)
+        case("NEGATIVE (packet-level): even with the diff unavailable, "
+             "verify still proceeds and can CONFIRM (the marker degrades "
+             "the diff section only, never crashes the pass)",
+             av_vres4.get("absorption_confirmed") == 1)
+
+        # mixed pass: no-op union candidates AND an absorption view in the
+        # SAME verify_run call (same journal record) -- both mechanisms
+        # fire correctly side by side.
+        os.makedirs(os.path.join(base, "wiki", "mix"), exist_ok=True)
+        os.makedirs(os.path.join(base, "raw", "mix"), exist_ok=True)
+        open(os.path.join(base, "wiki", "mix", "vm.md"), "w",
+             newline="\n").write("# VM\nalready represented\n")
+        open(os.path.join(base, "raw", "mix", "em.md"), "w",
+             newline="\n").write("mix noop event\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "mix fixture"],
+                       capture_output=True)
+
+        def _mixed_rec():
+            rec = core.minimal_record(
+                "compile", _git(base, "rev-parse", "HEAD").strip())
+            rec["noop_candidates"] = [
+                {"view": "wiki/mix/vm.md", "event": "raw/mix/em.md",
+                 "verified": False, "disposition": "PENDING_NOOP_CANDIDATE",
+                 "event_class": "t1", "event_class_origin": "explicit",
+                 "artifact": "", "packet_sha256": "",
+                 "justification": {"event_sha256": "", "view_sha256": "",
+                                   "note": "mix noop"}}]
+            rec["absorbed"] = [{"view": "wiki/abs/av.md",
+                               "events": ["raw/abs/ea1.md"],
+                               "pre_blob": "", "post_blob": "x",
+                               "manifest": [{"event": "raw/abs/ea1.md",
+                                            "section": "Absorbed"}],
+                               "corpus_support": []}]
+            rec["run_window"] = {"start": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                 "end": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            return core.append_record(base, rec)
+
+        mixed_seq, _mp = _mixed_rec()
+        mixed_backend = _GoodAttestBackend(confirm=True)
+        mixed_vres = verify_run(base, mixed_seq, mixed_backend)
+        case("mixed pass: no-op union path fires (1 checked/confirmed)",
+             mixed_vres["checked"] == 1 and mixed_vres["confirmed"] == 1)
+        case("mixed pass: absorption-verify ALSO fires in the SAME run "
+             "(re-triggered: av.md was absorbed again at this seq, > its "
+             "last-verified seq)",
+             mixed_vres.get("absorption_checked") == 1
+             and mixed_vres.get("absorption_confirmed") == 1)
+        mixed_noop_calls = [p for p in mixed_backend.calls
+                           if p.startswith("# NOOP VERIFY PACKET")]
+        mixed_absorb_calls = [p for p in mixed_backend.calls
+                              if p.startswith("# ABSORPTION VERIFY PACKET")]
+        case("mixed pass: both packet kinds distinguishable and both fired",
+             len(mixed_noop_calls) == 1 and len(mixed_absorb_calls) == 1)
+
+        # CONTENT-1 deletion floor refusals
+        class DeleterBackend(FixtureAbsorbBackend):
+            def absorb(self, view_rel, view_text, events):
+                out = super().absorb(view_rel, view_text, events)
+                if out["new_text"]:
+                    out["new_text"] = out["new_text"].replace("## Intro\n", "")
+                return out
+
+        class ShrinkerBackend(FixtureAbsorbBackend):
+            def absorb(self, view_rel, view_text, events):
+                heads = [ln for ln in view_text.splitlines()
+                         if ln.lstrip().startswith("#")]
+                return {"new_text": "\n".join(heads) + "\n", "manifest": [],
+                        "corpus_support": [], "noops": []}
+
+        open(os.path.join(base, "raw", "e9.md"), "w", newline="\n").write(
+            "fact nine\n")
+        plan9 = {"items": [{"view": "wiki/b.md", "events": ["raw/e9.md"],
+                            "event_class": {"raw/e9.md": {
+                                "class": "t3", "origin": "explicit"}}}]}
+        try:
+            run(base, plan9, DeleterBackend())
+            case("CONTENT-1: dropped heading refused", False)
+        except ValidationError as e:
+            case("CONTENT-1: dropped heading refused", "heading" in str(e))
+        try:
+            run(base, plan9, ShrinkerBackend())
+            case("CONTENT-1: >30% shrink refused", False)
+        except ValidationError as e:
+            case("CONTENT-1: >30% shrink refused", "shrank" in str(e))
+
+        # 2026-07-05 red-team catch: heading DEMOTION (## X -> ### X) slipped
+        # the substring-containment check ("## X" in "### X" is True)
+        class DemoterBackend(FixtureAbsorbBackend):
+            def absorb(self, view_rel, view_text, events):
+                out = super().absorb(view_rel, view_text, events)
+                if out["new_text"]:
+                    out["new_text"] = out["new_text"].replace("## Intro",
+                                                              "### Intro")
+                return out
+
+        try:
+            run(base, plan9, DemoterBackend())
+            case("CONTENT-1: heading demotion (## -> ###) refused", False)
+        except ValidationError as e:
+            case("CONTENT-1: heading demotion (## -> ###) refused",
+                 "heading" in str(e))
+
+        # ABSORB-contract nit (2026-07-05): last_updated must never backdate;
+        # new value = max(existing value, event date). Exercised directly
+        # against validate_absorb_output (unit-level, not via run()) so each
+        # case is isolated from manifest/corpus_support plumbing.
+        lu_old = "# LU\nlast_updated: 2026-06-01\n\n## Intro\nhello there\n"
+
+        def _lu_out(new_text, sections=()):
+            manifest = [{"event": "e", "section": s} for s in sections]
+            return {"new_text": new_text, "manifest": manifest,
+                    "corpus_support": [], "noops": []}
+
+        _lu_events = {"e": "body"}
+
+        try:
+            validate_absorb_output(base, "wiki/lu.md", lu_old,
+                                   _lu_out("# LU\nlast_updated: 2026-05-01\n\n"
+                                           "## Intro\nhello there\n",
+                                           ["LU", "Intro"]), _lu_events)
+            case("last_updated backdated refused", False)
+        except ValidationError as e:
+            case("last_updated backdated refused",
+                 "backdated" in str(e) and "2026-06-01" in str(e)
+                 and "2026-05-01" in str(e))
+
+        try:
+            r = validate_absorb_output(
+                base, "wiki/lu.md", lu_old,
+                _lu_out("# LU\nlast_updated: 2026-06-01\n\n## Intro\n"
+                        "hello there again\n", ["Intro"]), _lu_events)
+            case("last_updated equal to existing passes", r is not None)
+        except ValidationError as e:
+            case("last_updated equal to existing passes", False)
+
+        try:
+            r = validate_absorb_output(
+                base, "wiki/lu.md", lu_old,
+                _lu_out("# LU\nlast_updated: 2026-07-05\n\n## Intro\n"
+                        "hello there later\n", ["LU", "Intro"]), _lu_events)
+            case("last_updated later than existing passes", r is not None)
+        except ValidationError as e:
+            case("last_updated later than existing passes", False)
+
+        try:
+            r = validate_absorb_output(
+                base, "wiki/lu.md", lu_old,
+                _lu_out("# LU\n\n## Intro\nhello there, no lu field at all "
+                        "here\n", ["LU", "Intro"]), _lu_events)
+            case("last_updated missing on new side: no check, passes",
+                 r is not None)
+        except ValidationError as e:
+            case("last_updated missing on new side: no check, passes", False)
+
+        try:
+            validate_absorb_output(
+                base, "wiki/lu.md", lu_old,
+                _lu_out("# LU\nlast_updated: not-a-date\n\n## Intro\n"
+                        "hello there unparseable\n", ["LU", "Intro"]),
+                _lu_events)
+            case("last_updated unparseable refused fail-closed", False)
+        except ValidationError as e:
+            case("last_updated unparseable refused fail-closed",
+                 "unparseable" in str(e) and "not-a-date" in str(e))
+
+        # validation refusals happen BEFORE journal/commit
+        open(os.path.join(base, "raw", "e4.md"), "w", newline="\n").write(
+            "fact four\n")
+        plan2 = {"items": [{"view": "wiki/a.md", "events": ["raw/e4.md"],
+                            "event_class": {"raw/e4.md": {
+                                "class": "t3", "origin": "explicit"}}}]}
+        pre_chain = core.check_chain(base)
+        try:
+            run(base, plan2, BrokenManifestBackend())
+            case("broken manifest refused pre-journal", False)
+        except ValidationError as e:
+            case("broken manifest refused pre-journal",
+                 "unchanged section" in str(e))
+        case("refusal journaled NOTHING (chain length unchanged)",
+             core.check_chain(base) == pre_chain)
+        case("refusal released the lock",
+             not os.path.isfile(core.lock_path(base)))
+        try:
+            run(base, plan2, FabricatedSupportBackend())
+            case("fabricated corpus_support refused", False)
+        except ValidationError as e:
+            case("fabricated corpus_support refused",
+                 "not an exact line" in str(e))
+
+        # v3.0-22 regression: a mid-plan ValidationError must leave NO
+        # earlier item's view written to disk -- not even uncommitted.
+        # Pre-fix, the per-item loop wrote each view AS it validated, so
+        # item 1's edit landed on disk before item 2's failure refused the
+        # whole run (live batch-10 event 10: driver had to `git checkout --`
+        # the file). This backend absorbs FIRST_VIEW normally (passes
+        # validate_absorb_output) but claims a phantom section -- same
+        # mismatch BrokenManifestBackend exercises above -- on any OTHER
+        # view, so item 2 is the one refused.
+        class SecondItemBrokenBackend(FixtureAbsorbBackend):
+            def __init__(self, first_view):
+                self.first_view = first_view
+
+            def absorb(self, view_rel, view_text, events):
+                out = super().absorb(view_rel, view_text, events)
+                if view_rel != self.first_view and out["new_text"] is not None:
+                    out["manifest"].append({"event": sorted(events)[0],
+                                            "section": "Phantom Section"})
+                return out
+
+        before_a = open(os.path.join(base, "wiki", "a.md"),
+                       encoding="utf-8").read()
+        pre_chain2 = core.check_chain(base)
+        plan3 = {"items": [
+            {"view": "wiki/a.md", "events": ["raw/e4.md"],
+             "event_class": {"raw/e4.md": {"class": "t3",
+                                           "origin": "explicit"}}},
+            {"view": "wiki/b.md", "events": ["raw/e4.md"],
+             "event_class": {"raw/e4.md": {"class": "t3",
+                                           "origin": "explicit"}}},
+        ]}
+        try:
+            run(base, plan3, SecondItemBrokenBackend("wiki/a.md"))
+            case("v3.0-22: 2-item plan, item 2 broken, whole run refused",
+                False)
+        except ValidationError as e:
+            case("v3.0-22: 2-item plan, item 2 broken, whole run refused",
+                "unchanged section" in str(e))
+        after_a = open(os.path.join(base, "wiki", "a.md"),
+                      encoding="utf-8").read()
+        case("v3.0-22: item 1's already-validated view was NEVER written to "
+            "disk after item 2's refusal (content byte-identical)",
+             after_a == before_a)
+        case("v3.0-22: refusal journaled nothing (chain length unchanged)",
+             core.check_chain(base) == pre_chain2)
+        case("v3.0-22: refusal left wiki/a.md with no working-tree diff at "
+            "all (not even an uncommitted mutation)",
+             "wiki/a.md" not in subprocess.run(
+                 ["git", "-C", base, "status", "--porcelain"],
+                 capture_output=True, text=True).stdout)
+
+        # v3.0-22 structural refusal: two plan items targeting the SAME view
+        # path are refused at plan-intake time (pre-absorb, pre-journal) --
+        # under the two-phase discipline the later item would absorb against
+        # the view's ORIGINAL on-disk text and its deferred write would
+        # silently clobber the earlier one. Joint citation in ONE item is
+        # the supported shape.
+        before_a2 = open(os.path.join(base, "wiki", "a.md"),
+                        encoding="utf-8").read()
+        pre_chain3 = core.check_chain(base)
+        plan_dup = {"items": [
+            {"view": "wiki/a.md", "events": ["raw/e4.md"],
+             "event_class": {"raw/e4.md": {"class": "t3",
+                                           "origin": "explicit"}}},
+            {"view": "wiki/a.md", "events": ["raw/e1.md"],
+             "event_class": {"raw/e1.md": {"class": "t3",
+                                           "origin": "explicit"}}},
+        ]}
+        try:
+            run(base, plan_dup, FixtureAbsorbBackend())
+            case("v3.0-22: duplicate view target across plan items refused",
+                False)
+        except ValidationError as e:
+            case("v3.0-22: duplicate view target across plan items refused",
+                "duplicate view target" in str(e)
+                 and "wiki/a.md" in str(e))
+        case("v3.0-22: duplicate-view refusal wrote nothing (view content "
+            "byte-identical)",
+             open(os.path.join(base, "wiki", "a.md"),
+                  encoding="utf-8").read() == before_a2)
+        case("v3.0-22: duplicate-view refusal journaled nothing (chain "
+            "length unchanged)",
+             core.check_chain(base) == pre_chain3)
+
+        # v3.0-22 canonicalized dedup KEY: aliased spellings of one view
+        # path (dot-segment, backslash separators, case variants) must not
+        # evade the refusal -- the write phase resolves every one of them
+        # to the SAME file (see the seen_views comment in run()).
+        for alias in ("wiki/./a.md", "wiki\\a.md", "wiki/A.md"):
+            plan_alias = {"items": [
+                {"view": "wiki/a.md", "events": ["raw/e4.md"],
+                 "event_class": {"raw/e4.md": {"class": "t3",
+                                               "origin": "explicit"}}},
+                {"view": alias, "events": ["raw/e1.md"],
+                 "event_class": {"raw/e1.md": {"class": "t3",
+                                               "origin": "explicit"}}},
+            ]}
+            try:
+                run(base, plan_alias, FixtureAbsorbBackend())
+                case("v3.0-22: aliased duplicate view %r refused" % alias,
+                    False)
+            except ValidationError as e:
+                case("v3.0-22: aliased duplicate view %r refused" % alias,
+                    "duplicate view target" in str(e))
+        # sanity: two genuinely DIFFERENT views in one plan still pass the
+        # dedup and the run completes end-to-end.
+        os.makedirs(os.path.join(base, "wiki", "dup"), exist_ok=True)
+        for v in ("wiki/dup/da.md", "wiki/dup/db.md"):
+            open(os.path.join(base, v.replace("/", os.sep)), "w",
+                 newline="\n").write("# %s\n\n## Intro\nx\n"
+                                     % os.path.basename(v)[:-3].upper())
+        subprocess.run(["git", "-C", base, "add", "wiki/dup"],
+                       capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "dup fixture"],
+                       capture_output=True)
+        plan_distinct = {"items": [
+            {"view": "wiki/dup/da.md", "events": ["raw/e4.md"],
+             "event_class": {"raw/e4.md": {"class": "t3",
+                                           "origin": "explicit"}}},
+            {"view": "wiki/dup/db.md", "events": ["raw/e4.md"],
+             "event_class": {"raw/e4.md": {"class": "t3",
+                                           "origin": "explicit"}}},
+        ]}
+        res_distinct = run(base, plan_distinct, FixtureAbsorbBackend())
+        case("v3.0-22: two genuinely different views still pass the dedup "
+            "(run completes, 2 rebuilds)",
+             res_distinct["rebuilds"] == 2)
+
+        class StaleShaBackend(FixtureAbsorbBackend):
+            def absorb(self, view_rel, view_text, events):
+                out = super().absorb(view_rel, view_text, events)
+                for cs in out["corpus_support"]:
+                    cs["artifact_sha256"] = "0" * 64
+                return out
+        try:
+            run(base, plan2, StaleShaBackend())
+            case("stale corpus_support artifact pin refused", False)
+        except ValidationError as e:
+            case("stale corpus_support artifact pin refused",
+                 "stale" in str(e))
+
+        # second run: lock contention honored via core
+        _lp, _b = core.acquire_lock(base, "other-run")
+        try:
+            run(base, plan2, FixtureAbsorbBackend())
+            case("run refuses while another holds the lock", False)
+        except core.LockHeld:
+            case("run refuses while another holds the lock", True)
+        core.release_lock(base)
+
+        # circuit breaker
+        os.makedirs(os.path.join(base, "wiki", "many"), exist_ok=True)
+        items = []
+        for i in range(16):
+            v = "wiki/many/v%02d.md" % i
+            open(os.path.join(base, v.replace("/", os.sep)), "w",
+                 newline="\n").write("# V%d\n\n## Intro\nx\n" % i)
+            items.append({"view": v, "events": ["raw/e4.md"],
+                          "event_class": {"raw/e4.md": {"class": "t3",
+                                                        "origin": "explicit"}}})
+        subprocess.run(["git", "-C", base, "add", "wiki/many"],
+                       capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "many"],
+                       capture_output=True)
+        try:
+            run(base, {"items": items}, FixtureAbsorbBackend())
+            case("circuit breaker trips at 15 rebuilds", False)
+        except ValidationError as e:
+            case("circuit breaker trips at 15 rebuilds",
+                 "circuit breaker" in str(e))
+
+        # reconcile flags: entity-pair + shipped-state-no-support
+        rows = [{"view": "wiki/a.md", "post_blob": "x",
+                 "manifest": [{"event": "e", "section": "Shipped state"}],
+                 "corpus_support": []},
+                {"view": "wiki/b.md", "post_blob": "y",
+                 "manifest": [{"event": "e", "section": "Other"}],
+                 "corpus_support": [{"artifact": "raw/e1.md",
+                                     "support_lines": []}]}]
+        fl = reconcile_flags(rows, {"wiki/a.md": ["stripe"],
+                                    "wiki/b.md": ["stripe"]})
+        case("reconcile: entity-overlapping changed pair flagged",
+             any(f["kind"] == "entity-pair" for f in fl))
+        case("reconcile: shipped-state prose without corpus_support flagged",
+             any(f["kind"] == "shipped-state-no-support" for f in fl))
+        # (b)/(c)/(d): roadmap citation, supersession marker, hub entity
+        os.makedirs(os.path.join(base, "wiki", "flight-plans"), exist_ok=True)
+        open(os.path.join(base, "wiki", "flight-plans", "fp.md"), "w",
+             newline="\n").write("# FP\n| row | raw/e1.md |\n")
+        open(os.path.join(base, "raw", "esup.md"), "w", newline="\n").write(
+            "---\nsuperseded_by: raw/e2.md\n---\nold\n")
+        rows2 = [{"view": "wiki/a.md", "post_blob": "x",
+                  "events": ["raw/e1.md", "raw/esup.md"], "manifest": [],
+                  "corpus_support": []}]
+        hubent = {"wiki/a.md": ["stripe"], "wiki/b.md": ["stripe"],
+                  "wiki/c.md": ["stripe"], "wiki/d.md": ["stripe"]}
+        rows_hub = [{"view": v, "post_blob": "x", "events": [], "manifest": [],
+                     "corpus_support": []} for v in hubent]
+        fl2 = reconcile_flags(rows2, {}, repo=base)
+        case("reconcile: roadmap row citing an absorbed event flagged",
+             any(f["kind"] == "roadmap-cited-source-changed" for f in fl2))
+        case("reconcile: supersession marker flagged",
+             any(f["kind"] == "supersession-chain" for f in fl2))
+        fl3 = reconcile_flags(rows_hub, hubent)
+        case("reconcile: hub entity (fan-out >= 4) flagged",
+             any(f["kind"] == "hub-entity" for f in fl3))
+        # append refuses on a corrupt chain (full pre-check)
+        jd2 = core.journal_dir(base)
+        seqs_now = sorted(int(f[:-5]) for f in os.listdir(jd2))
+        mid = os.path.join(jd2, "%d.json" % seqs_now[0])
+        saved = open(mid, "rb").read()
+        os.remove(mid)
+        try:
+            core.append_record(base, core.minimal_record("compile"))
+            case("append_record refuses onto a corrupt chain", False)
+        except core.JournalViolation:
+            case("append_record refuses onto a corrupt chain", True)
+        open(mid, "wb").write(saved)
+        # F6: judgment-assigned -> lock-class
+        case("F6: judgment-assigned class routes lock-class",
+             is_lock_class({"class": "t3", "origin": "judgment"})
+             and not is_lock_class({"class": "t3", "origin": "explicit"})
+             and is_lock_class(None))
+
+        # =========================================================== P5 (C4)
+        # pointer-class write ceiling + plan-precedence rule. `base` has no
+        # receipts/registrations/ directory anywhere above -- confirmed
+        # inert first, then a SEPARATE tempdir builds a real registration
+        # chain via regs.append_registration (never touching `base`/the
+        # live tree), per the build brief's fixture discipline.
+
+        # --- absent store: seam is inert (regression case) ---
+        case("P5 seam: absent receipts/registrations/ -> _load_registration_"
+             "seam returns {} (inert)",
+             _load_registration_seam(base) == {})
+        case("P5 seam: inert map -> check_plan_precedence is a no-op "
+             "(never raises)",
+             check_plan_precedence(plan2, {}) is None)
+        case("P5 seam: inert map -> check_pointer_class_ceiling is a no-op",
+             check_pointer_class_ceiling(base, "wiki/a.md", "old\n",
+                                         "totally different prose\n",
+                                         ["raw/e4.md"], {}) is None)
+
+        # --- unregistered event: unchanged behavior (regression case) ---
+        unreg_map = {"raw/other-event.md": dict(
+            regs._minimal("raw/other-event.md", event_class="lock",
+                          event_class_origin="explicit"), seq=1,
+            prev_record_hash=None)}
+        case("P5 precedence: event absent from a NON-empty registration map "
+             "-> untouched, today's behavior exactly",
+             check_plan_precedence(plan2, unreg_map) is None)
+        case("P5 ceiling: event absent from a NON-empty registration map "
+             "-> ceiling inert for that event",
+             check_pointer_class_ceiling(base, "wiki/a.md", "old\n",
+                                         "totally different prose\n",
+                                         ["raw/e4.md"], unreg_map) is None)
+
+        # --- build a real registration chain in its OWN tempdir (never base) ---
+        reg_base = tempfile.mkdtemp(prefix="cv2-regs-")
+        try:
+            subprocess.run(["git", "-C", reg_base, "init", "-q"],
+                           capture_output=True)
+            subprocess.run(["git", "-C", reg_base, "config", "user.email",
+                            "t@t"], capture_output=True)
+            subprocess.run(["git", "-C", reg_base, "config", "user.name",
+                            "t"], capture_output=True)
+            regs.append_registration(
+                reg_base, regs._minimal(
+                    "raw/lock-event.md", event_class="lock",
+                    event_class_origin="explicit", asserts_corpus_state=False))
+            regs.append_registration(
+                reg_base, regs._minimal(
+                    "raw/judgment-event.md", event_class="t3",
+                    event_class_origin="judgment",
+                    asserts_corpus_state=False))
+            regs.append_registration(
+                reg_base, regs._minimal(
+                    "receipts/pointer-event.md", event_class="compile",
+                    event_class_origin="explicit",
+                    asserts_corpus_state=True))
+            good_map = regs.load_registrations(reg_base)
+
+            case("P5 fixture chain: 3 registrations loaded",
+                 len(good_map) == 3)
+
+            # --- plan-precedence: loosening refused pre-journal ---
+            loosen_plan = {"items": [
+                {"view": "wiki/a.md", "events": ["raw/lock-event.md"],
+                 "event_class": {"raw/lock-event.md":
+                                 {"class": "t3", "origin": "explicit"}}}]}
+            try:
+                check_plan_precedence(loosen_plan, good_map)
+                case("P5 precedence: loosening a registered lock-class "
+                     "event refused pre-journal", False)
+            except ValidationError as e:
+                case("P5 precedence: loosening a registered lock-class "
+                     "event refused pre-journal",
+                     "plan-precedence" in str(e)
+                     and "raw/lock-event.md" in str(e)
+                     and "lock" in str(e) and "t3" in str(e))
+
+            loosen_judgment_plan = {"items": [
+                {"view": "wiki/a.md", "events": ["raw/judgment-event.md"],
+                 "event_class": {"raw/judgment-event.md":
+                                 {"class": "t3", "origin": "explicit"}}}]}
+            try:
+                check_plan_precedence(loosen_judgment_plan, good_map)
+                case("P5 precedence: loosening a judgment-origin "
+                     "registration refused pre-journal", False)
+            except ValidationError as e:
+                case("P5 precedence: loosening a judgment-origin "
+                     "registration refused pre-journal",
+                     "raw/judgment-event.md" in str(e))
+
+            # --- plan-precedence: stricter-than-registered passes ---
+            strict_plan = {"items": [
+                {"view": "wiki/a.md",
+                 "events": ["receipts/pointer-event.md"],
+                 "event_class": {"receipts/pointer-event.md":
+                                 {"class": "lock", "origin": "explicit"}}}]}
+            case("P5 precedence: plan stricter than registration passes",
+                 check_plan_precedence(strict_plan, good_map) is None)
+
+            # --- plan-precedence: matching passes ---
+            match_plan = {"items": [
+                {"view": "wiki/a.md", "events": ["raw/lock-event.md"],
+                 "event_class": {"raw/lock-event.md":
+                                 {"class": "lock", "origin": "explicit"}}}]}
+            case("P5 precedence: plan matching the registration passes",
+                 check_plan_precedence(match_plan, good_map) is None)
+
+            # --- plan-precedence: judgment-origin PLAN class never counts
+            # as a loosening (F6 stays conservative on the plan side too) ---
+            judgment_plan_plan = {"items": [
+                {"view": "wiki/a.md", "events": ["raw/lock-event.md"],
+                 "event_class": {"raw/lock-event.md":
+                                 {"class": "t3", "origin": "judgment"}}}]}
+            case("P5 precedence: plan supplying judgment-origin (not "
+                 "explicit) is never treated as a loosening",
+                 check_plan_precedence(judgment_plan_plan, good_map) is None)
+
+            # --- run()-level precedence wiring: refused pre-journal via a
+            # LIVE receipts/registrations/ directory copied onto `base` ---
+            base_regs_dir = regs.registrations_dir(base)
+            shutil.copytree(regs.registrations_dir(reg_base), base_regs_dir)
+            open(os.path.join(base, "raw", "lock-event.md"), "w",
+                 newline="\n").write("lock event body\n")
+            subprocess.run(["git", "-C", base, "add", "-A"],
+                           capture_output=True)
+            subprocess.run(["git", "-C", base, "commit", "-qm",
+                            "P5 registrations + lock-event fixture"],
+                           capture_output=True)
+            pre_chain_p5 = core.check_chain(base)
+            try:
+                run(base, loosen_plan, FixtureAbsorbBackend())
+                case("P5 precedence: run() itself refuses a loosening plan "
+                     "pre-journal", False)
+            except ValidationError as e:
+                case("P5 precedence: run() itself refuses a loosening plan "
+                     "pre-journal", "plan-precedence" in str(e))
+            case("P5 precedence: run()'s refusal journaled NOTHING",
+                 core.check_chain(base) == pre_chain_p5)
+            case("P5 precedence: run()'s refusal released the lock",
+                 not os.path.isfile(core.lock_path(base)))
+
+            # --- pointer-class ceiling: prose change refused ---
+            pv_old = "# Pointer View\n\n## Status\nsome prose here\n"
+            pv_new = "# Pointer View\n\n## Status\nDIFFERENT prose here\n"
+            try:
+                check_pointer_class_ceiling(
+                    base, "wiki/pointer.md", pv_old, pv_new,
+                    ["receipts/pointer-event.md"], good_map)
+                case("P5 ceiling: prose change from a pointer-class event "
+                     "refused", False)
+            except ValidationError as e:
+                case("P5 ceiling: prose change from a pointer-class event "
+                     "refused",
+                     "pointer-class write ceiling" in str(e)
+                     and "wiki/pointer.md" in str(e))
+
+            # --- pointer-class ceiling: status-table row edited WITH
+            # attribution passes ---
+            pt_old = ("# Pointer View\n\n## Status Table\n"
+                      "| Item | State |\n| --- | --- |\n"
+                      "| Alpha | old |\n")
+            pt_new_ok = ("# Pointer View\n\n## Status Table\n"
+                        "| Item | State |\n| --- | --- |\n"
+                        "| Alpha | reported by receipt "
+                        "receipts/pointer-event.md |\n")
+            case("P5 ceiling: status-table row edited WITH the sec.10 "
+                 "attribution form passes",
+                 check_pointer_class_ceiling(
+                     base, "wiki/pointer.md", pt_old, pt_new_ok,
+                     ["receipts/pointer-event.md"], good_map) is None)
+
+            # --- pointer-class ceiling: status-table row ADDED WITHOUT
+            # attribution refused ---
+            pt_new_bad = ("# Pointer View\n\n## Status Table\n"
+                         "| Item | State |\n| --- | --- |\n"
+                         "| Alpha | old |\n"
+                         "| Beta | new, no attribution |\n")
+            try:
+                check_pointer_class_ceiling(
+                    base, "wiki/pointer.md", pt_old, pt_new_bad,
+                    ["receipts/pointer-event.md"], good_map)
+                case("P5 ceiling: ADDED status-table row WITHOUT attribution "
+                     "refused", False)
+            except ValidationError as e:
+                case("P5 ceiling: ADDED status-table row WITHOUT attribution "
+                     "refused",
+                     "attribution" in str(e) and "Beta" in str(e))
+
+            # --- pointer-class ceiling: link line added passes ---
+            pl_old = "# Pointer View\n\n## Links\nsome text\n"
+            pl_new = ("# Pointer View\n\n## Links\nsome text\n"
+                     "[receipt](../receipts/pointer-event.md)\n")
+            case("P5 ceiling: added link line passes",
+                 check_pointer_class_ceiling(
+                     base, "wiki/pointer.md", pl_old, pl_new,
+                     ["receipts/pointer-event.md"], good_map) is None)
+
+            # --- pointer-class ceiling wired end-to-end through
+            # validate_absorb_output: prose-changing absorb answer for a
+            # pointer-class event refused pre-journal, journal untouched ---
+            class PointerProseBackend:
+                def absorb(self, view_rel, view_text, events):
+                    return {"new_text": pv_new, "manifest":
+                            [{"event": "receipts/pointer-event.md",
+                              "section": "Status"}],
+                            "corpus_support": [], "noops": []}
+
+            os.makedirs(os.path.join(base, "wiki"), exist_ok=True)
+            open(os.path.join(base, "wiki", "pointer.md"), "w",
+                 newline="\n").write(pv_old)
+            os.makedirs(os.path.join(base, "receipts"), exist_ok=True)
+            open(os.path.join(base, "receipts", "pointer-event.md"), "w",
+                 newline="\n").write("receipt body: prose lives here\n")
+            subprocess.run(["git", "-C", base, "add", "-A"],
+                           capture_output=True)
+            subprocess.run(["git", "-C", base, "commit", "-qm",
+                            "pointer view + receipt fixture"],
+                           capture_output=True)
+            pointer_plan = {"items": [
+                {"view": "wiki/pointer.md",
+                 "events": ["receipts/pointer-event.md"],
+                 "event_class": {"receipts/pointer-event.md":
+                                 {"class": "compile", "origin": "explicit"}}}]}
+            pre_chain_ptr = core.check_chain(base)
+            try:
+                run(base, pointer_plan, PointerProseBackend())
+                case("P5 ceiling end-to-end: pointer event's prose-changing "
+                     "absorb answer refused pre-journal via run()", False)
+            except ValidationError as e:
+                case("P5 ceiling end-to-end: pointer event's prose-changing "
+                     "absorb answer refused pre-journal via run()",
+                     "pointer-class write ceiling" in str(e))
+            case("P5 ceiling end-to-end: refusal journaled NOTHING",
+                 core.check_chain(base) == pre_chain_ptr)
+            case("P5 ceiling end-to-end: view file untouched by the refused "
+                 "run", open(os.path.join(base, "wiki", "pointer.md"),
+                            encoding="utf-8").read() == pv_old)
+
+            # --- broken fixture chain: loud whole-run refusal, nothing
+            # journaled (separate tempdir, never mutates good_map/reg_base) ---
+            tamper_base = tempfile.mkdtemp(prefix="cv2-regs-tamper-")
+            try:
+                subprocess.run(["git", "-C", tamper_base, "init", "-q"],
+                               capture_output=True)
+                subprocess.run(["git", "-C", tamper_base, "config",
+                                "user.email", "t@t"], capture_output=True)
+                subprocess.run(["git", "-C", tamper_base, "config",
+                                "user.name", "t"], capture_output=True)
+                regs.append_registration(
+                    tamper_base, regs._minimal("raw/x.md"))
+                bad_path = os.path.join(
+                    regs.registrations_dir(tamper_base), "1.json")
+                bad_rec = json.load(open(bad_path, encoding="utf-8"))
+                bad_rec["prev_record_hash"] = "f" * 64
+                open(bad_path, "w", encoding="utf-8").write(
+                    json.dumps(bad_rec))
+                try:
+                    _load_registration_seam(tamper_base)
+                    case("P5 seam: broken registration chain fails loud "
+                         "(_load_registration_seam)", False)
+                except regs._cc.JournalViolation:
+                    case("P5 seam: broken registration chain fails loud "
+                         "(_load_registration_seam)", True)
+
+                # wire through run(): a broken chain must refuse the WHOLE
+                # run, pre-journal, nothing written.
+                os.makedirs(os.path.join(tamper_base, "wiki"))
+                os.makedirs(os.path.join(tamper_base, "raw"), exist_ok=True)
+                open(os.path.join(tamper_base, "wiki", "a.md"), "w",
+                     newline="\n").write("# A\n\n## Intro\nhello\n")
+                open(os.path.join(tamper_base, "raw", "x.md"), "w",
+                     newline="\n").write("fact\n")
+                subprocess.run(["git", "-C", tamper_base, "add", "-A"],
+                               capture_output=True)
+                subprocess.run(["git", "-C", tamper_base, "commit", "-qm",
+                                "seed"], capture_output=True)
+                tamper_plan = {"items": [
+                    {"view": "wiki/a.md", "events": ["raw/x.md"],
+                     "event_class": {"raw/x.md":
+                                     {"class": "t3", "origin": "explicit"}}}]}
+                try:
+                    run(tamper_base, tamper_plan, FixtureAbsorbBackend())
+                    case("P5 seam: run() over a broken registration chain "
+                         "refuses loud, nothing journaled", False)
+                except regs._cc.JournalViolation:
+                    case("P5 seam: run() over a broken registration chain "
+                         "refuses loud, nothing journaled",
+                         not os.path.isdir(core.journal_dir(tamper_base))
+                         or core.check_chain(tamper_base) == 0)
+                case("P5 seam: run()'s refusal over a broken chain released "
+                     "the lock",
+                     not os.path.isfile(core.lock_path(tamper_base)))
+            finally:
+                shutil.rmtree(tamper_base, ignore_errors=True)
+        finally:
+            shutil.rmtree(reg_base, ignore_errors=True)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+    if _RENDERED.get("union_packet"):
+        print("\n----- RENDERED UNION VERIFY PACKET (fixture a) -----")
+        print(_RENDERED["union_packet"])
+        print("----- END RENDERED UNION VERIFY PACKET -----\n")
+
+    if failed:
+        print("compile-v2 orchestration: FAIL (%d/%d)" % (total - failed, total))
+        return 1
+    print("compile-v2 orchestration: PASS (%d/%d)" % (total, total))
+    return 0
+
+
+def main(argv):
+    if "--self-test" in argv:
+        return self_test()
+    if "--run" in argv:
+        root = argv[argv.index("--root") + 1]
+        plan = json.load(open(argv[argv.index("--plan") + 1], encoding="utf-8"))
+        rt = argv[argv.index("--run-type") + 1] if "--run-type" in argv \
+            else "compile"
+        try:
+            res = run(root, plan, FixtureAbsorbBackend(),
+                      run_type=rt, break_stale="--break-stale-lock" in argv)
+        except core.LockHeld as e:
+            print("LOCK HELD: %s" % e)
+            return core.EXIT_LOCK_HELD
+        except ValidationError as e:
+            print("VALIDATION FAIL: %s" % e)
+            return 1
+        print(json.dumps(res, indent=1))
+        return 0
+    print(__doc__.strip().split("\n\n")[-1])
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

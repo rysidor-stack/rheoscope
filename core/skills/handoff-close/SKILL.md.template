@@ -1,0 +1,217 @@
+---
+name: handoff-close
+description: The close PROTOCOL of a handoff — the instruction set executed by /handoff's headless cross-vendor close leg (T1) or by the /handoff session itself (T2/T3). Not an operator surface since v3.0-78 — invoke /handoff, which fires or embeds this protocol; a failed T1 close leg parks at close pending and auto-retries, never falling back to a hand-run close. Contract: convergence check, locking deliberation, decision raw file, confidence audit, meta to locked, INDEX, flight-plan mark. Does NOT compile wiki articles (that's /compile, a separate routine).
+---
+
+# handoff-close — the close protocol (executed by the leg, not invoked by the operator)
+
+**Execution model (v3.0-78, 2026-07-31).** This document is the close leg's instruction
+set. `/handoff` is the only entry point: for **T1** it inlines this protocol into a close
+packet and dispatches it as a headless cross-vendor leg (`bridge/handoff-leg.js --role
+close`) whose deliberation returns into the originating conversation for the operator's
+single lock yes, after which the leg's artifacts land verbatim; for **T2/T3** the /handoff
+session executes this protocol inline. If a T1 close leg dies, the handoff parks at
+`status: answered, close: pending` and is auto-retried by the next `/handoff` invocation or
+the nightly standing-loop tick — **there is no manual fallback** (operator ruling
+2026-07-31: no manual work). The steps below are written to the executor, whichever of
+those it is. If you have not yet read the project's canonical handoff protocol
+(`handoffs/METHODOLOGY.md`, or `core/handoffs/HANDOFF-CLOSING.md` where that file is the
+project's canon), read it before executing.
+
+## Step 1: Substrate check (the firewall's mechanical home — this step does not move)
+
+Before proceeding, identify which executor you are relative to this handoff. An **anchor**
+is session-scoped, not vendor-scoped: you carry one only if THIS execution context (this
+session, this leg run) produced the artifact — a fresh context on the same vendor as a
+prior leg holds that leg's *output* as evidence, not as its own position, and is not
+anchored by it. (The firewall's non-negotiable core is vendor/family-level exactly once:
+the T1 closer must not share the AUTHORING session's substrate — `meta.yaml.authored_by`.)
+- If `meta.yaml.authored_by` names your substrate family → you are the authoring side
+- If THIS context wrote any `output-round-*.md` → you are anchored in that round
+- If neither → you are fresh
+
+**Tier-dependent rules:**
+- **T1**: the closer must NOT be the authoring substrate (family-level; non-negotiable)
+  and must not be a context that wrote an output round. The headless close leg satisfies
+  both by construction: distinct vendor from the author, fresh context (mechanically
+  attested). If you are executing this protocol and either test trips, refuse — the
+  dispatch layer routed wrongly.
+- **T2 / T3**: the orchestrator (authoring) session is acceptable; a context that
+  authored an output round should not close.
+
+State which case applies at the top of your deliberation. Do not proceed silently.
+
+## Step 2: Resolve handoff folder
+
+(Leg execution: the close packet names the folder — skip resolution.) Otherwise scan the
+handoff envelope for folders with `status: answered`:
+- One match → use it
+- Multiple → picker
+- Zero → tell operator and stop
+
+## Step 3: Read everything
+
+In order:
+1. `meta.yaml` — provenance, tier, round count, prior outcomes, substrates used
+2. `brief.md` — including any round addenda
+3. `context.md` — operating constraints
+4. `output-round-1.md` through `output-round-N.md` — full verifier voice, in order
+5. Any companion artifacts present (orchestrator-authored confidence audit drafts, supplementary research, primary-source verification files)
+
+## Step 4: Convergence check
+
+Diff round N's load-bearing findings against round N-1's:
+
+- **New findings in round N**: list them. If load-bearing, name explicitly.
+- **Refinements**: round N tightened or quantified something round N-1 already named. List.
+- **Reversals**: round N contradicted round N-1. List with reasoning each round gave.
+
+Convergence verdict (state in writing for the raw file):
+- **Convergence reached at round N-1; round N is refinement-only.** Lock now; the round-N round is incremental confidence not new signal.
+- **Convergence not reached; round N surfaced new load-bearing finding.** Consider whether the new finding is the surface the lock acknowledges (with a reopen trigger) vs whether another round is warranted.
+- **Reversal at round N.** Load-bearing for lock; raw file must name what reversed and why.
+
+**RTDT:** At T2/T3 with two convergent rounds and a new finding in round N, the new finding is usually the surface the lock acknowledges (with a reopen trigger fired on the operational signal that surfaced it). Another round is rarely the right move. State this explicitly if applicable.
+
+## Step 5: Locking deliberation
+
+Produce the deliberation in writing (leg execution: this is the `deliberation` field the
+originating conversation surfaces verbatim before the operator's single lock yes; inline
+T2/T3 execution: run it with the operator in-conversation). Cover:
+1. **What the rounds settled** — the locked answer to the brief's hypothesis
+2. **What they challenged** — what the hypothesis got wrong, if anything
+3. **What remains open** — operational data the operator has and the verifiers didn't, or genuine reasonable-disagreement points
+4. **Anchoring risk audit** — did the hypothesis get rationalized through the outputs, or genuinely tested? If `hypothesis_outcome` is `confirmed` and the verifier reasoning looks thin, push back before locking.
+5. **Reopen triggers** — name the operational signals that would cause this lock to be revisited
+6. **Articulate the lock** as a clear position with reasoning that will survive being read in 6 months
+
+## Step 6: Write the decision raw file
+
+Path: per the project's canonical protocol — `raw/<YYYY-MM-DD>-ryan-decision-<n>-<slug>.md`
+with the `informed_by: <handoff_id>` frontmatter back-link where `handoffs/METHODOLOGY.md`
+governs (its "Bidirectional link" rule; check-loop-state.py asserts it); `docs/adr/
+<YYYY-MM-DD>-<n>-<slug>.md` on projects without a raw ledger. (Leg execution: the close
+packet names the exact target path — use it verbatim.)
+
+The `<n>` is the next sequential decision number across the project (scan the lock-raw home for existing files; if none, start at 1).
+
+Canonical shape:
+
+```markdown
+# Decision #<n> — <title>
+
+**Locked:** <YYYY-MM-DD>
+**Tier:** T<n>
+**Plan / Phase:** <plan-X.Y phase Z, or "kickoff" / "Phase 0" if no flight plan>
+**Informed by:** <handoff_id(s)>
+**Decision method:** handoff
+**Supersedes:** <prior raw file if applicable, else null>
+**Substrate sequence:** <substrates that contributed across rounds, e.g. "model family A (author) → a different family (round 1) → family A again (round 2 pressure-test) → fresh family A session (close)">
+
+## Decision
+
+<one-paragraph statement of what is locked>
+
+## Reasoning
+
+<the load-bearing argument; cross-reference verifier rounds where they carried specific weight; note convergence verdict from Step 4>
+
+## Commitments
+
+<numbered list (a) (b) ... — operative rules this decision binds; written as enforceable invariants>
+
+## Re-open triggers
+
+<numbered list of conditions that would re-open this decision; these are the operational signals to watch for>
+
+## Operational verifications
+
+<numbered list G1...Gn of verifications scheduled but not blocking lock; each should map to a phase or near-term task>
+
+## What does NOT change
+
+<things explicitly preserved from prior locks; defensive against future drift>
+
+## Methodology notes (optional)
+
+<convergence verdict; any methodology calibration learning from this round — e.g. "two convergent rounds was sufficient; round 3 added 5pp confidence at 1× attention cost — RTDT signal for similar T<n> decisions">
+```
+
+Length is whatever the decision warrants. Don't pad. First decision file in a project sets the in-project example; subsequent ones can be calibrated against it.
+
+## Step 7: Write confidence audit
+
+Path: `<envelope>/<folder>/confidence-audit.md` (the handoff folder itself)
+
+Operator-facing audit naming confidence levels per finding:
+- **High confidence (~85–95%)**: backed by primary sources with retrieval dates
+- **Moderate confidence (~70–80%)**: load-bearing claims with `[inferred]` backing, analogy-driven reasoning, or single-substrate origin
+- **Lower confidence (<70%)**: speculative claims, multi-tenant horizon arguments, conjectures
+
+For each finding, state failure mode if wrong + recovery cost (small / moderate / large).
+
+If a `confidence-audit.md` already exists (authored by orchestrator during the handoff rounds), read it and integrate rather than overwrite. The integrated version is the canonical post-lock audit.
+
+## Step 8: Update meta.yaml
+
+- `status`: `locked`
+- `locked`: today's date
+- `locked_by_raw_file`: relative path to the raw file you just wrote (e.g., `../../docs/adr/<file>`)
+- `hypothesis_outcome`: final value (`confirmed` / `revised` / `rejected`)
+
+## Step 9: Update INDEX.md
+
+Path: the envelope's `INDEX.md`
+
+Move the handoff's row from Active table to Archive table. Row shape (one line):
+
+```markdown
+| [<slug>](<slug>/) | locked | T<n> | <authored date> | <locked date> | <outcome word> | [raw](../../docs/adr/<filename>) |
+```
+
+Outcome is one word. Hypothesis-outcome detail, reasoning, commitments, reopen triggers all live in the raw file. The INDEX row is a finding-aid, not a summary.
+
+Also append a row to `docs/governance/DECISIONS.md` (the project's locked-decisions index) — table row pointing at the ADR file you just wrote. If `docs/governance/DECISIONS.md` doesn't exist yet, create it with a header and the table schema (first row sets the example).
+
+## Step 10: Update flight plan (conditional)
+
+`/flight-plan` is a core skill, so the cockpit is always available — but a project only has flight plans once one has been authored. If any flight plan files exist (`wiki/flight-plans/*.md`):
+
+Open the active flight plan. Mark the decision as locked with:
+- Date locked
+- One-line summary of the lock (typically the verdict + key reasoning compressed)
+- Cross-link to the raw file at `docs/adr/<file>`
+
+Do NOT rewrite plan structure or move sections. If the plan tracks phases and this decision completes a phase, mark the phase complete inline.
+
+**If no flight plan exists yet:** this step is a no-op. State that explicitly in your closeout summary so the operator knows the step was skipped intentionally.
+
+## HALT path (alternative to locking)
+
+If closing deliberation discovers a load-bearing upstream dependency that blocks lock:
+
+1. Write `<envelope>/<folder>/HALT.md` explaining the blocker — what dependency is unresolved, what would unblock it, what work is preserved as audit trail
+2. Update `meta.yaml`: `status: halted`
+3. Update the envelope's `INDEX.md` row: status → `halted-provider-dependency` (or other halt reason; legend in INDEX header)
+4. Do NOT write the decision raw file (no decision was locked)
+5. Note in flight plan (if one exists) that the decision is blocked pending upstream resolution; link to HALT.md
+
+Lock can resume later via a new handoff or by re-running `handoff-close` after the upstream resolves.
+
+## Scope boundary
+
+`handoff-close` does NOT:
+- Update wiki articles (that's `/compile`, a separate routine that parses raw files)
+- Author new handoffs (that is `/handoff`'s authoring phase)
+- Edit prior outputs, brief, context (immutable after authoring)
+- Re-litigate prior round verdicts (those are inputs; the lock is downstream)
+
+## Anti-patterns
+
+- Locking with anchor (you authored the brief on a T1 close, or you wrote an output round on any tier)
+- Writing decision content into INDEX outcome field instead of raw file
+- Writing the raw file as a paraphrase of a deprecated `meta.yaml.verdict_summary` (new meta doesn't have that field; raw is canonical)
+- Running `/compile` during close (separate routine; do not invoke wiki article updates here)
+- Skipping convergence check because rounds "feel done" (the diff is the check; do it explicitly)
+- Padding the raw file with verifier voice instead of the locker's synthesis (raw is the locker's voice; verifier voice lives immutably in `output-round-*.md`)
+- Closing with `status: locked` when a load-bearing upstream dependency surfaced in deliberation (use HALT path instead)

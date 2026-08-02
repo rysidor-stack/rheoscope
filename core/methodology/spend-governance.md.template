@@ -1,0 +1,97 @@
+<!-- Spend governance precondition doctrine (budget gates + per-capability attribution).
+     Authored for rheoscope-harness v{{template_version}}.
+     Loaded by: CC Controller and operator before enabling any autonomous capability.
+     Sibling to rollback-kill-switch.md (how to stop it) and
+     least-privilege-isolation.md (who it runs as and what it can reach).
+     No substitution variables beyond the standard project identity. -->
+
+# Spend Governance
+
+## Enablement Precondition
+
+No autonomous capability may be **enabled** until both of the following are declared:
+
+(a) Its **provider-side spend cap** — the hard ceiling set on this capability's credential at the model provider before the capability first runs.
+(b) Its **soft per-run ceiling and stop condition** — the live-tally limit at which a single run self-halts, and the measurable criterion by which the capability is halted and reviewed if it burns its envelope without producing wins.
+
+Both are recorded per capability in `core/governance/AUTOMATION-ISOLATION.md` before enablement. A capability whose spend cap is absent, or whose stop condition is undefined, is not "enabled with caveats" — it is not enabled.
+
+**Grounding — the standing autonomy commitments:**
+
+- **Parallel build and gated write-back gate on the precondition trio.** The parallel-build capability and gated write-back (the scheduled sentinel's phase-2) must not be enabled before all three enablement preconditions — credential-and-data isolation, this document (spend governance), and rollback/kill-switch — land. This document is the spend standard those capabilities must satisfy.
+- **The cross-model review trial runs only behind spend governance.** The cross-model review trial exists as an advisory trial gated behind this document, with the kill criterion that no net-new, operator-relevant defect class within its spend envelope over the trial window triggers a cut. The kill criterion is not checkable without the spend cap and stop condition this document requires.
+- **The operate phase halts if spend exceeds its envelope.** If sentinel noise or spend exceeds the spend envelope declared here, the operate phase halts. That halt is only enforceable when the envelope is declared.
+
+---
+
+## The Core Insight: a Malfunctioning Harness Cannot Cap Itself
+
+A harness that is behaving correctly can enforce its own soft ceiling. A harness that is behaving incorrectly — wedged, looping, or running beyond its intended scope — cannot be trusted to stop. The provider-side hard cap is therefore not a belt-and-suspenders nicety: it is the **only limit that holds when the software fails**.
+
+This is the load-bearing reason the hard cap lives at the provider and not in code. The two layers exist precisely because Layer 1 is software and Layer 2 is not.
+
+---
+
+## Two-Layer Spend Model
+
+### Layer 1 — Soft, live-tally, in the harness
+
+Every model API call returns its own token usage in the response. An autonomous capability tallies that usage as it runs and **self-halts** when it reaches its declared per-run soft ceiling. This is:
+
+- **Free and immediate** — no extra access, no external call required.
+- **Implemented by each capability at build time** — not a standalone mechanism shipped here. When the parallel-build capability, gated write-back (the scheduled sentinel's phase-2), or the cross-model review trial is built, its implementation includes the live-tally and self-halt against its declared ceiling. This document is the precondition; the tally logic rides the capability.
+- **Not the backstop** — Layer 1 is the normal operating control. It is bypassed by malfunction.
+
+### Layer 2 — Hard, provider-side, not bypassable
+
+A provider-side spend cap on the capability's credential is the **non-bypassable backstop**. Set before enablement. A malfunctioning harness cannot remove or raise a limit that exists in the provider's billing controls, outside the harness's reach.
+
+The cap is set on the **capability's distinct credential** (see `core/methodology/least-privilege-isolation.md` and the per-capability registry in `AUTOMATION-ISOLATION.md`). Per-capability credentials are a requirement of the credential-and-data isolation precondition; they make the spend cap straightforward to set without interfering with other capabilities or the operator's own access.
+
+---
+
+## Spend Attribution — Free via the Isolation Precondition's Distinct Credentials
+
+Attribution requires no harness instrumentation. Because the credential-and-data isolation precondition mandates a distinct, least-privilege credential per autonomous capability, the model provider's own per-key usage view attributes spend per capability at zero additional cost. The authoritative monthly and per-capability totals are read from the provider dashboard, not from a harness log.
+
+The stop condition in `AUTOMATION-ISOLATION.md` compares spend (from the provider view or the live tally) against **measurable wins that read from records that already exist**: verifier-review findings, cockpit / flight-plan logs, and pilot telemetry captured by the project's scheduled operational verifications. Per-run wall-time, where a stop condition needs it, is read from that same pilot/cockpit telemetry — not persisted separately here. This document defines the gate; it does not create a new outcome store.
+
+---
+
+## Stop Conditions
+
+A stop condition is declared for each capability in `AUTOMATION-ISOLATION.md`. At minimum it answers:
+
+- **Spend threshold:** at what provider-reported or live-tally level does the operator review the capability's value-to-cost ratio?
+- **Win criterion:** what constitutes a measurable win (a real net-new defect class found, a verified increment merged without rework, a confirmed time saving) — defined before the capability runs, so the judgment is not made post-hoc with the spend already incurred?
+- **Kill criterion:** what outcome, at what spend level, triggers halting the capability? For the cross-model review trial: no net-new, operator-relevant defect class within the spend envelope over the trial window → cut. For ongoing capabilities: halt the operate phase when sentinel noise or spend exceeds its declared envelope.
+
+Stop conditions are not retrospective risk management. They are the operator's pre-commitment to what "this capability is not paying off" looks like, recorded when enthusiasm is highest and the capability hasn't run yet.
+
+---
+
+## Opt-in: harness-side provider polling (not core)
+
+*This section describes an optional extension. It is not part of the core doctrine. Adapt or ignore.*
+
+A project may supplement the two-layer model by adding a poller that queries the model provider's usage API and writes a periodic spend summary to a local log or dashboard. Before implementing this, weigh the trade-offs:
+
+- **Provider-specific:** every provider exposes a different API shape (or none at all); the poller is not portable across providers without adaptation.
+- **Billing-read credential:** the poller needs a credential with billing-read access — a scope beyond what the capability's operational credential holds. That expansion of credential scope works against the least-privilege doctrine in `core/methodology/least-privilege-isolation.md`; evaluate whether the convenience outweighs the blast-radius increase.
+- **Lag:** usage APIs typically reflect spend with a delay of minutes to hours. The live tally (Layer 1) is immediate; provider polling is not a substitute for it.
+
+If a project adds a poller, it is an opt-in project layer, not a harness mechanism. Document it in the project's own governance, not in a harness doc.
+
+---
+
+## Forward Hooks
+
+**Worktree-isolated parallel build:** must carry a declared provider cap and a soft per-run ceiling before the first parallel batch runs — because the precondition trio gates it. Its live-tally implementation is authored when parallel build is built. Its spend attribution flows through its distinct per-capability credential.
+
+**Gated write-back (the scheduled sentinel's phase-2):** same requirement — provider cap, soft ceiling, stop condition declared before enablement.
+
+**Read-only sentinel (the scheduled sentinel's phase-1):** the read-only sentinel may precede the full precondition regime — but even under its minimal gate, the sentinel must carry a provider cap and a soft ceiling before its first scheduled run. Running unmetered from the start is precisely the habit this precondition exists to prevent. The minimal gate for phase-1 is defined in the operate-sentinel phase-1 recipe (`docs/recipes/operate-sentinel/sentinel-phase-1.RECIPE.md`, § The minimal gate).
+
+**Cross-model review trial:** gated behind this spend-governance precondition. Its stop condition is the kill criterion stated above: no net-new, operator-relevant defect class within the spend envelope over the trial window → cut. That criterion is only operable when the spend envelope and win criterion are declared here, before the trial runs.
+
+**The precondition trio.** This document (cap it), `core/methodology/rollback-kill-switch.md` (stop it), and `core/methodology/least-privilege-isolation.md` (scope it) together gate enablement. A capability that satisfies two of three is not safe to enable. All three hang off the same per-capability declaration in `core/governance/AUTOMATION-ISOLATION.md`; none substitutes for the others.

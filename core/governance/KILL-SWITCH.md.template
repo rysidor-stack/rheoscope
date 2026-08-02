@@ -1,0 +1,36 @@
+<!-- Operator fills in each enabled-capability section when the project enables its
+     first autonomous capability — not at INIT. A project with no automation leaves
+     this file empty. See core/methodology/rollback-kill-switch.md for the required
+     shape and the rationale. -->
+
+# Kill-Switch — {{project_name}}
+
+The kill-switch is the operator's single control to halt all autonomous activity in {{project_name}}.
+
+**When to complete this file:** fill in a capability entry the first time this project enables an autonomous capability (a scheduled run, a parallel build, a write-back capability). Do not fill it in speculatively at INIT — a project with no enabled automation leaves this file empty.
+
+For the required properties this implementation must satisfy, and the rationale, see `core/methodology/rollback-kill-switch.md`.
+
+---
+
+## Enabled-Capability Registry
+
+*One entry per enabled autonomous capability. Add an entry when you enable the capability; mark it retired (with date) when you disable it.*
+
+### Capability: [name]
+
+*(Copy and complete this block for each enabled capability.)*
+
+**Halt action:** [The single operator action that stops this capability — specific enough to execute under stress without consulting any other document. For example: a command to run, a flag to set in a config file, a credential to revoke, a service to stop.]
+
+**Who may trigger it:** [The role or roles authorized to fire this halt action.]
+
+**Where it lives:** [The location of the halt action — file path, service name, or system — so the operator can reach it without searching.]
+
+**Confirmation:** [How the operator confirms the automation actually stopped. Name a specific, observable signal: a process that is no longer listed, a file that is no longer updated, a log line that appears. "It should have stopped" is not a confirmation.]
+
+---
+
+## Notes
+
+*(Optional: currently enabled capabilities, known limitations, escalation path if the halt action itself fails.)*

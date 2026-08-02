@@ -1,0 +1,1 @@
+{ "tool_input": { "command": "Remove-Item -Recurse -Force C:\\Users\\operator\\AppData\\Local\\Temp\\claude\\scratchpad\\foo" } }

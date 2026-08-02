@@ -1,0 +1,24 @@
+# VIOLATION FIXTURE: locked_by_raw_file names a raw that does not exist on
+# disk. Trips extension check (b): "locked_by_raw_file '...' does not exist
+# on disk." (Also trips the PORTED base check_handoff's own
+# "does not exist on disk" line -- both are expected to fire; the extension
+# check is the one under test here.)
+handoff_id: 2026-07-01-fdec
+status: locked
+tier: T1
+authored: 2026-07-01
+authored_by: fixture-author
+answered: 2026-07-01
+answered_by: fixture-answerer
+locked: 2026-07-01
+locked_by_raw_file: raw/2026-07-01-ryan-does-not-exist.md
+decision_under_investigation: fixture decision under test
+parent_phase: fixture-phase
+hypothesis_carried: "fixture hypothesis"
+hypothesis_outcome: confirmed
+target_substrate: fixture-substrate
+rounds_completed: 0
+round_modes: []
+round_overrides: []
+supersedes: null
+superseded_by: null

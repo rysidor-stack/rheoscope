@@ -1,0 +1,55 @@
+# manifest-layers.yaml -- layer registry for behavioral manifests (Rheoscope harness)
+#
+# PURPOSE: check-manifest.py validates `manifest:` frontmatter keys and MANIFEST-INDEX
+# layer keys against this file. This is the doctrine's layer registry
+# (manifest-driven-builds.md Section 4), carried as machine config; the harness's
+# operational contract for the manifests this registry governs is
+# core/methodology/manifest-format.md.
+#
+# ADMISSION RULE (doctrine Section 4, mirrors the security-hook rule): a new layer
+# enters this registry ONLY with (a) a named incurred cost or certain future risk,
+# (b) a row schema, and (c) a replay mechanism. A layer that would replay through an
+# existing layer's mechanism is a DIMENSION of that layer, not a new one -- see the
+# `dimensions:` list at the bottom of this file. Extend ONLY with named entries, never
+# a glob or a placeholder row (the known-holes.yaml allowlist discipline, generalized).
+#
+# NAMING FIREWALL (manifest-format.md Section 1): "manifest" in this file always means
+# BEHAVIORAL MANIFEST -- the per-layer enumerated behavioral contract this registry
+# governs. It is never dispatch-manifest.json (the memory engine's compile-pipeline
+# transport artifact, F17-attested, consumed by compile-backends.py) and never a
+# result manifest (the execution engine's parallel-build crash-recovery record,
+# execution-engine.md Part 7). Do not let the shared word blur the three concepts.
+#
+# STATUS LEGEND: CORE (mandatory for every surface, the gate's baseline six) |
+# ACTIVE (mandatory when touched -- a named incurred cost already exists in this
+# program) | RESERVED (name registered now so nobody reinvents it later; row schema
+# and replay mechanism deferred until first need -- named_risk reads literally as
+# `reserved` until a concrete incurred cost is named).
+
+interaction: {status: CORE, replay: browser-drive replay against a frozen mockup with a11y tree and screenshot capture, named_risk: reachable states ship unobserved including empty error no-op and drag/keyboard paths}
+logic: {status: CORE, replay: golden replay over a pinned seed, named_risk: derivation rules silently diverge from the reference implementation}
+design: {status: CORE, replay: browser-drive replay against a frozen mockup for tokens and style diff, named_risk: thinnest layer in practice -- already paid for via a dark-theme pass and a design-recovery pass}
+data: {status: CORE, replay: schema read plus seed replay, named_risk: entity and lifecycle rules still stranded unextracted in build-spec DDL}
+authorization: {status: CORE, replay: request-level probes per role, named_risk: a hidden tile is mistaken for enforcement while the route stays ungated}
+integration: {status: CORE, replay: corpus observation via probe sessions, named_risk: unowned seam contracts -- the scheduler's range-mapping-OPEN three-seam residue}
+failure: {status: ACTIVE, replay: fault injection, named_risk: error-page writes turn a retry into a duplicate; an app can go offline mid-task}
+async: {status: ACTIVE, replay: event injection plus clock control, named_risk: SSE behavior broke the sweep method; a fire-once UI mechanic never earned a row}
+migration: {status: ACTIVE, replay: dual-run differential against the approved-divergences ledger, named_risk: a build-time adjudication landed outside any manifest in a strangler cutover}
+concurrency: {status: ACTIVE, replay: scripted dual-session drives, named_risk: two terminals on the same slot is not observable driving a single browser}
+format: {status: ACTIVE, replay: deterministic format-validator replay -- pinned seed of exemplar plus per-row defective artifact instances at full tier, the live artifact at smoke tier; RUBRIC rows via independent-grader review, never counted as mechanical coverage, named_risk: model-authored surfaces (briefings, inboxes, receipts) drift from their parser/reader contract -- one briefing-format drift instance already caught and guarded ad hoc (long-horizon seam census 2026-07-22, FORMAT seam; admitted session D 2026-07-23)}
+performance: {status: RESERVED, replay: budget-row measurement against timing thresholds, named_risk: reserved}
+observability: {status: RESERVED, replay: telemetry event capture and replay, named_risk: reserved}
+data-protection: {status: RESERVED, replay: field-handling audit across mask omit and retain, named_risk: reserved}
+peripherals: {status: RESERVED, replay: device-integration probe -- structurally an integration row with a device sub-genre, named_risk: reserved}
+i18n: {status: RESERVED, replay: locale-variant replay -- name only for now, named_risk: reserved}
+construction: {status: RESERVED, replay: the linter itself, named_risk: reserved}
+dependency: {status: RESERVED, replay: upgrade amendment plus re-sweep -- name only for now, named_risk: reserved}
+rendering-fit: {status: RESERVED, replay: live-drive plus dom-measure against realistic-length content at real density -- a different replay input than the frozen-mockup diff interaction/design already run, never routed through those mechanisms, named_risk: a build can be pixel-faithful to the frozen design export and still truncate or overflow real content at real density -- conformance-to-design and real-data-fitness are orthogonal measurements, and passing one proves nothing about the other; admission rationale: the scheduler's RENDERING-FIT manifest class, born 2026-07-23 from a live-board operator observation on the production Day Board ("comfortable and compact density way too small"), exemplar preserved at harness-v3.0/mdd-handover-2026-07-24/}
+config: {status: RESERVED, replay: schema read plus per-value operator sign-off -- a materially different replay mechanism from browser-drive or golden replay, never routed through either, named_risk: provisioned or seeded business configuration ships without per-value provenance, so a bad value is indistinguishable from a deliberate business decision once it is live; admission rationale: the tenant-provisioning exemplar (scheduler tenant-0 Stage-1 -- manifest, operator rulings, derived migration, QA re-pin, cross-vendor review, prod deploy, read-back conformance) ran its full loop end-to-end 2026-07-23, exemplar preserved at harness-v3.0/mdd-handover-2026-07-24/}
+
+# Dimensions of interaction/design (doctrine Section 4.4) -- NOT layers. They replay
+# through the same browser drive as interaction/design rows (row fields and
+# variant-matrix axes on those manifests), so they never earn their own row schema or
+# replay mechanism -- admitting one as a layer would violate the admission rule's
+# "dimension, not a new layer" clause above.
+dimensions: [accessibility, viewport, copy]

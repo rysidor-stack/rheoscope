@@ -1,0 +1,67 @@
+{
+  "//": "Instantiated to .claude/settings.local.json by init (consent-prompted, see INIT.md 6b).",
+  "//allow": "Pre-authorized work. Rationale: deploy/check-autonomy-disposition.py rule 3 -- an action that is REVERSIBLE and DETERMINISTICALLY VERIFIABLE is AUTONOMOUS, no human gate. Every entry below is repo-scoped and git-reversible, and the PreToolUse hooks (not the permission prompt) are the actual security boundary: block-dangerous-bash.sh still mediates every Bash/PowerShell call and block-env-writes.sh every Edit/Write, allowlisted or not. Shipping a one-Read allowlist instead made every sensor, compile, and edit interrupt the operator forever, which is anti-automation and trains rubber-stamping (backlog v3.0-76).",
+  "//deny": "Kept gated deliberately, by class rather than by taste: egress (git push), history-destroying local ops (hard reset, clean), the credential broker (credential-class per deploy/safe-allowlist.yaml F-1), and .env writes. Absence from `allow` is itself a gate -- there is no catch-all, and there must never be one.",
+  "permissions": {
+    "allow": [
+      "Read({{project_root_path}}/**)",
+      "Edit({{project_root_path}}/**)",
+      "Write({{project_root_path}}/**)",
+      "Glob",
+      "Grep",
+      "Bash(git *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(py *)",
+      "Bash(node *)",
+      "Bash(jq *)",
+      "PowerShell(git *)",
+      "PowerShell(python *)",
+      "PowerShell(python3 *)",
+      "PowerShell(py *)",
+      "PowerShell(node *)"
+    ],
+    "deny": [
+      "mcp__claude_ai_Gmail__*",
+      "mcp__claude_ai_Google_Calendar__*",
+      "mcp__claude_ai_Intuit_QuickBooks__*",
+      "mcp__claude_ai_Context7__*",
+      "Bash(git push *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean *)",
+      "PowerShell(git push *)",
+      "PowerShell(git reset --hard *)",
+      "PowerShell(git clean *)",
+      "Bash(*credential-store*)",
+      "Bash(*credential-use*)",
+      "Bash(*credential-remove*)",
+      "PowerShell(*credential-store*)",
+      "PowerShell(*credential-use*)",
+      "PowerShell(*credential-remove*)",
+      "Edit(**/.env*)",
+      "Write(**/.env*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/core/security/hooks/block-dangerous-bash.sh" }
+        ]
+      },
+      {
+        "matcher": "PowerShell",
+        "hooks": [
+          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/core/security/hooks/block-dangerous-bash.sh" }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/core/security/hooks/block-env-writes.sh" }
+        ]
+      }
+    ]
+  }
+}

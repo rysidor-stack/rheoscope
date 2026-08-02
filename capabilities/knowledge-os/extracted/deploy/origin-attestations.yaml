@@ -1,0 +1,13 @@
+# origin-attestations.yaml -- B2 per-event operator attestations (F7 rule limb 0).
+#
+# Records the operator's interactive attestation that a specific raw event's content is
+# `human` origin -- content from the operator's own direct input (decisions, dialogue,
+# walkthroughs), SESSION-TRANSCRIBED and not necessarily hand-typed authorship -- as
+# distinct from scraped or third-party-presented content. Each entry names the event id,
+# the attested origin, who attested it, when, and the basis for the attestation.
+#
+# Append-only after P1-live (F7/B2): entries are added as the operator attests specific
+# events during P1/B2 review; an existing entry is never removed or edited.
+#
+# Empty at instance start.
+attestations: []

@@ -1,0 +1,29 @@
+# Fixture: the template-repo-era governance handoff shape (the
+# HARNESS_ERA_FOLDERS defect set): status locked but missing several
+# HANDOFF_REQUIRED keys, an extra field ('hypothesis') outside the pruned
+# shape, and a ../../ locked_by_raw_file escaping the repo's raw/ ledger.
+# run_self_test feeds this SAME meta to check_handoff twice:
+#   - under a HARNESS_ERA_FOLDERS folder name
+#     (2026-06-08-harness-v2.0-scope-review) -> expected ZERO violations
+#     (field-schema / INDEX / raw-back-link checks exempted; the status
+#     'locked' is legal so the status gate passes too);
+#   - under a non-exempt current-protocol folder name
+#     (2026-07-06-not-exempt-same-defects) -> expected violations
+#     (missing required fields, fields outside the pruned shape,
+#     locked_by_raw_file '../../...' does not exist on disk).
+# This proves the exemption is a named one-off, never a wildcard: any NEW
+# folder with the same defects still fires every check.
+handoff_id: harness-era-shape-fixture
+status: locked
+locked: 2026-06-09
+locked_by_raw_file: ../../harness-v2.0/adr/2026-06-09-1-fixture-scope-lock.md
+authored: 2026-06-08
+authored_by: fixture-author
+hypothesis: "template-era field name that is outside the pruned shape"
+hypothesis_outcome: confirmed
+target_substrate: fixture-substrate
+tier: T2
+rounds_completed: 0
+round_modes: []
+round_overrides: []
+supersedes: null

@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rheoscope: how the factory works</title>
+<style>
+  :root{
+    --bg:#f7f6f2; --surface:#ffffff; --surface-2:#f0eee7; --border:#e2ded2; --border-strong:#cfc9b8;
+    --text:#211f1a; --text-dim:#5b5748; --text-faint:#8a8674;
+    --accent:#a8471f; --accent-ink:#8a3a19; --accent-bg:#fbeee5; --accent-ring:#e7c7b0;
+
+    --intake:#5b6b3f; --intake-bg:#eef2e4; --intake-ink:#465330;
+    --refinery:#a8471f; --refinery-bg:#fbeee5; --refinery-ink:#8a3a19;
+    --lab:#2b5f7a; --lab-bg:#e6f0f4; --lab-ink:#204a60;
+    --desk:#7a4f9e; --desk-bg:#f1e9f7; --desk-ink:#623e80;
+    --station:#8a7a3a; --station-bg:#f6f1de; --station-ink:#6e6128;
+
+    --shadow: 0 1px 2px rgba(30,25,15,.04), 0 6px 18px rgba(30,25,15,.06);
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#17140f; --surface:#211d16; --surface-2:#2a251b; --border:#3a3324; --border-strong:#4e4630;
+      --text:#f1ede1; --text-dim:#c3bca6; --text-faint:#928a6f;
+      --accent:#e29057; --accent-ink:#f0a874; --accent-bg:#332417; --accent-ring:#5a3f26;
+
+      --intake:#9fc27a; --intake-bg:#26301d; --intake-ink:#b9d99a;
+      --refinery:#e29057; --refinery-bg:#332417; --refinery-ink:#f0a874;
+      --lab:#7fb8d6; --lab-bg:#182b34; --lab-ink:#9fcfe8;
+      --desk:#c39ee0; --desk-bg:#2a2033; --desk-ink:#d7b8f0;
+      --station:#d9c66b; --station-bg:#2e2a17; --station-ink:#e8d888;
+
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 8px 22px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#17140f; --surface:#211d16; --surface-2:#2a251b; --border:#3a3324; --border-strong:#4e4630;
+    --text:#f1ede1; --text-dim:#c3bca6; --text-faint:#928a6f;
+    --accent:#e29057; --accent-ink:#f0a874; --accent-bg:#332417; --accent-ring:#5a3f26;
+    --intake:#9fc27a; --intake-bg:#26301d; --intake-ink:#b9d99a;
+    --refinery:#e29057; --refinery-bg:#332417; --refinery-ink:#f0a874;
+    --lab:#7fb8d6; --lab-bg:#182b34; --lab-ink:#9fcfe8;
+    --desk:#c39ee0; --desk-bg:#2a2033; --desk-ink:#d7b8f0;
+    --station:#d9c66b; --station-bg:#2e2a17; --station-ink:#e8d888;
+    --shadow: 0 1px 2px rgba(0,0,0,.35), 0 8px 22px rgba(0,0,0,.35);
+  }
+  :root[data-theme="light"]{
+    --bg:#f7f6f2; --surface:#ffffff; --surface-2:#f0eee7; --border:#e2ded2; --border-strong:#cfc9b8;
+    --text:#211f1a; --text-dim:#5b5748; --text-faint:#8a8674;
+    --accent:#a8471f; --accent-ink:#8a3a19; --accent-bg:#fbeee5; --accent-ring:#e7c7b0;
+    --intake:#5b6b3f; --intake-bg:#eef2e4; --intake-ink:#465330;
+    --refinery:#a8471f; --refinery-bg:#fbeee5; --refinery-ink:#8a3a19;
+    --lab:#2b5f7a; --lab-bg:#e6f0f4; --lab-ink:#204a60;
+    --desk:#7a4f9e; --desk-bg:#f1e9f7; --desk-ink:#623e80;
+    --station:#8a7a3a; --station-bg:#f6f1de; --station-ink:#6e6128;
+    --shadow: 0 1px 2px rgba(30,25,15,.04), 0 6px 18px rgba(30,25,15,.06);
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg); color:var(--text); font-family:var(--sans);
+    font-size:16px; line-height:1.6; padding:0 0 60px 0;
+    -webkit-font-smoothing:antialiased;
+  }
+  @media print{
+    body{background:#fff; color:#111; padding:0;}
+    .zone, .station-card, .principle, .footer-line, .detail-card, .stat, .step, .human-moment{box-shadow:none !important;}
+    .hero{background:#fff;}
+  }
+
+  main{max-width:1080px; margin:0 auto; padding:0 24px;}
+
+  .hero{
+    background:var(--surface); border-bottom:1px solid var(--border);
+    padding:40px 0 30px 0; margin-bottom:8px;
+  }
+  .hero-inner{max-width:1080px; margin:0 auto; padding:0 24px;}
+  .kicker{
+    display:block; font-size:.78rem; font-weight:800; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--text-faint); margin-bottom:10px;
+  }
+  .stamp{
+    display:inline-block; font-size:.78rem; letter-spacing:.02em; color:var(--accent-ink);
+    background:var(--accent-bg); border:1px solid var(--accent-ring); border-radius:999px;
+    padding:5px 14px; margin-bottom:16px;
+  }
+  h1{
+    margin:0 0 14px 0; font-size:clamp(1.9rem, 4vw, 2.6rem); line-height:1.15;
+    letter-spacing:-0.02em; font-weight:800; color:var(--text);
+  }
+  .lede{
+    margin:0; color:var(--text-dim); font-size:1.05rem; max-width:800px;
+  }
+  .tagline{
+    margin:0 0 14px 0; font-size:1rem; font-weight:700; color:var(--accent-ink); max-width:800px;
+  }
+  .epigraph{
+    margin:0 0 16px 0; padding:14px 18px; border-left:4px solid var(--station);
+    background:var(--station-bg); border-radius:0 10px 10px 0; font-size:.96rem;
+    color:var(--text); font-style:italic;
+  }
+  .epigraph + p{margin-top:0 !important;}
+  .toc{margin:18px 0 0 0; padding:12px 18px; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; font-size:.85rem; color:var(--text-dim); max-width:800px;}
+  .toc strong{color:var(--text);}
+
+  /* ===================== part headers ===================== */
+  .part-header{margin:56px 0 22px 0; padding-top:26px; border-top:3px solid var(--border-strong);}
+  .part-header.first{border-top:none; padding-top:8px; margin-top:8px;}
+  .part-eyebrow{display:block; font-size:.78rem; font-weight:800; letter-spacing:.16em; text-transform:uppercase; margin-bottom:8px;}
+  .part-header.p1 .part-eyebrow{color:var(--intake-ink);}
+  .part-header.p2 .part-eyebrow{color:var(--desk-ink);}
+  .part-header.p3 .part-eyebrow{color:var(--refinery-ink);}
+  .part-header.p4 .part-eyebrow{color:var(--lab-ink);}
+  .part-title{font-size:clamp(1.5rem,3.4vw,2.05rem); font-weight:800; letter-spacing:-0.02em; margin:0 0 8px 0;}
+  .part-sub{color:var(--text-dim); font-size:.98rem; max-width:760px; margin:0;}
+
+  h2{
+    font-size:1.26rem; font-weight:800; letter-spacing:-0.01em; margin:38px 0 6px 0;
+    color:var(--text);
+  }
+  h2 .num{
+    display:inline-block; width:1.55em; height:1.55em; line-height:1.55em; text-align:center;
+    border-radius:50%; background:var(--accent-bg); color:var(--accent-ink); font-size:.58em;
+    margin-right:9px; vertical-align:middle; font-weight:800;
+  }
+  .section-intro{color:var(--text-dim); margin:0 0 16px 0; max-width:760px; font-size:.97rem;}
+
+  /* ===================== numbered story steps ===================== */
+  .steps{margin:18px 0 8px 22px;}
+  .step{
+    position:relative; padding:0 0 28px 34px; margin-left:0; border-left:2px solid var(--border);
+  }
+  .step:last-child{border-left-color:transparent; padding-bottom:2px;}
+  .step::before{
+    content:attr(data-n); position:absolute; left:-21px; top:-2px;
+    width:40px; height:40px; border-radius:50%; background:var(--intake-bg); color:var(--intake-ink);
+    border:3px solid var(--bg); display:flex; align-items:center; justify-content:center;
+    font-weight:800; font-size:1rem; box-shadow:0 0 0 2px var(--intake);
+  }
+  .step h4{margin:4px 0 6px 0; font-size:1.03rem; font-weight:800; color:var(--text);}
+  .step p{margin:0 0 8px 0; color:var(--text-dim); font-size:.94rem;}
+  .step p:last-child{margin-bottom:0;}
+
+  .human-moment{
+    background:var(--accent-bg); border:1px solid var(--accent-ring); border-radius:10px;
+    padding:11px 15px; margin-top:10px; font-size:.89rem; color:var(--text);
+  }
+  .human-moment .htag{
+    display:inline-block; font-size:.67rem; font-weight:800; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--accent-ink); margin-bottom:4px;
+  }
+
+  .info-card{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:16px 20px; margin-bottom:12px; box-shadow:var(--shadow);
+  }
+  .info-card h3{margin:0 0 6px 0; font-size:.98rem; font-weight:800; color:var(--accent-ink);}
+  .info-card p{margin:0; font-size:.93rem; color:var(--text-dim);}
+  .info-card p + p{margin-top:8px;}
+  .info-card ul{margin:6px 0 0 0; padding-left:20px; color:var(--text-dim); font-size:.92rem;}
+  .info-card li{margin-bottom:4px;}
+  .info-card li strong{color:var(--text);}
+
+  /* ===================== levers list ===================== */
+  .lever-list{display:flex; flex-direction:column; margin:14px 0 4px 0;}
+  .lever-row{
+    display:grid; grid-template-columns:132px 1fr; gap:16px; padding:12px 0;
+    border-top:1px solid var(--border); align-items:baseline;
+  }
+  .lever-row:first-child{border-top:none;}
+  .lever-row .lever-desc{color:var(--text-dim); font-size:.92rem;}
+  .lever-row .lever-desc strong{color:var(--text); font-weight:700;}
+  @media (max-width:560px){
+    .lever-row{grid-template-columns:1fr; gap:4px;}
+  }
+
+  /* ===================== floor plan (orientation view) ===================== */
+  .floorplan{
+    display:flex; flex-wrap:wrap; align-items:stretch; gap:0; margin:16px 0 10px 0;
+  }
+  .zone{
+    background:var(--surface); border:1px solid var(--border); border-radius:14px;
+    box-shadow:var(--shadow); padding:16px 16px 14px 16px; flex:1 1 180px; min-width:180px;
+    position:relative;
+  }
+  .zone-label{
+    font-size:.68rem; text-transform:uppercase; letter-spacing:.08em; font-weight:800;
+    margin-bottom:5px;
+  }
+  .zone-title{font-size:.95rem; font-weight:800; margin:0 0 5px 0; color:var(--text);}
+  .zone-body{font-size:.82rem; color:var(--text-dim); margin:0;}
+  .zone.intake{border-top:4px solid var(--intake);}
+  .zone.intake .zone-label{color:var(--intake-ink);}
+  .zone.refinery{border-top:4px solid var(--refinery);}
+  .zone.refinery .zone-label{color:var(--refinery-ink);}
+  .zone.lab{border-top:4px solid var(--lab);}
+  .zone.lab .zone-label{color:var(--lab-ink);}
+  .zone.desk{border-top:4px solid var(--desk);}
+  .zone.desk .zone-label{color:var(--desk-ink);}
+
+  .arrow{
+    display:flex; align-items:center; justify-content:center; flex:0 0 34px; color:var(--text-faint);
+    font-size:1.4rem; padding:0 2px;
+  }
+
+  .lab-cluster{display:flex; flex-direction:column; gap:10px; flex:1 1 180px; min-width:180px;}
+  .lab-cluster .zone{flex:none;}
+  .lab-cluster .zone.inspector{border-top:4px solid var(--lab); opacity:.92;}
+
+  @media (max-width: 820px){
+    .floorplan{flex-direction:column;}
+    .arrow{transform:rotate(90deg); padding:6px 0; align-self:center;}
+    .lab-cluster{flex-direction:column;}
+  }
+
+  .stations-line{margin:14px 0 0 0; color:var(--text-dim); font-size:.9rem;}
+  .stations-line strong{color:var(--text);}
+
+  /* ===================== detail cards (WHAT / HOW / WHY) ===================== */
+  .detail-card{
+    background:var(--surface); border:1px solid var(--border); border-radius:14px;
+    box-shadow:var(--shadow); padding:18px 22px 16px 22px; margin-bottom:14px;
+    border-left:5px solid var(--accent);
+  }
+  .detail-card.c-intake{border-left-color:var(--intake);}
+  .detail-card.c-refinery{border-left-color:var(--refinery);}
+  .detail-card.c-lab{border-left-color:var(--lab);}
+  .detail-card.c-desk{border-left-color:var(--desk);}
+  .detail-card.c-station{border-left-color:var(--station);}
+  .detail-card .eyebrow{
+    font-size:.7rem; text-transform:uppercase; letter-spacing:.09em; font-weight:800;
+    margin-bottom:4px;
+  }
+  .detail-card.c-intake .eyebrow{color:var(--intake-ink);}
+  .detail-card.c-refinery .eyebrow{color:var(--refinery-ink);}
+  .detail-card.c-lab .eyebrow{color:var(--lab-ink);}
+  .detail-card.c-desk .eyebrow{color:var(--desk-ink);}
+  .detail-card.c-station .eyebrow{color:var(--station-ink);}
+  .detail-card h3{margin:0 0 10px 0; font-size:1.1rem; font-weight:800; color:var(--text);}
+  .detail-card .sub{
+    margin:11px 0 3px 0; font-size:.7rem; font-weight:800; text-transform:uppercase;
+    letter-spacing:.07em; color:var(--text-faint);
+  }
+  .detail-card .sub:first-of-type{margin-top:0;}
+  .detail-card p{margin:2px 0 0 0; font-size:.9rem; color:var(--text-dim);}
+
+  .station-grid-2{display:grid; grid-template-columns:1fr; gap:14px;}
+  @media (min-width: 860px){
+    .station-grid-2{grid-template-columns:1fr 1fr;}
+  }
+
+  /* ===================== stat tiles ===================== */
+  .stat-grid{
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:14px;
+    margin:18px 0 22px 0;
+  }
+  .stat{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:16px 16px 14px 16px; box-shadow:var(--shadow);
+  }
+  .stat .num{
+    display:block; font-size:1.9rem; font-weight:800; color:var(--accent-ink); letter-spacing:-0.02em;
+    line-height:1.1; margin-bottom:4px;
+  }
+  .stat .label{font-size:.8rem; color:var(--text-dim); line-height:1.35;}
+
+  /* ===================== proof-of-scale band ===================== */
+  .scale-band{
+    margin:22px 0 26px 0; padding:22px 24px; border:1px solid var(--accent-ring); border-radius:14px;
+    background:linear-gradient(180deg, var(--accent-bg), var(--surface)); box-shadow:var(--shadow);
+  }
+  .scale-band h3{margin:0 0 4px 0; font-size:1.05rem; font-weight:800; color:var(--accent-ink);}
+  .scale-note{margin:0 0 16px 0; font-size:.85rem; color:var(--text-dim); max-width:680px;}
+  .scale-grid{
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(120px,1fr)); gap:12px; margin-bottom:14px;
+  }
+  .scale-stat{
+    background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:12px 12px 10px 12px;
+  }
+  .scale-stat .num{display:block; font-size:1.5rem; font-weight:800; color:var(--text); letter-spacing:-.02em; line-height:1.1; margin-bottom:2px;}
+  .scale-stat .label{font-size:.76rem; color:var(--text-dim); line-height:1.3;}
+  .scale-stat.star{border-color:var(--accent-ring); background:var(--accent-bg);}
+  .scale-stat.star .num{color:var(--accent-ink); font-size:1.7rem;}
+  .scale-caption{margin:0; font-size:.9rem; color:var(--text-dim); max-width:720px;}
+  .scale-caption strong{color:var(--text);}
+
+  /* ===================== week schedule ===================== */
+  .schedule{
+    display:grid; grid-template-columns:140px 1fr; gap:0 20px; margin-top:6px;
+  }
+  .schedule .when{
+    font-weight:800; font-size:.8rem; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--desk-ink); padding:14px 0; border-top:1px solid var(--border);
+  }
+  .schedule .what{
+    padding:14px 0; border-top:1px solid var(--border); color:var(--text-dim); font-size:.93rem;
+  }
+  .schedule .what strong{color:var(--text); font-weight:700;}
+  .schedule .row:first-child .when, .schedule .row:first-child .what{border-top:none;}
+  @media (max-width: 620px){
+    .schedule{grid-template-columns:1fr;}
+    .schedule .what{padding-top:2px;}
+    .schedule .when{padding-bottom:2px; border-top:1px solid var(--border);}
+    .schedule .what{border-top:none;}
+  }
+
+  /* ===================== principles ===================== */
+  .principles{
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(260px,1fr)); gap:14px; margin-top:6px;
+  }
+  .principle{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:18px; box-shadow:var(--shadow);
+  }
+  .principle h3{margin:0 0 6px 0; font-size:.98rem; font-weight:800; color:var(--accent-ink);}
+  .principle p{margin:0; font-size:.9rem; color:var(--text-dim);}
+
+  /* ===================== footer ===================== */
+  footer{
+    margin-top:56px; padding-top:22px; border-top:1px solid var(--border);
+  }
+  footer h2{margin-top:0; margin-bottom:12px; font-size:1.1rem;}
+  .footer-line{
+    display:flex; gap:12px; align-items:baseline; padding:9px 0; font-size:.9rem;
+    border-bottom:1px solid var(--border);
+  }
+  .footer-line:last-child{border-bottom:none;}
+  .footer-line .tag{
+    flex:0 0 auto; font-weight:800; font-size:.7rem; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--accent-ink); background:var(--accent-bg); border:1px solid var(--accent-ring);
+    border-radius:999px; padding:3px 10px; white-space:nowrap;
+  }
+  .footer-line .text{color:var(--text-dim);}
+  .footer-meta{margin-top:18px; font-size:.78rem; color:var(--text-faint);}
+
+  .lever{
+    font-family:ui-monospace, "SFMono-Regular", Consolas, monospace; font-size:.85em;
+    background:var(--surface-2); border:1px solid var(--border); border-radius:5px;
+    padding:1px 7px; color:var(--text); white-space:nowrap;
+  }
+
+  .theme-toggle{
+    position:fixed; top:16px; right:16px; border:1px solid var(--border); background:var(--surface);
+    color:var(--text); border-radius:999px; padding:7px 14px; font-size:.78rem; cursor:pointer;
+    box-shadow:var(--shadow); z-index:30;
+  }
+  @media print{.theme-toggle{display:none;}}
+</style>
+</head>
+<body>
+
+<button class="theme-toggle" id="themeToggle" type="button" onclick="toggleTheme()">Toggle theme</button>
+
+<div class="hero">
+  <div class="hero-inner">
+    <span class="kicker">Rheoscope, the project OS harness</span>
+    <span class="stamp">verified-against: 3.0 (2026-07-25)</span>
+    <h1>How the factory works</h1>
+    <p class="tagline">A trust machine: it exists so you never have to take anyone's word, including its own.</p>
+    <p class="lede">
+      This page starts with the part that matters most if you've never done this before: how to
+      stand the factory up from nothing, and what actually running it day to day looks like. After
+      that comes the full map of the factory itself (every station, how it works, and why), plus
+      what the numbers look like once a venture has been running on it for a while.
+    </p>
+    <p class="toc">
+      <strong>Part 1:</strong> Standing it up from nothing &nbsp;&middot;&nbsp;
+      <strong>Part 2:</strong> How you actually run it &nbsp;&middot;&nbsp;
+      <strong>Part 3:</strong> The floor plan, in depth &nbsp;&middot;&nbsp;
+      <strong>Part 4:</strong> The full picture
+    </p>
+  </div>
+</div>
+
+<main>
+
+  <!-- ============================================================ PART 1 ============================================================ -->
+  <div class="part-header p1 first">
+    <span class="part-eyebrow">Part 1</span>
+    <h1 class="part-title">Standing it up from nothing</h1>
+    <p class="part-sub">
+      Written for someone who's never done this before: unpacking the package to having your
+      first real knowledge filed and organized, in order, with the two moments that actually
+      need your hands called out plainly.
+    </p>
+  </div>
+
+  <h2><span class="num">1.1</span>What you need before you start</h2>
+  <div class="info-card">
+    <ul>
+      <li><strong>A computer.</strong> Windows, Mac, or Linux all work.</li>
+      <li><strong>A Claude account with Claude Code.</strong> If you don't already have it installed, just ask Claude itself to walk you through installing it. That's a completely normal thing to ask, the same way you'd ask a person for help setting up a new phone. You don't need to know anything technical going in.</li>
+      <li><strong>A handful of small helper tools.</strong> The factory's own built-in Inspector checks for these automatically once you're set up, and tells you in plain English if anything's missing and how to get it. You don't need to track them down yourself.</li>
+    </ul>
+  </div>
+  <div class="human-moment">
+    <span class="htag">One small practical tip</span>
+    Unpack the folder somewhere ordinary, like directly under Documents. Any normal location works
+    fine; the one edge case is Windows and extremely deeply nested folders, and if you ever manage
+    to hit it, setup stops with a clear message telling you exactly what to do rather than failing
+    strangely.
+  </div>
+
+  <h2><span class="num">1.2</span>The setup, step by step</h2>
+  <p class="section-intro">
+    You never need a technical command for any of this. Open Claude Code in the folder, and tell
+    it what you want in plain English. It handles the rest.
+  </p>
+
+  <div class="steps">
+    <div class="step" data-n="1">
+      <h4>Unpack the package into a folder</h4>
+      <p>You'll be handed the factory as a package. Unpack it into its own folder on your computer, somewhere shallow (see the tip above). That folder is now the venture's home.</p>
+    </div>
+    <div class="step" data-n="2">
+      <h4>Open Claude Code in that folder</h4>
+      <p>Point Claude Code at the folder you just unpacked. It's the same as opening any app on a specific project: you're just telling it "work here."</p>
+    </div>
+    <div class="step" data-n="3">
+      <h4>Say "set this up for me"</h4>
+      <p>Your own words are fine. Claude Code will ask a few basic questions first: the venture's name, a one-line description, who's involved. Then it configures itself and runs its own setup checks.</p>
+      <div class="human-moment">
+        <span class="htag">Human moment 1</span>
+        Partway through, it will ask permission to turn on its built-in safety fence: the guardrail
+        that blocks dangerous actions before they can run (more in Part 3). <strong>Say yes.</strong>
+        This is the one setup question worth pausing on; everything else is safe to move through
+        quickly.
+      </div>
+      <div class="human-moment">
+        <span class="htag">Human moment 2</span>
+        Claude Code may also pop up its own permission prompts along the way, asking to read or
+        write a particular file, for instance. Normal, expected checkpoints. Approve them as they
+        come.
+      </div>
+    </div>
+    <div class="step" data-n="4">
+      <h4>The founding interview</h4>
+      <p>Once setup finishes, you'll have a longer, unhurried conversation: not a building session, just talking. The part that matters most; its own section follows.</p>
+    </div>
+    <div class="step" data-n="5">
+      <h4>The health check comes back green</h4>
+      <p>At the end of setup, the factory checks itself over automatically and tells you plainly whether everything is wired correctly. If you see one stray complaint about a deeply-nested test folder on Windows, that's the same long-path quirk from above, not a real problem. The fix is identical.</p>
+    </div>
+    <div class="step" data-n="6">
+      <h4>Drop in what you already have</h4>
+      <p>Existing notes, research, documents: drop the files in and say "here's what I already have, please organize this into the wiki." That's your first real piece of organized knowledge, filed and cross-linked, on day one.</p>
+    </div>
+  </div>
+
+  <div class="info-card">
+    <h3>How long this actually takes</h3>
+    <p>About an hour, start to finish: nearly all of it the founding interview, not the technical setup. Setup itself is usually a few minutes; the interview is deliberately unhurried, and rushing it is the one mistake worth avoiding.</p>
+  </div>
+
+  <h2><span class="num">1.3</span>The founding interview</h2>
+  <p class="section-intro">
+    A real conversation, not a form. What you say here becomes the venture's constitution and its
+    roadmap: the document every future session and every future decision gets checked against.
+  </p>
+
+  <div class="info-card">
+    <h3>What it asks</h3>
+    <ul>
+      <li><strong>What the venture is:</strong> in your own words, how the pieces fit together, not a feature list.</li>
+      <li><strong>Where it's going:</strong> what "done" or "successful" actually looks like.</li>
+      <li><strong>Hard constraints:</strong> the "thou shalt not" list, the kind you could actually catch happening.</li>
+      <li><strong>The phases of the road ahead:</strong> three to five stretches of work, in order.</li>
+      <li><strong>What kinds of knowledge it will hold:</strong> the subject areas the wiki organizes around.</li>
+      <li><strong>Existing research or materials:</strong> anything you already have, and why it matters.</li>
+      <li><strong>The handful of terms worth pinning down:</strong> words defined once, clearly, so nobody argues about them later.</li>
+      <li><strong>Any hard-to-reverse decisions already made:</strong> the kind that would surprise someone joining later without the backstory.</li>
+    </ul>
+  </div>
+
+  <div class="info-card">
+    <h3>How to answer well</h3>
+    <p>Honest and specific, in your own words. If a question stops you cold (especially "what is this, architecturally" or "what does done look like"), that's a real signal, not a formality to push through: the venture hasn't settled into a shape yet, and a shallow-but-fast answer now becomes an anchor everything downstream gets measured against.</p>
+    <p>Better to pause and come back once you actually know the answer. Nobody's timing you.</p>
+  </div>
+
+  <h2><span class="num">1.4</span>Green light: first knowledge in</h2>
+  <p class="section-intro">
+    Once the interview is done and the health check is green, the venture is genuinely live: its
+    own constitution, its own roadmap, its own glossary, and (if you dropped anything in at step
+    6) its first organized, cross-linked knowledge already on file. Running it is Part 2.
+  </p>
+
+  <!-- ============================================================ PART 2 ============================================================ -->
+  <div class="part-header p2">
+    <span class="part-eyebrow">Part 2</span>
+    <h1 class="part-title">How you actually run it</h1>
+    <p class="part-sub">
+      A short daily habit, plus a small set of things you say out loud to move work forward.
+      Nothing here needs to be memorized.
+    </p>
+  </div>
+
+  <h2><span class="num">2.1</span>The planning altitude stack</h2>
+  <p class="section-intro">Three layers, from the months-long view down to today's work:</p>
+  <div class="lever-list">
+    <div class="lever-row">
+      <span></span>
+      <span class="lever-desc"><strong>The Roadmap:</strong> born in the founding interview, this is the months-long map of where the venture is going, in phases. Changes rarely, and only on purpose.</span>
+    </div>
+    <div class="lever-row">
+      <span class="lever">/preflight</span>
+      <span class="lever-desc">Before committing to any phase or plan, the machine stress-tests it against everything it already knows. Requirements get challenged <strong>before</strong> work starts, not discovered as a failure after.</span>
+    </div>
+    <div class="lever-row">
+      <span class="lever">/flight-plan</span>
+      <span class="lever-desc">The start-of-session ritual: one briefing covering what changed, what's healthy, and what needs attention. The cockpit, where every session begins.</span>
+    </div>
+  </div>
+
+  <h2><span class="num">2.2</span>The levers you actually pull</h2>
+  <p class="section-intro">
+    You don't memorize commands. Plain English routes to the right machinery on its own; these
+    are shortcuts, never a requirement.
+  </p>
+  <div class="lever-list">
+    <div class="lever-row"><span class="lever">/flight-plan</span><span class="lever-desc">Brings you up to speed on where things stand before you start working.</span></div>
+    <div class="lever-row"><span class="lever">/compile</span><span class="lever-desc">Turns whatever raw notes are waiting into organized, linked knowledge.</span></div>
+    <div class="lever-row"><span class="lever">/sweep</span><span class="lever-desc">Checks everything at once and gives you one plain-English health briefing.</span></div>
+    <div class="lever-row"><span class="lever">/preflight</span><span class="lever-desc">Stress-tests a plan against the evidence before you commit to it.</span></div>
+    <div class="lever-row"><span class="lever">/orient</span><span class="lever-desc">Answers any question about how your own project works, from your actual files, never from memory.</span></div>
+    <div class="lever-row"><span class="lever">/doctor</span><span class="lever-desc">Checks that the machine itself (its tools, its wiring) is set up right.</span></div>
+  </div>
+
+  <h2><span class="num">2.3</span>A week in the life</h2>
+  <p class="section-intro">
+    A concrete, ordinary week: the operator's actual touchpoints, and what the machine was doing
+    underneath them at the same time.
+  </p>
+
+  <div class="schedule">
+    <div class="row">
+      <div class="when">Monday</div>
+      <div class="what">Open the laptop, read the one-page briefing (about a minute). Two items are sitting in the decision inbox; both come with a recommendation attached, so you answer both in a couple of minutes and move on with your day.</div>
+    </div>
+    <div class="row">
+      <div class="when">Tuesday</div>
+      <div class="what">Nothing needed. Everything ran clean overnight. You don't open the briefing at all, and nothing is lost by skipping it: it'll still be there tomorrow, current as of last night.</div>
+    </div>
+    <div class="row">
+      <div class="when">Wednesday</div>
+      <div class="what">You drop in some new meeting notes and say "compile these." A couple of minutes of your time; the organizing work happens on its own afterward.</div>
+    </div>
+    <div class="row">
+      <div class="when">Thursday</div>
+      <div class="what">One item in the inbox is a genuine business call, not a quick yes/no; you think about it over the day and answer that evening. Everything else in the briefing is clean.</div>
+    </div>
+    <div class="row">
+      <div class="when">Friday</div>
+      <div class="what">A quick check-in, everything green, done for the week.</div>
+    </div>
+  </div>
+
+  <div class="info-card">
+    <h3>Meanwhile, the same week</h3>
+    <p>Every one of those nights, the machine ran its full health check on its own, kept the wiki current, watched every deadline and renewal clock still years out, and logged every new piece of raw material with a full paper trail back to its source, whether or not you ever opened the laptop.</p>
+    <p><strong>Total time you actually spent that week: well under half an hour.</strong> That gap between a week of real work and minutes of your attention is the entire point.</p>
+  </div>
+
+  <h2><span class="num">2.4</span>What you never do</h2>
+  <p class="section-intro">
+    Reading code. Running anything by hand. Checking whether something "actually worked" yourself.
+    The receipts and the briefings exist for exactly one reason: so you never have to run on a
+    feeling about whether the factory did its job. You check the briefing, not your gut.
+  </p>
+
+  <!-- ============================================================ PART 3 ============================================================ -->
+  <div class="part-header p3">
+    <span class="part-eyebrow">Part 3</span>
+    <h1 class="part-title">The floor plan, in depth</h1>
+    <p class="part-sub">
+      Everything above is the practice. This part is the map underneath it: what each piece
+      actually is, mechanically, and why it's built the way it is.
+    </p>
+  </div>
+
+  <h2><span class="num">3.1</span>The Spec Department</h2>
+  <blockquote class="epigraph">Provenance without manifests is documented ambiguity; manifests without provenance are unauditable assertion. The template ships both or it ships neither.</blockquote>
+  <p class="section-intro">
+    In plain English: knowing where every fact came from (Provenance, the paper trail: every
+    fact chains to a dated source) and knowing what every build was supposed to do (Manifests:
+    behavior written down before the build) are only trustworthy together. Records without specs
+    leave you documented confusion; specs without records leave you claims you can't check. The
+    paper trail itself is Part 4.1.
+  </p>
+  <div class="detail-card c-station">
+    <div class="sub">What it does</div>
+    <p>Before anything gets built, its required behavior is written down as a spec sheet made of individually checkable rows: discrete, testable facts, not a paragraph of prose someone has to interpret.</p>
+    <div class="sub">How many kinds of spec</div>
+    <p>The registry behind this holds twenty kinds of spec in total. Six are core, and every project starts with them: how it looks, how it behaves when clicked, its rules, its data, who may do what, and how it connects to other systems. Five more earned their place because something real went wrong without them, among them the format layer this factory's own daily briefing is certified under, plus what happens when something breaks, background and timed behavior, data migrations, and two people acting on the same thing at once. Nine more are named and waiting, each with its risk written down, activated only when a project first pays that risk's cost: performance budgets, logging, protecting sensitive fields, hardware, other languages, code structure rules, dependency upgrades, real-content fit, and loaded business settings.</p>
+    <div class="sub">The gate is mechanical, not a habit</div>
+    <p>The build machinery physically refuses to start work on anything that touches a piece of the product without a spec sheet for it already in place. Skipping it isn't something a rushed session can just forget to do.</p>
+    <div class="sub">"Done" becomes a count</div>
+    <p>After building, the rows get replayed against the real thing one by one. The result is a number, "how many of the rows actually pass," never "looks done." A surface that passes every row gets certified. This factory's own daily briefing is itself a certified surface: an 18-row spec sheet, all 18 currently passing. Two more surfaces already have their spec sheets extracted and their rows drafted, next in line for certification; only the first is certified today, deliberately, because certifying a surface is real work, not a rubber stamp.</p>
+    <div class="sub">Specs never rot quietly</div>
+    <p>When reality changes, the spec sheet is amended in writing, in the same breath as everything else that change invalidates, never a quiet edit nobody else sees.</p>
+    <div class="sub">Calibrated by a real experiment</div>
+    <p>The discipline isn't a guess. The same certified surface was built twice, independently, by two sessions working only from its spec sheet, then diffed against each other. The builds disagreed in two places the spec sheet hadn't actually pinned down (about one row in nine), and both gaps were written into the spec sheet as a result. The method catching its own blind spots, on the record.</p>
+    <div class="sub">Why it matters</div>
+    <p>"It works" becomes an audited count. Change becomes a declared amendment with a paper trail, never silent drift.</p>
+  </div>
+
+  <h2><span class="num">3.2</span>The floor plan</h2>
+  <p class="section-intro">
+    Work moves left to right through four main stations, with one more checking the machine
+    itself alongside the third.
+  </p>
+
+  <div class="floorplan">
+    <div class="zone intake">
+      <div class="zone-label">Intake Dock</div>
+      <h3 class="zone-title">Where raw material arrives</h3>
+      <p class="zone-body">Dated files land and sit, untouched, until processed. Nothing is ever deleted. Only you can say the word.</p>
+    </div>
+    <div class="arrow">&#8594;</div>
+
+    <div class="zone refinery">
+      <div class="zone-label">The Refinery</div>
+      <h3 class="zone-title">Raw material becomes knowledge</h3>
+      <p class="zone-body"><span class="lever">/compile</span> turns what's waiting into a linked, organized wiki: every claim traceable to its source.</p>
+    </div>
+    <div class="arrow">&#8594;</div>
+
+    <div class="lab-cluster">
+      <div class="zone lab">
+        <div class="zone-label">The Quality Lab</div>
+        <h3 class="zone-title">The nightly health check</h3>
+        <p class="zone-body">Every check runs nightly, read-only, and lands as one plain-English page.</p>
+      </div>
+      <div class="zone inspector">
+        <div class="zone-label">The Inspector</div>
+        <h3 class="zone-title">Checks the machine, not the product</h3>
+        <p class="zone-body">A separate check that the factory's own wiring (tools, hooks, safety systems) is actually set up right.</p>
+      </div>
+    </div>
+    <div class="arrow">&#8594;</div>
+
+    <div class="zone desk">
+      <div class="zone-label">The Front Desk</div>
+      <h3 class="zone-title">The only thing that reaches you</h3>
+      <p class="zone-body">The daily briefing and the decision inbox. Everything here is a genuine decision.</p>
+    </div>
+  </div>
+
+  <p class="stations-line"><strong>Also standing off the main line:</strong> the Second-Opinion Desk, the Vault, the Security Fence, the Night Shift, and the Blueprint Store, covered below.</p>
+
+  <h2><span class="num">3.3</span>The stations, in depth</h2>
+  <p class="section-intro">What each main station does, how it works, and the failure it prevents.</p>
+
+  <div class="detail-card c-intake">
+    <span class="eyebrow">Station 1</span>
+    <h3>Intake Dock</h3>
+    <div class="sub">What / How</div>
+    <p>Every raw thing that comes in (a session write-up, an export, a decision made out loud) lands as its own dated, labeled file in a running order that only ever grows. A fresh instance starts empty; nothing filed here is ever overwritten.</p>
+    <div class="sub">Why</div>
+    <p>A chat transcript evaporates; a shared drive silently overwrites. The dock exists so raw material is never lost or silently changed: the original words are always there to check a later conclusion against.</p>
+    <div class="sub">The one thing that needs a human hand</div>
+    <p>A session's own work can also propose brand-new knowledge, not just file what arrived from outside. But a machine-made proposal is never treated as your word. It sits tagged as proposed until you personally promote it with your own signing key, a step only human hands can take. Machine proposes, human signs; the filing system itself refuses to let a proposal quietly pass as something you confirmed.</p>
+  </div>
+
+  <div class="detail-card c-refinery">
+    <span class="eyebrow">Station 2</span>
+    <h3>The Refinery</h3>
+    <div class="sub">What / How</div>
+    <p>Turns what's waiting into an organized, cross-linked wiki: the only station allowed to change what it says. Every new sentence records exactly which raw file it came from. A fresh instance starts with the subject areas set at kickoff and grows its page count from there.</p>
+    <div class="sub">Why</div>
+    <p>Without it, "what we know" lives only in whoever was in the room. The refinery makes it one checkable, linked document instead of competing memories.</p>
+  </div>
+
+  <div class="detail-card c-lab">
+    <span class="eyebrow">Station 3</span>
+    <h3>The Quality Lab</h3>
+    <div class="sub">What / How</div>
+    <p>Runs every health check nightly, read-only by construction (physically handed no tool that could change anything), and sorts findings into what's fine, what needs a decision, and what's being watched on purpose.</p>
+    <div class="sub">Why</div>
+    <p>Replaces chasing five tools by hand, or assuming things are fine because nothing's screamed lately, with one page and one glance.</p>
+  </div>
+
+  <div class="detail-card c-lab">
+    <span class="eyebrow">Alongside Station 3</span>
+    <h3>The Inspector</h3>
+    <div class="sub">What / How</div>
+    <p>Checks the machine's own wiring (tools, safety hooks, every checker's own self-test), not the knowledge it produces. A clean nightly briefing only means something if the Inspector's own report is clean too.</p>
+    <div class="sub">Why</div>
+    <p>A checker can pass its own self-test while the thing it's supposed to watch was never actually connected: a green light proving only that the light works. That exact failure already happened here once, caught during a self-review.</p>
+  </div>
+
+  <div class="detail-card c-desk">
+    <span class="eyebrow">Station 4</span>
+    <h3>The Front Desk</h3>
+    <div class="sub">What / How</div>
+    <p>The daily briefing and decision inbox. Every item here already survived being something the machine genuinely couldn't resolve alone: a plain yes/no, with what's wrong, what happens if ignored, and whether the fix needs your hands or just your word.</p>
+    <div class="sub">Why</div>
+    <p>Without one funnel, "what needs me today" means chasing a dozen checks yourself. The desk gives that question exactly one answer, never longer than it needs to be.</p>
+  </div>
+
+  <h2><span class="num">3.4</span>The standing stations</h2>
+  <p class="section-intro">Standing capabilities, not steps every piece of work passes through, with the receipts to prove they work.</p>
+
+  <div class="station-grid-2">
+    <div class="detail-card c-station">
+      <span class="eyebrow">Standing station</span>
+      <h3>The Second-Opinion Desk</h3>
+      <div class="sub">What it does</div>
+      <p>Important claims ("this is done," "this decision is safe") get independently challenged by a genuinely different company's AI before they're accepted, on one of three rungs matched to the stakes.</p>
+      <div class="sub">Three rungs</div>
+      <p><strong>Quick opinion:</strong> one claim, one independent reviewer, minutes. <strong>Managed loop:</strong> interlocking claims get challenged, fixed, and re-challenged until nothing new turns up or a round cap hits; hitting the cap isn't failure, it's the signal to stop and write down what's still unsettled instead of papering over it. <strong>Full handoff:</strong> for the biggest calls, a case file argued across separately-briefed sessions on different AI substrates, ending in one locked decision record with its own confidence audit. Once locked, the venture never re-litigates it.</p>
+      <div class="sub">The receipts</div>
+      <p>Over the life of a mature instance, independent reviewers routinely send first-pass work back for a real fix rather than rubber-stamping it, better than one in three on the record so far. The multi-round rung earns its keep the same way: a hard decision that clears round one clean is the exception, not the rule; the normal case is a genuine defect caught, fixed, and confirmed, sometimes with a further round finding more before the review budget is spent.</p>
+    </div>
+
+    <div class="detail-card c-station">
+      <span class="eyebrow">Standing station</span>
+      <h3>The Vault</h3>
+      <div class="sub">What / How</div>
+      <p>Every password and key lives in your computer's own locked credential store, never in a plain file. A session asks for one by name; the vault hands it straight to the tool that needs it, never through the session itself.</p>
+      <div class="sub">Why</div>
+      <p>A credential in a config file or a chat is a leak waiting to happen. The vault removes the leak path instead of trusting everyone downstream to be careful.</p>
+    </div>
+
+    <div class="detail-card c-station">
+      <span class="eyebrow">Standing station</span>
+      <h3>The Security Fence</h3>
+      <div class="sub">What / How</div>
+      <p>A hard block on the specific actions that would be expensive or impossible to undo (network sends, mass deletions), enforced before anything runs, no matter who's asking. It has already blocked its own maintainer's change more than once, until the wording complied.</p>
+      <div class="sub">Why</div>
+      <p>Not a false alarm: the fence refusing to make an exception for its own builder is exactly the job. A safety system that trusts its maintainer to know when to bypass it isn't one.</p>
+    </div>
+
+    <div class="detail-card c-station">
+      <span class="eyebrow">Standing station</span>
+      <h3>The Night Shift</h3>
+      <div class="sub">What / How</div>
+      <p>Built, tested, ready housekeeping that would run the nightly checks, refresh the inbox, and draft a knowledge update on its own, overnight. It's rehearsed against real crash scenarios and writes only to a disposable draft; nothing becomes real until you say yes.</p>
+      <div class="sub">Why</div>
+      <p>New automation earns trust by being watched, not installed. Deliberately off until you've watched its first live run. Ready and turned on are two different things, on purpose.</p>
+    </div>
+
+    <div class="detail-card c-station">
+      <span class="eyebrow">Standing station</span>
+      <h3>The Blueprint Store</h3>
+      <div class="sub">What / How</div>
+      <p>The factory design itself, packaged so a new venture gets the whole thing (dock, refinery, lab, desk, fence, vault, spec sheets) from a standing start. Part 1 above is what going through it actually looks like.</p>
+      <div class="sub">Why</div>
+      <p>Building this fresh for every venture would burn exactly the attention the whole system exists to protect. One proven design makes the sixth venture as cheap as the first.</p>
+    </div>
+  </div>
+
+  <!-- ============================================================ PART 4 ============================================================ -->
+  <div class="part-header p4">
+    <span class="part-eyebrow">Part 4</span>
+    <h1 class="part-title">The full picture</h1>
+    <p class="part-sub">
+      How the factory remembers over years, adapts to ventures of very different sizes, and the
+      principles every piece above answers to.
+    </p>
+  </div>
+
+  <h2><span class="num">4.1</span>Long-horizon memory</h2>
+  <p class="section-intro">Built to track work over months and years. A fresh instance starts at zero on every count below; what matters is that each one only ever grows, and grows honestly.</p>
+
+  <div class="info-card">
+    <h3>Every fact carries its own paper trail</h3>
+    <p>An automatic count re-derives, from scratch, where every filed piece stands, and refuses to report "clean" unless every single one is accounted for: absorbed, waiting, set aside, or skipped, with none simply missing. That count runs every time, not just when something feels off.</p>
+  </div>
+
+  <div class="info-card">
+    <h3>A register that watches clocks years out</h3>
+    <p>Certificate rotations, renewal windows, anything with a deadline years out: once entered, it's visible in every nightly briefing from that day forward, so "later" never quietly becomes "forgotten."</p>
+  </div>
+
+  <div class="info-card">
+    <h3>Sensors built to fail loud, not silent</h3>
+    <p>A staleness check that only ever reports clean because it quietly crashed instead of flagging a real gap is worse than no check at all. This one is built the other way: fail loud, name the gap, and let a person close it, rather than let a crash pass for a clean bill of health.</p>
+  </div>
+
+  <div class="info-card">
+    <h3>The wiki compounds instead of evaporating</h3>
+    <p>A research session six months out builds directly on everything already established. The wiki is a permanent asset; a chat transcript is not.</p>
+  </div>
+
+  <div class="scale-band">
+    <h3>What this looks like at full scale</h3>
+    <p class="scale-note">Measured directly from the flagship venture actually run this way, not output of this template repository itself.</p>
+    <div class="scale-grid">
+      <div class="scale-stat"><span class="num">2.58M</span><span class="label">words of design, decisions, and engineering record</span></div>
+      <div class="scale-stat"><span class="num">1,303</span><span class="label">documents across 5 repositories</span></div>
+      <div class="scale-stat"><span class="num">182,144</span><span class="label">lines of shipped application code</span></div>
+      <div class="scale-stat"><span class="num">2,422</span><span class="label">automated tests</span></div>
+      <div class="scale-stat"><span class="num">872</span><span class="label">versioned commits</span></div>
+      <div class="scale-stat star"><span class="num">42%</span><span class="label">of the engineering record is independent verification</span></div>
+    </div>
+    <p class="scale-caption">That 42%, roughly 885,000 words, is decisions and code checked by a second, separate reviewer before anything counted as done: the Second-Opinion Desk and the Spec Department, at full scale. The one-line version: the equivalent of a 9,100-page technical encyclopedia, about 2.4 Harry Potter series, <strong>written, audited, and used to build and run real software.</strong></p>
+  </div>
+
+  <h2><span class="num">4.2</span>Adaptivity</h2>
+  <p class="section-intro">One factory, dialed to what each venture actually needs and what's actually at stake.</p>
+
+  <div class="info-card">
+    <h3>Each venture opts into only what it needs</h3>
+    <p>A research venture turns on the knowledge engine; one that ships software adds the code-quality module. Governance, the decision firewall, and the security fence are never optional. They're identical in every instantiation.</p>
+  </div>
+
+  <div class="info-card">
+    <h3>Verification scales with stakes, not habit</h3>
+    <p>A payment-handling change gets the heaviest treatment: built by one process, checked by a completely separate one. A cosmetic display change can go through a lighter, self-checked pass. But that exemption is always written down, never just assumed.</p>
+  </div>
+
+  <div class="info-card">
+    <h3>One package, very different scales</h3>
+    <p>The same package that grows into hundreds of tracked pieces, dozens of cross-linked wiki pages, and a real history of certified spec checks and independent reviews at full scale (Part 4's proof-of-scale figures above) could equally stand up a much smaller single-phase build. Same factory; only what's switched on changes.</p>
+  </div>
+
+  <h2><span class="num">4.3</span>Why it's built this way</h2>
+  <p class="section-intro">Four principles. Every piece above is downstream of one of them.</p>
+
+  <div class="principles">
+    <div class="principle">
+      <h3>Your attention is the scarce part</h3>
+      <p>You are very likely running more than one venture at once. Only genuine decisions are allowed to reach you: everything the machine can settle on its own, it settles on its own.</p>
+    </div>
+    <div class="principle">
+      <h3>Trust nothing that hasn't been tested</h3>
+      <p>"It's done" is never taken on faith: replayed against a spec or independently challenged, either way with a receipt. If it can't be checked, it isn't done yet.</p>
+    </div>
+    <div class="principle">
+      <h3>Nothing deletes itself</h3>
+      <p>History only grows. Deletion is never the machine's own decision, only yours, on purpose.</p>
+    </div>
+    <div class="principle">
+      <h3>New automation has to earn its keys</h3>
+      <p>Anything new ships switched off until you've personally watched it work. The Night Shift is sitting in exactly that waiting state right now.</p>
+    </div>
+  </div>
+
+  <footer>
+    <h2>Where things stand on a fresh instance</h2>
+    <div class="footer-line">
+      <span class="tag">Shipped</span>
+      <span class="text">This template ships built and ready to run: every station in Part 3, wired and working.</span>
+    </div>
+    <div class="footer-line">
+      <span class="tag">Waiting</span>
+      <span class="text">The Night Shift ships off by default: built and tested, but switched off until you've personally watched its first supervised run. Once you have, arming it for good is a one-line request.</span>
+    </div>
+    <div class="footer-line">
+      <span class="tag">Dormant</span>
+      <span class="text">The multi-venture rollup desk (one glance across every venture at once) stays dormant until several ventures are actually running side by side; it needs that many to be worth showing.</span>
+    </div>
+    <div class="footer-line">
+      <span class="tag">Standard</span>
+      <span class="text">Every new venture starts from this same blueprint package, so it gets the identical factory from day one.</span>
+    </div>
+    <p class="footer-meta">Rheoscope onboarding system map &middot; verified-against: 3.0 (2026-07-25)</p>
+  </footer>
+
+</main>
+
+<script>
+  function applyStoredTheme(){
+    try{
+      var t = localStorage.getItem('harness-map-theme');
+      if(t === 'dark' || t === 'light'){ document.documentElement.setAttribute('data-theme', t); }
+    }catch(e){}
+  }
+  function toggleTheme(){
+    var root = document.documentElement;
+    var current = root.getAttribute('data-theme');
+    var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var effectiveCurrent = current || (prefersDark ? 'dark' : 'light');
+    var next = effectiveCurrent === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try{ localStorage.setItem('harness-map-theme', next); }catch(e){}
+  }
+  applyStoredTheme();
+</script>
+
+</body>
+</html>

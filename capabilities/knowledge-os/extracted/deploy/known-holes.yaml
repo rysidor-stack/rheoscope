@@ -1,0 +1,20 @@
+# known-holes.yaml -- ACC-2 journal-hole allowlist (memory-engine v3, P1)
+#
+# A NAMED allowlist (the LEGACY_LENIENT_FOLDERS pattern from check-loop-state.py --
+# explicit, never wildcarded). Each entry is a legacy-prose receipt that fails
+# whole-block YAML parse and is KNOWN/accepted: staleness.py still detects the hole,
+# still drops its absorptions (events re-present as PENDING -- conservative direction),
+# and still NAMES it in the journal_holes report -- but emits a NOTE line and keeps
+# exit 0 instead of exit 1. A parse-failing receipt NOT on this list is a NEW hole -> exit 1.
+#
+# Empty at instance start -- there is no legacy history yet to carry holes forward from.
+# Extend ONLY with named entries as real parse-failing legacy receipts are triaged and
+# accepted; never a glob, never a wildcard.
+#
+# NOTE (P1 carry-forward): the spec says this list may live in deploy/entities.yaml
+# "or a sibling governed file" (test-plan:71). It lives here as a sibling file because
+# entities.yaml is a later P1 deliverable (catalog.py step); the operator may consolidate
+# it into entities.yaml's `known_holes:` key when that lands. staleness.py reads
+# entities.yaml's `known_holes:` first if present, then merges this file.
+
+known_holes: []

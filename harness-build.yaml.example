@@ -1,0 +1,17 @@
+# harness-build.yaml — build-time configuration for the harness BUILD itself.
+# Distinct from project.yaml (which configures an INSTANTIATED project).
+# This file is gitignored. CC authors it at Phase 0 from operator-supplied
+# kickoff parameters (per Decision V2-24). This .example is the canonical
+# template — do not edit by hand.
+
+# Path to the source project the harness extracts from.
+# Phase 1 pre-flight verifies this is readable. Must be a directory.
+source_project_path: "C:/Users/Example/Documents/Claude/source-project"
+
+# Pocock skills repo cloned at Phase 5 (network clone). Pin commit hash here
+# AFTER Phase 5 runs, for reproducibility of future builds.
+pocock_skills_commit: ""
+
+# Build operator and date (informational; written to BUILD-LOG.md per phase)
+build_operator: "operator"
+build_started: ""  # Set by Phase 0 first run; ISO 8601

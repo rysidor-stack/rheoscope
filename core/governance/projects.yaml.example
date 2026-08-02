@@ -1,0 +1,45 @@
+# projects.yaml — the workspace registry.
+#
+# Lives at the WORKSPACE ROOT (one level above repos/, worktrees/, scratch/, archive/) —
+# NOT inside any single project repo. See core/governance/WORKSPACE.md § "The registry:
+# projects.yaml" for the full explanation of zones, roles, and who reads this file.
+#
+# role must be one of: control-plane | corpus | port | fork | dormant
+#   control-plane — runs the actual operation (issues decisions, owns the live system)
+#   corpus        — a knowledge base / wiki observed by a control-plane project
+#   port          — a working copy of another project's code, relocated for a purpose
+#   fork          — a working copy tracking an upstream template, meant to receive updates
+#   dormant       — still present, not currently active; kept rather than deleted
+#
+# notes is optional free text.
+#
+# Two readers depend on this file staying accurate: the workspace-hygiene reaper
+# (deploy/check-workspace.py, run via /sweep) and the cross-project rollup desk.
+# Anything at the workspace root that is neither inside a zone (repos/worktrees/scratch/
+# archive) nor listed here gets flagged as unknown.
+
+projects:
+  - name: acme-control-plane
+    path: repos/acme-control-plane
+    role: control-plane
+    notes: Primary operating project; issues live decisions.
+
+  - name: acme-wiki
+    path: repos/acme-wiki
+    role: corpus
+    notes: Knowledge base observing acme-control-plane's execution corpus.
+
+  - name: acme-fork
+    path: repos/acme-fork
+    role: fork
+    notes: Tracks project-os-harness upstream; receives template updates.
+
+  - name: legacy-billing-port
+    path: repos/legacy-billing-port
+    role: port
+    notes: Adapted copy of the old billing service for the 2025 migration spike.
+
+  - name: old-prototype
+    path: repos/old-prototype
+    role: dormant
+    notes: Superseded by acme-control-plane; kept for reference, not actively worked.

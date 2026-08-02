@@ -1,0 +1,165 @@
+<!-- Authored from the workspace-governance brief (2026-07-22) and the long-horizon seam
+     census (2026-07-22), decision D1. This document describes the shared MACHINE workspace
+     that sits one level above every repo (this project's repo included) — not this project's
+     own content. It carries no {{project_name}} substitution because its subject is the same
+     regardless of which project is reading it. -->
+
+# Workspace Governance
+
+*verified-against: 3.0 (2026-07-23)*
+
+This document is the plain-English map of how the machine's workspace — the folder that holds
+every repo, clone, and scratch environment a session touches — is organized, so that work never
+has to guess where a new folder belongs. It exists because the alternative is what actually
+happened before it: dozens of loose folders at the workspace root (stale worktrees, QA clones,
+one-off probes, loose extraction screenshots), because nothing had ever said otherwise and every
+session filled the gap its own way.
+
+You never need to read code to use this document. If a term below is unfamiliar, its
+explanation is right where it's used.
+
+---
+
+## The four zones
+
+Everything at the workspace root belongs to exactly one of four folders. Nothing else lives at
+the root — not a stray clone, not a one-off test folder, not a leftover from an old session.
+
+- **`repos/`** — permanent clones. One folder per real repository, the ones you'd recognize by
+  name and expect to still be there next year.
+- **`worktrees/`** — managed **git worktrees** (a git worktree is a second, linked working
+  copy of a repo, checked out to a different branch, that shares the same underlying history —
+  used so a session can work on one branch without disturbing another). These are expected to
+  come and go.
+- **`scratch/`** — everything disposable: probes, throwaway QA environments, one-off ports of a
+  repo for a single experiment. Scratch folders are NEVER created inside a repo — always here,
+  at the workspace root, where they're visible and where the housekeeping described below can
+  find them.
+- **`archive/`** — cold storage: things worth keeping but no longer active. See "Archive and
+  retention" below.
+
+If a session is about to create a folder at the workspace root and it doesn't fit one of these
+four, that's the signal something is wrong with the plan, not a reason to invent a fifth zone.
+
+## Naming conventions
+
+Names carry the information a human needs at a glance, without opening the folder:
+
+- **Worktrees:** `<repo>--<purpose>--<YYYYMMDD>` — e.g. `myproject-fork--session-c-build--20260723`.
+- **Scratch folders:** `<purpose>--<YYYYMMDD>` — e.g. `port-verify-probe--20260723`.
+
+The date is the creation date, not a deadline — the deadline lives in the birth certificate
+(next section).
+
+## Birth certificates: WHY.md
+
+Every worktree or scratch folder is created **together with** a one-line `WHY.md` file at its
+root, answering four questions:
+
+- **Purpose** — why this folder exists, in one sentence.
+- **Created** — the date it was made.
+- **Expected lifetime** — how long it's expected to be needed (a duration or an end date).
+- **Creating session/plan** — what session, plan, or task made it, so a later reader can trace
+  back to the decision that started it.
+
+**Creating a worktree or scratch folder without a `WHY.md` is itself the defect** — not a
+missing nice-to-have. A folder with no birth certificate is exactly the kind of thing that
+becomes unrecognizable clutter six months later, because nothing recorded why it was ever
+there.
+
+## Death dates and the reaper (report-only, never automatic deletion)
+
+The housekeeping routine (`/sweep`) gains a workspace-hygiene check that looks for:
+
+- worktrees whose branch has been merged or deleted,
+- scratch folders past the lifetime stated in their own `WHY.md`,
+- root folders that sit in none of the four zones and aren't listed in the registry
+  (`projects.yaml`, below).
+
+It reports these in one plain-English list, with sizes, so a human can see at a glance what's
+grown stale.
+
+**DELETION IS ALWAYS A HUMAN WORD.** The reaper's whole job stops at noticing — it never
+deletes, moves, or archives anything on its own. Noticing is automatic; removing is not. This
+matches the same append-only, never-delete-without-a-human principle that governs everything
+else this harness writes.
+
+## Evidence placement
+
+Artifacts captured while extracting or probing a live surface — screenshots, accessibility
+dumps, probe logs — live at:
+
+```
+manifests/<surface>/evidence/<run-date>/
+```
+
+right beside the manifest rows they're evidence for, instead of scattered loose at a folder
+root (the "55 loose `state-*.png` screenshots" problem this convention exists to prevent).
+
+This is specifically for **extraction evidence** (proving a behavioral-manifest row). It does
+not move or rename **engine evidence** — the execution engine's own evidence keeps its existing
+home at `deploy/evidence/`. Two different kinds of evidence, two different homes; neither
+displaces the other.
+
+## The registry: projects.yaml
+
+A single file, `projects.yaml`, at the workspace root (one level above `repos/`), lists every
+project the workspace holds:
+
+```yaml
+projects:
+  - name: <short project name>
+    path: <path relative to the workspace root>
+    role: control-plane | corpus | port | fork | dormant
+    notes: <optional free text>
+```
+
+The four roles, in plain terms:
+
+- **control-plane** — the project that runs the actual operation (issues decisions, owns the
+  live system).
+- **corpus** — a knowledge base or wiki project observed by a control-plane project, without
+  running the operation itself.
+- **port** — a working copy of another project's code, adapted or relocated for a specific
+  purpose.
+- **fork** — a working copy tracking an upstream template or source, meant to receive its
+  updates over time.
+- **dormant** — still present, not currently active; kept rather than deleted.
+
+**One registry, two readers.** The reaper (above) treats anything at the workspace root that
+isn't in a zone and isn't in this registry as unknown and flags it. Later, a cross-project
+rollup desk (tracked separately, v3.0-40) reads the same file to know what projects exist across
+the whole workspace. Both read the same file so the two never drift apart.
+
+The template ships a commented example at `projects.yaml.example`, beside this document.
+
+## Archive and retention
+
+`archive/` holds anything worth keeping that is no longer touched — a completed worktree, a
+retired scratch probe whose output still has audit value, an old corpus snapshot nobody works
+in anymore but nobody wants gone either.
+
+**What moves there:** anything a `WHY.md` lifetime has expired on, if the operator says keep it
+rather than delete it — or anything an operator explicitly names for archiving at any other
+time. Nothing moves to `archive/` on a schedule or by inference; an item gets there because a
+human decided it was worth keeping.
+
+**When:** either at the moment its `WHY.md` "expected lifetime" passes and the operator chooses
+"keep" over "let it go," or at the operator's word, any time.
+
+**The index:** every item moved to `archive/` gets one line in `archive/ARCHIVE-INDEX.md` —
+what it is, where it came from, and when it was archived. One line per item is enough; the
+point is that nothing sits in `archive/` unexplained.
+
+## Adopting this on a workspace that already has clutter
+
+Turning this on for a workspace that already has folders scattered at its root does **not**
+start with a reorganization. It starts with a report: the reaper runs first in report-only mode
+over everything that exists today, classifying each folder by best guess (which zone it looks
+like it belongs to, or "unrecognized"). A human reads that report and decides, folder by
+folder, what happens next — keep in place, register, move to a zone, or archive. Only after
+that operator-worded pass does anything actually move.
+
+**Never a big-bang, machine-run reorganization.** The report comes first, every time — adopting
+this convention on a live, messy workspace is itself a report-first migration, not an exception
+to one.

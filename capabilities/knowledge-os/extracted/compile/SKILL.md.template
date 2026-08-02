@@ -1,0 +1,316 @@
+---
+name: compile
+description: Compile raw intake files into wiki articles, update cross-links, cascade to roadmap, regenerate indexes and health.
+---
+
+<!-- Extracted and generalized from a production project.
+     Substitutions: {{project_name}}, {{source_tags_csv}}.
+     CONTEXT.md write authority restricted to /preflight per Decision V2-8.
+     Wired-engine form (backlog v3.0-65, 2026-07-28): the v3 memory engine drives all
+     wiki-article writes; the operations contract is docs/engine/OPERATIONS.md. -->
+
+# /compile — Wiki Compiler
+
+You are the /compile orchestrator for the {{project_name}} wiki. Your job is to turn raw intake files into structured wiki knowledge.
+
+**You drive the memory engine; you do not free-write `wiki/`.** (Engine wiring landed 2026-07-28, backlog v3.0-65; the engine's operations contract is `docs/engine/OPERATIONS.md`.) The judgment is yours — what a raw event means, which article it amends, how it is phrased. Everything around that judgment is the engine's: plan-precedence, absorb-output validation, two-phase writes, the run journal, the stage-only commit, the cross-vendor verify legs, the census. Steps 1.5–3 below are the engine path; Steps 4–11 (cross-links, roadmap cascade, corpus reconcile, INDEX/HEALTH/SESSION-BRIEFING, REVIEW compaction, changelog, receipt) stay model-side and are unchanged.
+
+Two rules that follow from that, and are not negotiable:
+
+- **Every absorption rides a cross-vendor verify leg** (standing invariant 4, `docs/engine/OPERATIONS.md`). `deploy/compile-driver.py` has no flag that skips verify — `--no-verify` is a parse error, by construction.
+- **The engine writes `wiki/` article bodies, you don't.** In Steps 1.5–3 you author a plan and one absorb answer per view; the engine validates and writes them. Steps 4–11 still edit frontmatter/projections directly, as they always have.
+
+## Engine absent — graceful degradation
+
+This skill assumes the engine layer of `knowledge-os` is extracted in this project (`deploy/compile-driver.py` exists — it ships with the capability from v3.0.14 on). If it is **absent** (an older instance that adopted this skill before adopting the engine cluster): Steps 1.5 and 3 cannot run. Degrade honestly, never silently — apply Step 2's routing and Step 2.5's judgment kernel and absorb doctrine directly (read each target article in full, merge, honor the `sources:`/`last_updated:`/`confidence:` rules and the completion rule), write the articles yourself, and record `journal_seq: null` / `run_commit: null` in the receipt with a plain note that this was an unwired run with no journal and no verify leg. Then log the gap to `harness-backlog.md` (`/log-backlog`) recommending adoption of the engine cluster per `core/onboarding/UPDATING.md` — the unwired mode is a migration state, not a supported destination.
+
+## Step 0 — Load Schema
+
+Read `CLAUDE.md` at the project root, then `docs/wiki-schema.md`. Those files govern everything. Do not proceed without reading them.
+
+## Step 1 — Scan for Unprocessed Raw Files
+
+Read every file in `raw/`. For each one, extract its YAML frontmatter (`source`, `date`, `tags`, `summary`, `compile`).
+
+Then scan every wiki article in `wiki/` (recursively). Read each article's YAML frontmatter and collect all paths listed in `sources:`.
+
+A raw file is **unprocessed** if it does not appear in any wiki article's `sources` list.
+
+**Parse the whole frontmatter block as YAML — never a line-anchored `^sources:` match.** A formatter that flattens an article's frontmatter onto one line will defeat a line-anchored scan and false-positive an already-processed file as unprocessed. Read the entire `---` block and YAML-parse it.
+
+**Re-entry from the last receipt (`pending_cascade`).** Read the most recent `receipts/*-compile.md`. Any raw file listed in its `pending_cascade` (a partially-processed file whose Tier-3 cascade targets were not all reached last run) re-enters the pipeline now — even though it already appears in some article's `sources` — and its remaining work is the targets named there. This is authoritative carry-over, not a heuristic.
+
+**Skip rule for archival raw files (`compile: false`).** If a raw file's frontmatter contains `compile: false`, treat it as an archival session/process record — preserve it, do NOT route or compile it, and do NOT log a blocking REVIEW. These are records whose canonical output already lives elsewhere (e.g. the kickoff session log, whose knowledge is canonical in `docs/governance/` + `docs/adr/` + `roadmap/`, not in wiki articles). Note skipped archival files in the receipt `notes:` field at INFO level. An archival raw file is never "unprocessed" — its absence from any wiki article's `sources` list is expected and correct.
+
+**Skip rule for non-personnel sources.** Valid `source:` values for this project: {{source_tags_csv}}. Skip any raw file whose `source:` value is not in this list (those entries belong to a different orchestrator or are reserved for future routing).
+
+If there are zero unprocessed files, check the **corpus trigger** before stopping (only when `corpus_source` is declared in `project.yaml` — see Step 5.5; the configured source is `<corpus_source>`): read the execution corpus HEAD and compare it to the last-reconciled SHA in `wiki/HEALTH.md` § Corpus Observation. If the corpus has advanced, proceed to Step 5.5 even with no raw files. Only if there are zero unprocessed raw files **and** (`corpus_source` is `none` OR the corpus is in sync) do you report "Nothing to compile" and stop. Write a receipt anyway (with `meaningful_change: false`).
+
+## Step 1.5 — Register the delta, then take the census
+
+Two script runs, in this order, before any routing decision. Both are mechanical; neither asks you for judgment.
+
+1. **Register:** `py deploy/register-intake.py` — appends a typed registration record (`origin`, `event_class`, `asserts_corpus_state`) for every unprocessed event that doesn't have one yet. It is a pure delta append: existing records are never touched, never re-minted. The whole batch is pre-validated, so one malformed record refuses the entire batch rather than minting a silent partial. An event whose frontmatter won't parse registers with origin `unknown` — that is valid and conservative, not a blocker; note it in the receipt and move on.
+2. **Census:** `py deploy/staleness.py` — sorts every registered event into exactly one class (REF-SKIPPED, SUPERSEDED-UNCONSUMED, CONSUMED, PENDING_NOOP_CANDIDATE, PENDING, UNROUTED, RESIDUE). Read it, and keep it: **the census output is where you read each event's registered `event_class` and `origin`**, which Step 2's plan must mirror.
+
+If the census reports `problems` or `new_holes`, **stop and adjudicate** — do not compile further and do not force a re-run. Something doesn't add up; find out what first.
+
+## Step 2 — Route Each Raw File, and Author the Plan
+
+For each unprocessed raw file, determine which wiki subdirectories it should feed.
+
+- **Tags are the primary routing signal.** Content is the tiebreaker.
+- One raw file can route to multiple articles across subdirectories.
+- The project's configured wiki domains (declared in `project.yaml.wiki_domains` and rendered in `docs/wiki-schema.md`) define valid destination subdirectories. Each domain entry specifies its routing tags via the wiki-schema rendering.
+- When a raw file's tags map to multiple domains, route it to all of them. Each domain gets the content relevant to its scope.
+- If a raw file's tags do not match any configured domain, do NOT route it; instead, create a REVIEW.md entry of type `routing` with the unmatched tags and the raw file path. Operator adjusts `project.yaml.wiki_domains` or the raw file's tags, then re-runs /compile.
+
+If `project.yaml.wiki_domains` is empty (operator has not yet declared domains), Step 2 cannot proceed — report "wiki_domains unpopulated; cannot route" and stop. /compile expects domains to be declared during the INIT.md walkthrough or shortly after.
+
+**UNROUTED events from the census** get exactly this triage — it is the same judgment call as the unmatched-tags rule above, just arriving from the census bucket rather than from your own scan. Triage each as one of: (a) the vocabulary needs extending (`deploy/entities.yaml` — operator-gated, append-only); (b) `compile: false`, if the file is archival/process rather than knowledge; (c) parked — a small genuinely-unrouted residue is honest. Log a `routing` REVIEW.md entry whenever the call is ambiguous.
+
+### The plan file
+
+Write the routing decision out as `plan.json` in a scratch staging dir (`.batch-run/<tag>/`, throwaway, never committed):
+
+```json
+{"items": [
+  {"view": "wiki/<domain>/<article>.md",
+   "events": ["raw/<file>.md"],
+   "event_class": {"raw/<file>.md": {"class": "<registered class>",
+                                     "origin": "<registered origin>"}}}
+]}
+```
+
+Three constraints the engine enforces mechanically — get them right here rather than reading a refusal later:
+
+- **Plan precedence (`compile-v2.py` `check_plan_precedence`).** The `event_class` you supply must MIRROR what Step 1.5's census reported as registered. A plan may be stricter than the registration; it may never loosen one — naming a registered judgment-class or lock-class event as a non-lock class with `origin: explicit` refuses the whole run pre-journal. This is why the census runs before planning.
+- **One item per view.** Two plan items resolving to the same view file are refused structurally. Multiple events into one view = one item listing all of them (joint citation), never two items.
+- **Every item needs a non-empty `events` list**, and every named event file must exist.
+
+## Step 2.5 — Author the Absorb Answers (the judgment kernel)
+
+This is where your judgment lands. For **each plan item**, author one answer JSON — `<staging>/answers/NN-<slug>.json`, the filename taken from the dispatch manifest you generate in Step 3:
+
+```json
+{"new_text": "<full replacement view text>" or null,
+ "manifest": [{"event": "raw/<file>.md", "section": "<section name>"}],
+ "corpus_support": [{"artifact": "<rel path>", "artifact_sha256": "<hex>",
+                     "support_lines": ["<EXACT line of that artifact>"]}],
+ "noops": [{"event": "raw/<file>.md", "justification_note": "<why>"}]}
+```
+
+`new_text` is the whole article as it should stand after absorption — the same merge judgment that used to be free-written straight into `wiki/`, now handed to the engine to validate and write. The rules below are **mechanically enforced** by `validate_absorb_output`, not advisory; a violation refuses the run before anything is written:
+
+- `manifest` must match the REAL diff between the current view and your `new_text`, section-for-section, **in both directions**: every section you claim changed must actually differ, and every section that differs must be claimed.
+- No heading may be deleted, and the view may not shrink by more than 30%.
+- Every `corpus_support` entry MUST carry `artifact_sha256`, and every `support_lines` entry must be an **exact line** of the cited artifact — verbatim, whitespace included, never a paraphrase or a substring. Any shipped-state / live / as-built prose you add or change REQUIRES at least one `corpus_support` entry.
+- If ALL events are no-ops for this view: `new_text: null` and `manifest: []`. If only SOME are: list those in `noops` with a justification note and still emit `new_text`/`manifest` for the rest.
+- If your `new_text` carries a `last_updated:` frontmatter value it must be `max(existing view's last_updated, event date)` — never earlier than what's there.
+
+**Absorb doctrine (binding on every answer, matured through live catches):** per-view totality — every load-bearing claim of the event represented or implied in EACH routed view, not split across views; diffs 100% event-traceable — add nothing the event doesn't establish; reconcile what the event supersedes — leaving a stale contradicting statement in place is itself an absorb defect; no cross-links unless event-established; never forecast other events; headings are immutable once written.
+
+The same merge judgments as before still apply — don't duplicate existing content; adjust `confidence:` if the new source corroborates or contradicts; add the raw file to `sources:` **only** for a view this run actually updated with its content (the completion rule below); put minor/fragmentary content in `## Open Questions` rather than the body; create a new article from the wiki-schema template (setting `domain:`, `scope:`, `confidence:`) when content warrants one and no home exists.
+
+**Completion rule — `sources` reflects work actually done.** Only add a raw file to a view's `sources:` list in the `new_text` you author for that view. A raw file that should feed 10 articles but only got absorbed into 3 this run appears in exactly those 3; the other 7 targets go in the receipt's `pending_cascade` and are picked up next run (Step 1 re-entry). Marking a file fully processed before its cascade completes is how a cascade silently drops.
+
+## Step 3 — Stage, Attest, and Drive the Engine
+
+**Fan out the reads, write serially.** Read the pipeline's raw files and their target articles in parallel (parallel Read calls or subagents) while authoring Step 2.5's answers; the engine does the writing, from this single session, one run. Read a target article in full before authoring its `new_text`, and read nothing that isn't a pipeline raw file, a routing target, or a named cascade destination. The single-writer rule constrains *writes* to this session — reads can and should be parallel.
+
+### 3a. Stage + attest
+
+The staging dir is the file-handoff seam. It must contain exactly:
+
+```
+<staging>/plan.json                 Step 2's plan
+<staging>/packets/NN-<slug>.md      the work packets (generated)
+<staging>/answers/NN-<slug>.json    Step 2.5's answers, one per packet entry
+<staging>/dispatch-manifest.json    generated, THEN F17-attested
+```
+
+Generate the manifest and packets rather than hand-writing them — the manifest carries an F17 attestation stamp whose `manifest_sha256_at_stamp` is a real hash over the manifest's canonical bytes, and both `FileHandoffAbsorbBackend` and `BridgeVerifyBackend` refuse an unstamped or mismatched manifest. Run a short throwaway staging script (this, and only this, is what the driver-pattern in `docs/engine/OPERATIONS.md` is still for):
+
+```python
+# stage.py -- generate packets + manifest, then stamp. Run once, discard.
+import importlib.util, os
+def load(name):
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"),
+                                                  os.path.join("deploy", name))
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+cb = load("compile-backends.py")
+import json
+plan = json.load(open(".batch-run/<tag>/plan.json", encoding="utf-8"))
+routing_rules = open("docs/wiki-schema.md", encoding="utf-8").read()   # routing contract
+cb.emit_packets(".", plan, ".batch-run/<tag>", routing_rules)
+# ... now write one answers/NN-<slug>.json per manifest packet entry (Step 2.5) ...
+cb.stamp_dispatch(".batch-run/<tag>/dispatch-manifest.json",
+                  model="<your model id>", vendor="<your vendor>")
+```
+
+`emit_packets` names each answer file (`answers/NN-<slug>.json`, `NN` = plan item order, slug derived from the view path) — read the manifest it writes and use those exact filenames. **Stamp LAST**, after every answer file exists: the stamp commits to the manifest's contents, and re-running `emit_packets` after stamping invalidates it.
+
+### 3b. Drive
+
+```
+py deploy/compile-driver.py --run --root . --staging .batch-run/<tag> \
+   --authorization deploy/evidence/operator-<...>.md --sections
+```
+
+`--authorization` is **required** and is validated BEFORE anything is written — a missing, out-of-class, revoked, or non-covering artifact refuses the run with nothing written and nothing committed. The grant is the operator's **standing verify-authorization artifact** under `deploy/evidence/` — a recorded, quoted "go ahead", never standing memory of one (HUMAN-GATE pattern, `docs/engine/OPERATIONS.md`). There is no absorb-only mode and no flag that skips verify.
+
+**First contact — the grant happens as ONE in-session question, never as operator homework** (operator direction 2026-07-31, backlog v3.0-85/86; the consent-structure design survived a cross-vendor review that rejected removing the gate outright — capability and precedent are not consent, so the question exists, exactly once). The question fires at the **first occasion that needs it** — the project's first wired compile, or standing-loop arming, whichever comes first — and never again either way. If this project has no artifact yet, do NOT stop the pipeline and do NOT ask the operator to author anything. Ask, in plain English, in this session: *"First compile on this project: knowledge writes go through the engine, and every absorption is checked by a second AI vendor — which means article text travels to that vendor's API under your own account. Say yes once and that's the last time this project asks — I'll record your words and continue."* On the yes, YOU mint `deploy/evidence/operator-<date>-wired-compile-dispatch-grant.md` carrying: the operator's verbatim quote + date, and an **express-scope sentence** — "this grant authorizes every `compile-driver.py` cross-vendor verify dispatch for wired compiles on this project, interactive and unattended" (the express sentence is load-bearing: a grant that names only mechanics without the dispatch scope fails consent review). Commit it and continue the SAME run. The driver still validates the committed artifact — an agent-claimed "they said yes" passes nothing; only the ceremony is gone. No compile-side expiry: once the automated standing loop is armed, its `standing-loop-arming-review` trigger row is the sole re-affirmation mechanism (re-affirming the loop re-affirms this grant; disarming it is the moment to reconsider). A no is recorded as a dated decision and compile stops cleanly.
+
+The driver then does, in order: pre-write authorization validation → staging validation → dispatch-guard dry run → startup reconciliation → plan-precedence check → two-phase validate-then-write → journal record → stage-only commit → cross-vendor verify legs over **every** absorbed view → census → `check-run-diff`. It prints one plain-English summary block (absorbed / no-ops / verify verdicts / census / diff-check). **Re-state that summary to the operator; do not re-derive it.**
+
+Read the exit code, and act on it — never re-run blind:
+
+| Exit | Meaning | What you do |
+|---|---|---|
+| 0 | Clean run, every leg confirmed | Continue to Step 4. |
+| 1 | A refusal, a non-confirm verdict, or an auto-reverted run | See below. Stop the pipeline. |
+| 2 | Usage/inconclusive | Fix the invocation. |
+| 3 | Compile lock held by another run | Wait; never force. |
+
+On exit 1, the summary names which case it was:
+
+- **A pre-write refusal** (authorization, staging, plan precedence, reconciliation) — nothing was written. Fix exactly the named thing and re-run. **Never loosen a gate**: a refusal is the system working.
+- **A non-confirm verify verdict** (`revised` / `rejected`) — the absorption happened and IS verified; the verdict is journaled data, not an instruction to argue with. Read the FULL verdict in `receipts/verify/` (a `substrate-gated` outer verdict can still carry a real nested `bridge_verdict` — check both), fix the view text in this same cycle, and re-run the verify leg over the corrected text. A verdict-driven correction is never routed as a new raw event; genuinely new information is.
+- **An auto-reverted run** (the verify leg did not complete — bridge error, timeout, refusal mid-run) — the run commit was reverted, the revert is journaled, and the staging dir is untouched. Diagnose the transport failure, then re-run the same staging dir.
+- **Startup reconciliation refused** — a prior run on this branch has no terminal verify disposition (a crashed run). Reconcile it first (`py deploy/compile-driver.py --reconcile --root .` explains which seq); no new run is accepted until you do.
+
+Record the run's **journal seq** and **run commit SHA** from the summary — the receipt (Step 10) carries both.
+
+---
+
+*Steps 4–11 are the model-side projections. The engine does not generate them (an explicit RTDT cut, 2026-07-28); they are unchanged from the pre-wiring skill except for the two new receipt fields in Step 10.*
+
+## Step 4 — Cross-Link Reconciliation
+
+After all articles are updated, scan for missing cross-links:
+- If article A references a topic that article B covers, add B to A's `cross_links:` frontmatter (and vice versa if appropriate).
+- If a cross-link is uncertain, do NOT add it. Instead, create a REVIEW.md entry of type `connection`.
+- Remove any cross-links that point to articles that no longer exist.
+
+## Step 5 — Roadmap Cascade
+
+For any article with `scope: build` or `scope: mixed`:
+- Check if the content affects any assumption in `roadmap/` articles.
+- If yes, update the assumption's `Status` and `Evidence` columns in the roadmap article.
+- If unsure, create a REVIEW.md entry of type `cascade` instead of modifying the roadmap.
+
+**Honest note:** the cascade fires for `build`/`mixed`-scope articles only. `scope: domain` articles never cascade — a project whose knowledge is entirely domain-scope must reconcile roadmap assumptions manually; nothing in this loop does it for them. See `harness-backlog.md` v3.0-30 for the open design question (should domain-scope content ever cascade indirectly).
+
+## Step 5.5 — Corpus Reconcile (corpus binding only)
+
+This step applies only when this project's execution plane lives in one or more sibling repos. **Read the corpus binding from `project.yaml` and build the effective corpus list** (v3.0.18, backlog v3.0-88): `corpus_sources` (list form — per-corpus `id`/`source`/`clone_path`/`branch`/optional `probe`; `id` defaults to the repo name segment of `source`), otherwise `corpus_source` + `corpus_config` (legacy singular, still valid — a one-entry list whose `id` is the repo name segment). **If neither form is declared, skip this step entirely** (most projects). **Both forms declared is a config error** — log a `compile` REVIEW entry naming the conflict and reconcile neither; never silently pick one.
+
+Run the reconcile below **once per corpus** in the effective list, each against its own `id`-keyed row in `wiki/HEALTH.md` § Corpus Observation.
+
+Per `docs/wiki-schema.md` § Corpus Observation, the wiki's shipped-state is **derived from the execution corpus, never transcribed.** Run it for a given corpus whenever that corpus's HEAD has advanced past its last-reconciled SHA (the corpus trigger from Step 1); otherwise it's a no-op confirmation for that corpus.
+
+**First observation (no SHA yet).** The first time a corpus is declared, `wiki/HEALTH.md` § Corpus Observation has no last-reconciled SHA for it. Treat that as a first-observation pass — reconcile from the corpus's current HEAD and seed its row in HEALTH (Step 7), rather than skipping for lack of a baseline.
+
+1. Read the corpus changes since its last-reconciled SHA: `git -C "<clone_path>" log --oneline <last-reconciled>..<branch>`, plus any enrichment probe declared for that corpus (`corpus_config.probe`, or the `corpus_sources[]` entry's `probe`).
+2. **Reconcile by pull-from-expectation, not transcription.** Walk the wiki's shipped-state claims — Implementation-Status sections, the active flight-plan Layer 1 dashboard, roadmap assumption rows — each of which names the corpus artifact it awaits. For each, check the corpus for presence and update the claim **from the corpus**, citing the corpus SHA / artifact name as evidence. Do not invent state the corpus doesn't show.
+3. Best-effort per corpus: if a corpus can't be read, skip THAT corpus, do NOT advance its SHA, mark its HEALTH row's last-observation status `UNOBSERVED <date>`, and continue with the remaining corpora. Corpus reads never hard-fail the compile — but **partial observation is never silent**: the receipt must name every declared corpus as reconciled, no-op, or UNOBSERVED.
+4. After reconciling, advance that corpus's last-reconciled SHA in its `wiki/HEALTH.md` § Corpus Observation row to the new HEAD (written in Step 7). If the circuit breaker stops you mid-reconcile, log a `compile` REVIEW entry naming the un-reconciled corpus commits and advance the SHA only as far as you actually reconciled.
+
+This step is the correction half of the loop `/flight-plan` Step 5.5 detects: a drift surfaced in the briefing is cleared here.
+
+## Step 6 — INDEX Regeneration
+
+Regenerate `INDEX.md` for every subdirectory that had articles modified or created (untouched subdirectories' INDEXes are already current — leave them). INDEX files are **current-state projections, not history logs**: regenerate each as a terse snapshot of the directory as it stands now, and never accrete past-compile narratives into them — run history lives in `receipts/` + `changelog.md`. Follow the INDEX format from `docs/wiki-schema.md`:
+- "What lives here" paragraph
+- "Coverage" summary
+- Articles table (article name, summary, confidence, last updated)
+- "Known Gaps" bullets
+
+When rebuilding a touched INDEX's Articles table, **carry forward the existing one-line summary verbatim for any article this run didn't touch** — author fresh summaries only for the articles you created or updated.
+
+Also update the top-level `wiki/INDEX.md` with a one-line summary of each subdirectory's state (replace the lines for touched subdirectories; carry untouched ones forward).
+
+## Step 6a — REVIEW.md Compaction
+
+After all REVIEW.md writes for this run are complete (Steps 2–5 may have added entries), sweep `wiki/REVIEW.md`. **Delete** every entry whose `Resolution:` field is filled with a **terminal** status: `APPLIED`, `WONT-FIX`, `SUPERSEDED`, `RESOLVED`, `DUPLICATE`. **Preserve** every unresolved entry, AND every entry whose resolution names a **live re-open trigger** — `DEFERRED`-until-X, or `ACCEPTED-UNCERTAINTY` carrying a future condition — because those name a condition that has not fired yet, so they are not done.
+
+Record what was swept in the receipt's `review_compacted` field (count + entry titles — see Step 10). git retains full history, so the audit trail survives the deletion.
+
+This runs on **every** `/compile`, so resolved cruft never accumulates and no manual "compact at hold points" step is required (a manual compaction may still be run at hold points as a backstop, where it does the same terminal sweep plus any judgment-call pruning of deferred entries whose triggers have lapsed). It is **independent of the ~30-entry scale trigger**, which watches the *unresolved* backlog (see `docs/wiki-schema.md` § 12 REVIEW.md Lifecycle) — auto-sweep only removes resolved cruft, so the two never interfere. **If in doubt whether a resolution is terminal, preserve it.**
+
+## Step 7 — HEALTH.md Update
+
+Regenerate `wiki/HEALTH.md` completely. Include:
+- Last updated timestamp
+- Total articles count
+- Total raw inputs count
+- Unprocessed raw count
+- Coverage by Domain table (articles, avg confidence, oldest update, gaps)
+- Staleness Alerts (any article not updated in 7+ days)
+- REVIEW.md Summary (count by severity)
+- **Corpus Observation** section (only when `corpus_source` is declared, not `none`): the declared ground-truth source(s) and the **last-reconciled SHA** (advanced in Step 5.5). `/flight-plan` reads this to detect drift, so it must be present and current.
+
+## Step 7.5 — Regenerate SESSION-BRIEFING.md
+
+Regenerate `SESSION-BRIEFING.md` (project root) from the state this compile just produced — overwrite it, never append. Follow the SESSION-BRIEFING format **and its section-level carry-forward discipline** in `docs/wiki-schema.md` § 10: read the existing briefing once, rewrite the sections whose inputs changed this run (always Active Workstreams and Hold Points, which move every run; plus any section a touched article feeds — e.g. Architectural Context when the thesis article changed), and carry every other section forward verbatim. The inputs are already in hand — the articles you just wrote, the REVIEW.md state after Step 6a, the HEALTH snapshot from Step 7, and (when `corpus_source` is declared) the corpus reconciliation from Step 5.5 — so do not re-scan `raw/`, `roadmap/`, or REVIEW.md for this step.
+
+## Step 8 — CONTEXT.md handling (read-only)
+
+/compile does NOT write to `CONTEXT.md`. CONTEXT.md is the canonical glossary; /preflight is the only writer (per Decision V2-8).
+
+If during compilation you encounter a load-bearing term that is not in CONTEXT.md, do NOT add it. Instead, log it to the receipt's `notes:` field as `[unresolved-term: <term>]`. A future /preflight session resolves the term and writes the CONTEXT.md entry.
+
+## Step 9 — Changelog Entry
+
+Append one line to `changelog.md`:
+```
+[YYYY-MM-DD] /compile — X articles modified (Y created, Z updated). Meaningful: yes/no.
+```
+
+`changelog.md` is the human-readable companion to the receipts, not the authoritative history (that's `receipts/`). Keep it readable — trim old lines periodically rather than letting it grow without bound (see `docs/wiki-schema.md` § 7).
+
+## Step 10 — Write Receipt
+
+Create a receipt file in `receipts/` named `YYYY-MM-DDTHHMMSS-compile.md` using the compile receipt schema from `docs/wiki-schema.md`. Include all fields: raw_inputs, articles_modified, scope_tags, cross_links_changed, confidence_changes, meaningful_change, circuit_breaker_hit, `review_compacted` (the entries swept by Step 6a this run — `count` + entry titles; terminal resolutions only; see `docs/wiki-schema.md` § 7), `pending_cascade` (any raw file partially processed this run, with its remaining targets — Step 2.5's completion rule), duration, notes (including any `[unresolved-term: <term>]` entries from Step 8).
+
+**Two engine fields, added 2026-07-28 with the wiring** (`docs/wiki-schema.md` § 7): `journal_seq` — the run's journal sequence number, and `run_commit` — the run commit SHA, both taken verbatim from the Step 3b summary block. They tie the receipt to the engine's own append-only record, which is what `check-run-diff.py` validates. The receipt is NOT displaced by the run journal: receipt = skill bookkeeping consumed by the next run's Step 1; journal = engine contract consumed by `check-run-diff`. Both continue. On a run that never reached the engine (a pre-write refusal), record both fields as `null` and say so plainly in `notes`.
+
+**Keep the receipt's frontmatter YAML-parseable** — the next run's Step 1 machine-reads `pending_cascade` from it. Quote any scalar value containing a colon, parenthetical, or other YAML-significant punctuation (e.g. `operation: "updated (corpus reconcile)"`) so the block still parses.
+
+## Step 11 — Commit
+
+The engine already committed the run itself (views + journal record, stage-only) and the verify legs. This step commits **your** work — the Step 4–10 projections. Stage those changes and commit with message:
+```
+/compile: [brief summary of what changed]
+```
+
+Do not amend, rebase, or re-write the engine's run or verify commits: `check-run-diff.py` and the merge bars are validated against those exact SHAs, and the journal chain is hash-linked. Never commit the `.batch-run/` staging dir.
+
+Local commit only — push is operator-driven and out of scope for /compile.
+
+## Circuit Breaker
+
+If this compile run would modify more than **15 substantive articles**, stop after 15. "Substantive" counts content and cascade-target articles only — the regenerated projections (INDEX, HEALTH, SESSION-BRIEFING, changelog) do **not** count against the limit. At the limit, write a `compile` REVIEW.md entry naming what remains and record the unreached cross-reference targets in the receipt's `pending_cascade`; the next `/compile` run picks them up (Step 1 re-entry). This is a blast-radius control, not a context signal — while under the limit, finish the run.
+
+## Rules
+
+- Never hand-write a `wiki/` article body to route around the engine. Article bodies land through Step 2.5's answers and the driver, so that every absorption is validated, journaled, and cross-vendor verified. Steps 4–11's frontmatter and projection edits are the documented exception (as is the engine-absent degradation mode above, which must always be named in its receipt).
+- Never loosen a gate. A `DispatchRefused`, a plan-precedence refusal, a validation error, a non-confirm verdict — each names exactly what is wrong. Fix the named thing.
+- Never edit files in `raw/`. They are append-only.
+- Never delete articles. If one becomes obsolete, add a `## Deprecated` section and a REVIEW.md entry.
+- Never run /audit, /discover, or /preflight. Those are separate orchestrators.
+- Never write to `CONTEXT.md` (Step 8 rule; per Decision V2-8 /preflight is the only CONTEXT.md writer).
+- If you encounter a personnel correction in raw input (any source tag listed in `project.yaml.personnel[*].tag`), follow the Conflict Resolution protocol in `docs/wiki-schema.md`.
+
+## Scan telemetry
+
+When this session assembles an answer by scanning many files — an affected-set, a
+cross-link map, "which articles touch X" — append one line per distinct question to the
+session receipt:
+
+`scan: <question-shape> | files~<count> | minutes~<elapsed>`
+
+Plain text, no new file class; skip it when no multi-file scan happened. This is the
+measurement rail for the materialization doctrine's second-query trigger
+(`core/methodology/materialization-doctrine.md`): recurrence of a question-shape across
+receipts is the recorded demand evidence a projection decision cites.

@@ -1,0 +1,10 @@
+[
+  {
+    "event": "raw/ryan-flock.md",
+    "origin": "human",
+    "origin_evidence": "fixture: deliberately mis-registered non-lock-class",
+    "event_class": "compile",
+    "event_class_origin": "explicit",
+    "asserts_corpus_state": false
+  }
+]

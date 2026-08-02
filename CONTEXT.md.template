@@ -1,0 +1,69 @@
+<!-- CONTEXT.md — canonical glossary for this project.
+     Format adopted from mattpocock/skills (skills/engineering/grill-with-docs/
+     CONTEXT-FORMAT.md), MIT-licensed, Copyright (c) Matt Pocock, per Decision V2-8.
+     Ships as a core file (Phase 2.1 amendment to original placement under the
+     stress-testing capability) — the file exists in every instantiated project
+     regardless of capability selection. The /preflight orchestrator (a core skill;
+     renamed from /grill 2026-07-09, when stress-testing retired into core) is the
+     primary writer; operators may add entries manually during sessions. /compile
+     does NOT write to CONTEXT.md (deferred to v1.x if pain emerges). -->
+
+# {{project_name}}
+
+(One or two sentences describing what this project's context is and why CONTEXT.md exists. Populated during the INIT.md walkthrough or organically as /preflight resolves terms.)
+
+## Language
+
+(Project-specific terms with concise definitions and aliases-to-avoid. Populated by /preflight as it surfaces ambiguities during phase-kickoff, stress-test, or reconfigure sessions. Manual operator entries are also welcome — no enforced single-writer rule on CONTEXT.md in v1.0.)
+
+*Format for each term:*
+
+**Term**:
+One-sentence definition. What it IS, not what it does.
+_Avoid_: Aliases that should not be used.
+
+### Verification and substrate (shipped defaults — keep these, add your own below)
+
+These two terms ship populated rather than blank. A blank glossary here is what let a live
+instance conflate the two separation rules and "harden" a compliant routine verify gate into
+a vendor firewall, silently converting in-repo verification into mandatory outbound evidence
+packets (incident 2026-07-29, backlog v3.0-76). Do not delete them at instantiation.
+
+**substrate**:
+The model family executing a session. Decision firewall rounds require substrate separation (author-family ≠ verifier-family) at T1; **verify legs inside a compile are a different rule** — see **substrate gate**.
+_Avoid_: model (a substrate is the family, not the checkpoint); treating the T1 decision-lock rule as if it also governed compile verify legs (it does not).
+
+**substrate gate**:
+The tiered separation test a *verify leg* must satisfy, decided mechanically by `substrate_gate_ok()` in `deploy/check-substrate.py` (present when the knowledge-os capability is enabled): a **routine** leg passes on a different `model_id` (same vendor is compliant, including OpenAI-verifying-OpenAI); **content-audit** and **design-gate** legs require a different vendor (the cross-substrate firewall); an unknown gate kind fails closed. Raising a leg's tier is a decision, not a fix.
+_Avoid_: substrate separation unqualified (it hides the tier); cross-vendor gate as the default shape of a verify leg.
+
+## Relationships
+
+(Bulleted list of how terms relate. Use bold term names. Express cardinality where natural.)
+
+- *Example: An **Order** produces one or more **Invoice** records.*
+
+## Example dialogue
+
+(A short conversation that demonstrates how the terms interact naturally and clarifies boundaries between related concepts. /preflight captures these from real sessions when ambiguity is resolved.)
+
+## Flagged ambiguities
+
+(Bulleted list of terms that were used ambiguously, with their resolution. /preflight adds entries here when it surfaces a conflict.)
+
+---
+
+## How to maintain this file
+
+- **Be opinionated.** When multiple words exist for the same concept, pick the best one and list the others as aliases.
+- **Flag conflicts explicitly.** Ambiguous usage goes in "Flagged ambiguities" with a clear resolution.
+- **Keep definitions tight.** One sentence max. Define what it IS, not what it does.
+- **Show relationships.** Bold term names; express cardinality where obvious.
+- **Only include terms specific to this project's context.** General programming concepts (timeouts, error types, utility patterns) don't belong, even if the project uses them extensively. Test: is this concept unique to this context, or a general pattern? Only the former belongs.
+- **Group under subheadings** when natural clusters emerge. A flat list is fine if all terms cluster naturally.
+
+(Format rules adapted from mattpocock/skills CONTEXT-FORMAT.md, MIT licensed.)
+
+## Multi-context note
+
+This template assumes a single CONTEXT.md at the project root. If the project grows multiple bounded contexts, Pocock's format supports a CONTEXT-MAP.md at the root that lists each context's location and how they relate. See `.claude/skills/preflight/CONTEXT-FORMAT.md` (a core skill — always present) or the upstream spec at `https://github.com/mattpocock/skills/blob/main/skills/engineering/grill-with-docs/CONTEXT-FORMAT.md`.

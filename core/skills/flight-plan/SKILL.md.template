@@ -1,0 +1,357 @@
+---
+name: flight-plan
+description: Generate a delta-first session briefing — what changed, what's healthy, what needs attention. The cockpit for in-progress work. Supports per-flight-plan drill-down via argument.
+---
+
+<!-- Core skill: always wired by init into .claude/skills/, independent of capability toggles.
+     Folded into the harness and generalized from a production project via the CDS Amazon dogfood (harness v1.1).
+     Substitutions: {{project_name}}, {{project_slug}}.
+     Graceful degradation: the knowledge-os reads (compile receipts, wiki/HEALTH.md,
+     wiki/REVIEW.md, raw/, docs/wiki-schema.md) are conditional. On a project with the
+     knowledge-os capability disabled, those steps are skipped cleanly (see Step 0.6) and
+     the cockpit still operates on wiki/flight-plans/ plus its own receipts. -->
+
+# /flight-plan — Session Briefing & Cockpit
+
+You are the /flight-plan orchestrator for {{project_name}}. Your job is to produce a concise, delta-first briefing that gets a cold session up to speed in under 60 seconds. You may also be invoked with a flight-plan slug as an argument (e.g., `/flight-plan {{project_slug}}-phase-0`), in which case you produce a targeted read of that flight plan's Layer 1 Dashboard instead of the global briefing.
+
+## Step 0 — Load Schema
+
+Read `core/governance/CLAUDE.md` at the project root. That file governs everything. If `docs/wiki-schema.md` exists (knowledge-os enabled), also read it for wiki conventions.
+
+## Step 0.5 — Argument Handling (drill-down mode)
+
+If `/flight-plan` was invoked with an argument (e.g. `/flight-plan {{project_slug}}-phase-0`), skip the global briefing (Steps 1–6a) entirely. The drill-down mode is read-only and ephemeral:
+
+1. Construct the target path: `wiki/flight-plans/<argument>.md`.
+2. If the file does not exist, list the available flight plan slugs (every `.md` file in `wiki/flight-plans/` excluding `INDEX.md`, with `.md` stripped) and exit cleanly. Do not fall back to a fuzzy match.
+3. If the file exists, read it and output:
+   - Its Layer 1 Dashboard block verbatim (the `## LAYER 1 — DASHBOARD` section).
+   - Its Layer 2 Current Build Increment table verbatim, if present (the table under `### Current Build Increment`, or analogous).
+4. Do NOT write a receipt. Do NOT append to the changelog. Do NOT regenerate SESSION-BRIEFING.md. Drill-down is a targeted read.
+5. Exit.
+
+When invoked with no argument, proceed to Step 0.6 and run the full briefing flow.
+
+## Step 0.6 — Detect knowledge-os (graceful degradation)
+
+Determine whether this project has the knowledge-OS capability wired: check for `docs/wiki-schema.md` and a `wiki/` directory containing `HEALTH.md` / `REVIEW.md`.
+
+- **knowledge-os present:** run every step below.
+- **knowledge-os absent (build-only project):** skip Steps 1, 2, 3, 5, 5.5, and 6a — they read knowledge-os artifacts that don't exist. Run Step 4 (cadence, for whichever orchestrators are actually present), Step 4.5 (flight-plans scan), **Step 5.6 (reference integrity — it reads governing docs, which exist in build-only projects too, so it is NOT in this skip-list)**, Step 6 (briefing — omit the **Wiki Health** and **Coverage Gaps** sections), Step 7 (receipt), and Step 8 (changelog). The cockpit still works: it tracks the flight plans in `wiki/flight-plans/` and orchestrator cadence.
+
+State which mode you're in at the top of the briefing so a cold reader knows whether wiki health was assessed.
+
+## Step 1 — Read Recent Compile Receipts (knowledge-os only)
+
+Read all files in `receipts/`. Sort by timestamp (newest first). Focus on receipts since the last /flight-plan receipt (or all receipts if this is the first run).
+
+For each compile receipt, extract:
+- What raw files were processed
+- What articles were created or updated
+- Whether the change was meaningful
+- Whether the circuit breaker was hit
+- Any confidence changes
+
+## Step 2 — Read HEALTH.md (knowledge-os only)
+
+Read `wiki/HEALTH.md`. Extract:
+- Total article count
+- Unprocessed raw file count
+- Coverage gaps by domain
+- Staleness alerts (articles not updated in 7+ days)
+
+## Step 3 — Read REVIEW.md (knowledge-os only)
+
+Read `wiki/REVIEW.md`. Extract:
+- Count by severity (blocking / standard / background)
+- Any stale review items (past their staleness window)
+- Any new items since last briefing
+
+## Step 4 — Check Orchestrator Cadence Compliance
+
+Based on the receipt timestamps, check whether each orchestrator present in this project is overdue. The cadence table (orchestrators vary by enabled capabilities + core skills):
+
+| Orchestrator | Cadence | Overdue if... |
+|-------------|---------|---------------|
+| /flight-plan | Every session start | Always runs (that's this) |
+| /compile (knowledge-os) | Every session with raw/ activity | Any unprocessed files in raw/ |
+| /audit (knowledge-os) | Every 1–2 weeks | No audit receipt in 14 days |
+| /preflight (core) | Per phase-kickoff, stress-test, or reconfigure | No /preflight receipt in 30 days while in active phase work |
+| /doctor (core) | Init-end + on demand (after machine/env changes, or when anything feels off) | Never overdue by time — run when the environment changed |
+| /handoff, /handoff-close (close-leg protocol) (core) | On demand (cross-substrate decision routing) | No cadence — runs when a decision warrants substrate-separated inquiry |
+
+Only flag orchestrators whose skills are actually installed (`.claude/skills/<name>`). Treat unknown orchestrators as informational, not overdue.
+
+## Step 4.5 — Scan wiki/flight-plans/
+
+For each `.md` file in `wiki/flight-plans/` excluding `INDEX.md`, read its Layer 1 Dashboard block. Extract:
+
+- Project / phase / workstream name (from the `**Project:**` or `**Phase:**` line or the article title)
+- Current phase (from the `**Phase:**` line)
+- Status (first sentence of the `**Status:**` line — keep it to one line)
+- Blocker (from the `**Blocker:**` line)
+- Next action (from the `**Next action:**` line)
+- Last session (from the `**Last session:**` line)
+
+If `wiki/flight-plans/` does not exist yet, treat it as "no active flight plans" (don't error). If a flight plan file lacks a recognizable Layer 1 Dashboard, flag it in the briefing under Attention Needed as a malformed-flight-plan item and skip it for the Active Flight Plans table.
+
+## Step 5 — Check for Unprocessed Raw Files (knowledge-os only)
+
+Scan `raw/` and cross-reference against all wiki article `sources:` frontmatter. If any raw files are unprocessed, flag them. This means /compile should run.
+
+## Step 5.4 — Harvest a Fresh Sweep Briefing (every mode; runs BEFORE the sensor steps)
+
+If `SWEEP-BRIEFING.md` exists at the project root and is less than 24 hours old (file modification time), read it and fold its three sections (All clear / Needs your attention / Watching) into this briefing's health picture verbatim-in-substance — then **skip Steps 5.5–5.10 entirely**: the sweep already ran every one of those checks, plus more, and re-running them wastes the session's opening minutes. State in the briefing that health came from the sweep and when it ran. If the file is absent or stale (older than 24h), run Steps 5.5–5.10 as written below. If the briefing is stale/absent AND `.claude/nightly-sweep.cmd` exists (a schedule is armed), the automation itself may be failing — surface "Your nightly sweep may be broken — check `.claude/sweep-schedule.log`" as a Needs-attention item in this briefing. Only when NO wrapper exists, note that a nightly sweep schedule would make this instant (`.claude/skills/sweep/SKILL.md` § Scheduling). Read-only, best-effort: an unreadable briefing file = stale, never an error. Also read `DECISIONS-PENDING.md` if present — its items open the briefing as the WAITING ON YOU section, before anything else.
+
+## Step 5.5 — Observe the Execution Corpora (knowledge-os + corpus binding only)
+
+This step applies only when this project's execution plane lives in one or more sibling repos whose shipped-state the wiki observes. **Read the corpus binding from `project.yaml` and build the effective corpus list** (v3.0.18, backlog v3.0-88):
+
+- `corpus_sources` (list form) — one entry per corpus: `id` (defaults to the repo name segment of `source`), `source` (`org/repo`), `clone_path`, `branch`, optional `probe`.
+- Otherwise `corpus_source` + `corpus_config` (legacy singular, still valid) — a one-entry list: `id` = the repo name segment of `corpus_source`, with `clone_path`/`branch`/`probe` from `corpus_config`.
+- **If neither form is declared (`corpus_source: none` and no `corpus_sources`), skip this step entirely** (most projects). Also skip if knowledge-os is absent (no `wiki/HEALTH.md` to read the baseline from).
+- **Both forms declared** (`corpus_sources` present AND `corpus_source` not `none`) is a **config error**: surface it under Attention Needed ("corpus binding declares both singular and list forms — fix `project.yaml`") and observe neither; never silently pick one.
+
+Per `docs/wiki-schema.md` § Corpus Observation, shipped-state is **observed** from the corpora, never transcribed into `raw/`. This step is **read-only and best-effort** — **never fail the briefing on a corpus read** — but **partial observation is never silent**: run the numbered loop below for **every** corpus in the effective list, and a declared corpus that can't be reached is itself an Attention Needed item ("corpus `<id>` declared but UNOBSERVED — clone missing or unreadable at `<clone_path>`"), never a quiet footnote. Overall corpus health may only be stated when every declared corpus was actually observed.
+
+For **each** corpus `<id>` in the effective list:
+
+1. Read that corpus's HEAD: `git -C "<clone_path>" rev-parse <branch>` (fall back to `gh api repos/<source>/commits/<branch> --jq .sha` if the clone is absent).
+2. Read that corpus's last-reconciled SHA from its `id`-keyed row in `wiki/HEALTH.md` § Corpus Observation.
+3. **In sync** (HEAD == last-reconciled): note "corpus `<id>` in sync (`<sha>`)" under Wiki Health.
+4. **Drift** (HEAD ≠ last-reconciled): count the gap (`git -C "<clone_path>" rev-list --count <last-reconciled>..<HEAD>`) and read the subjects (`git -C "<clone_path>" log --oneline <last-reconciled>..<HEAD>`). Surface under Attention Needed: "Execution corpus `<id>` ahead of wiki by N commits since `<sha>` — run /compile to reconcile," and list the commit subjects.
+
+Because this is re-derived from every corpus on every run, drift persists in every briefing until `/compile` reconciles — there is no stored flag to forget. `/flight-plan` does NOT reconcile and does NOT write to `wiki/` or `REVIEW.md` (read-only); it reports the drift and `/compile` closes the loop.
+
+## Step 5.6 — Check Reference Integrity (governing docs → committed tree)
+
+This step runs in **every** mode — including build-only (knowledge-os absent) — because it reads **governing docs**, which exist in every project of this shape. It is **read-only, best-effort, and never knowledge-os-gated** (contrast Step 5.5, which is gated on knowledge-os + a corpus binding). It is the committed-tree sibling of the corpus sensor: it senses whether the **committed** governing docs reference files that aren't in the committed tree, re-derived every run so a dangling reference can't be forgotten.
+
+**Build the doc list.** Start with `core/governance/CLAUDE.md` (the harness's governing doc — it lives there, NOT at the repo root). Then read `governance_docs` from `project.yaml` at runtime (the same runtime-read pattern as the corpus binding in Step 5.5) and append each `governance_docs[].path`. If `governance_docs` is empty or absent, just check `core/governance/CLAUDE.md`.
+
+**Run the check.** Invoke the deterministic sensor, trying interpreters in order until one runs (`py` → `python` → `python3`):
+
+```
+py core/governance/check-reference-integrity.py <doc1> <doc2> ...
+```
+
+Interpret the exit code:
+- **`0` (PASS):** the committed governing docs reference only files present in the committed tree. Note "references OK" in the briefing.
+- **`1` (violations):** the script lists each violation — `UNCOMMITTED` (untracked → `git add` + commit), `DELETION-UNCOMMITTED` (locally deleted → restore or fix the link), or `DANGLING` (correct the link) — each with a fix hint. Surface **every** violation under **Attention Needed**, carrying the script's status label, the path, and its fix hint **verbatim**.
+- **`2` (inconclusive):** a doc could not be read from HEAD (e.g. not committed yet) or git was unavailable — note "reference check inconclusive" and continue.
+
+**If Python, git, or the script is unavailable** (the script is missing, no interpreter runs, or invocation errors), report **"reference check unavailable"** and continue. This step must **never** fail the briefing — it is best-effort, exactly like the corpus read in Step 5.5. Python is an accepted soft dependency here.
+
+Because the check re-runs every session against the **committed** tree (not the working tree — an untracked file can't wrongly pass), a dangling reference re-appears in every briefing until a human commits the one-line reconcile. `/flight-plan` only detects; it does not write the fix.
+
+## Step 5.7 — Check Frontmatter + Body Corruption (formatter tripwire)
+
+**Knowledge-os mode only** — the sensor (`deploy/check-frontmatter.py`) and the content dirs it scans (`raw/ wiki/ roadmap/ receipts/`) exist only when knowledge-os is enabled; in build-only mode skip this step. It is **read-only, best-effort, and degrade-never-block**: it catches on-save-formatter corruption — flattened YAML frontmatter and collapsed GFM table bodies (TABLE-FUSE / TABLE-JAM / TABLE-NOSEP) — re-derived every run so reintroduced corruption can't be forgotten. (It also validates the engine's derivation-block schema; see `docs/wiki-schema.md`.) Sibling to Step 5.6: same structural fix — sense the spec-vs-reality gap, re-derived every run.
+
+**Run the check**, trying interpreters in order until one runs (`py` → `python` → `python3`):
+
+```
+py deploy/check-frontmatter.py
+```
+
+Interpret the exit code:
+- **`0`:** clean, or findings in degrade mode. If it printed `[WARN]`/`[INFO]` lines, surface each `[SEV] path: reason` under **Attention Needed** verbatim — the fix is a **human edit** (restore the table/frontmatter from git history), never an auto-edit. If it printed nothing actionable, note "frontmatter/body corruption: clean" under **Wiki Health**.
+- **`1` (a `REFUSE`):** a derivation-block `schema_version` skew — surface it loudly under **Attention Needed** (a reader could mis-trust the block until it's reconciled).
+
+**If Python or the script is unavailable** (missing, no interpreter runs, or it errors), report "corruption check unavailable" and continue. This step must **never** fail the briefing — best-effort, exactly like Steps 5.5 and 5.6. (A project that wants corruption to hard-fail runs `py deploy/check-frontmatter.py --strict` as a pre-commit / CI gate, outside the briefing.)
+
+Because it re-runs every session against the tracked tree, a known-but-unfixed corruption re-surfaces in every briefing until a human reconciles it — no stored flag.
+
+## Step 5.8 — Check Derivation Audit Gate (knowledge-os only)
+
+**Knowledge-os mode only** — `deploy/check-derivation.py` and the `wiki/` tree it scans exist only when knowledge-os is enabled; in build-only mode skip this step. It is **read-only, best-effort, and degrade-never-block**, sibling to Steps 5.6 and 5.7: it senses whether any wiki view carries an `audit-pending` T1 derivation block — a view whose provenance hasn't been verified yet — re-derived every run so an unaudited view can't be silently built on.
+
+**Run the check**, if `deploy/check-derivation.py` exists, trying interpreters in order until one runs (`py` → `python` → `python3`):
+
+```
+py deploy/check-derivation.py --gate
+```
+
+Interpret the exit code:
+- **`0`:** no audit-pending T1 views. Note "derivation audit: clean" under **Wiki Health**.
+- **`2`:** the script lists each audit-pending T1 view. Surface **every** one under **Attention Needed**, verbatim, with the instruction: **do not build on these views** until they're audited.
+
+**If the script does not exist, or Python is unavailable**, report "derivation audit unavailable" and continue. This step must **never** fail the briefing — best-effort, exactly like Steps 5.5, 5.6, and 5.7.
+
+Because it re-runs every session against the tracked tree, an unaudited T1 view re-surfaces in every briefing until it's audited — no stored flag.
+
+## Step 5.9 — Check Behavioral-Manifest Structure (knowledge-os only)
+
+**Knowledge-os mode only** — `deploy/check-manifest.py` and the `manifests/` tree it scans exist only when knowledge-os is enabled; in build-only mode skip this step. It is **read-only, best-effort, and degrade-never-block**, sibling to Steps 5.6–5.8: it checks frontmatter completeness, the `manifest:` layer key, declared-vs-computed row counts, ID uniqueness, controlled-flag vocabulary, `source_artifacts` pins, and MANIFEST-INDEX ↔ file coherence for every manifest under `manifests/` (`core/methodology/manifest-format.md` § 12).
+
+**Run the check**, if `deploy/check-manifest.py` exists, trying interpreters in order until one runs (`py` → `python` → `python3`):
+
+```
+py deploy/check-manifest.py
+```
+
+Interpret the exit code:
+- **`0`:** no findings. Note "behavioral manifests: clean" under **Wiki Health**.
+- **non-zero:** the script lists each finding (frontmatter, vocabulary, row-count, or MANIFEST-INDEX coherence). Surface **every** finding under **Attention Needed** as a defect to schedule — a FAIL here is reported, never blocking; the briefing still completes.
+
+**Absent `manifests/`** is a **NOTE, not a finding** — a freshly instantiated or not-yet-extracted project carries no `manifests/` tree by design (`core/methodology/manifest-format.md` § 2). Note "manifests/ absent (no extraction yet)" under **Wiki Health**.
+
+**If the script does not exist, or Python is unavailable**, report "manifest-structure check unavailable" and continue. This step must **never** fail the briefing — best-effort, exactly like Steps 5.5–5.8.
+
+Because it re-runs every session against the tracked tree, an unresolved manifest finding re-surfaces in every briefing until it's fixed — no stored flag.
+
+## Step 5.10 — Check Knowledge Debt (knowledge-os only)
+
+**Knowledge-os mode only** — `deploy/check-knowledge-debt.py` reads `raw/` and `wiki/REVIEW.md`, which exist only when knowledge-os is enabled; in build-only mode skip this step. It is **read-only, best-effort, and degrade-never-block**, sibling to Steps 5.6–5.9. It watches two debt classes nothing else does (backlog v3.0-51/52): **archive integrity** — every `compile: false` raw file's `canonical:` home exists (date-gated: files dated on/after 2026-07-27 without the field FAIL; older files count as legacy-unannotated WARNs, grandfathered) — and **review aging** — REVIEW.md entries past their own stale-after date, plus entries with no parseable date. The sensor reports; it never flips flags or edits REVIEW.md — corpus adjudication stays human.
+
+**Run the check**, if the script exists, trying interpreters in order until one runs (`py` → `python` → `python3`):
+
+```
+py deploy/check-knowledge-debt.py --check
+```
+
+Interpret the exit code:
+- **`0` with no WARNs:** note "knowledge debt: clean" under **Wiki Health**.
+- **`0` with WARNs:** carry the summary line ("archive: … ; review: …") into **Wiki Health**; when the oldest stale REVIEW entry exceeds 30 days, surface it under **Attention Needed** — aging debt that never escalates is the exact failure mode this step exists to end.
+- **`1`:** surface every `[FAIL]` line under **Attention Needed** (a new archive with no named home, a `canonical:` target that doesn't exist, or a new REVIEW entry written without a parseable stale-after date) — reported, never blocking; the briefing still completes.
+
+**If the script does not exist, or Python is unavailable**, report "knowledge-debt check unavailable" and continue. This step must **never** fail the briefing — best-effort, exactly like Steps 5.5–5.9.
+
+## Step 6 — Generate Briefing
+
+Output the briefing in this format (omit **Wiki Health** and **Coverage Gaps** when knowledge-os is absent — see Step 0.6):
+
+```markdown
+# Flight-Plan Briefing — [DATE]
+
+_Mode: [knowledge-os | build-only]. Reference integrity: [OK | N violation(s) — see Attention Needed | inconclusive | unavailable]._
+
+(The reference-integrity status line shows in BOTH modes — it is not part of the knowledge-os-only Wiki Health block, because Step 5.6 runs in build-only too.)
+
+## What Changed (since last briefing)
+- [Delta summary from compile receipts — what was added, updated, confidence changes]
+- If nothing changed: "No compiles since last briefing."
+
+## Wiki Health
+- **Articles:** [count] across [domains with counts]
+- **Unprocessed raw:** [count] — [list if any]
+- **Staleness alerts:** [list if any, or "None"]
+- **Corpus:** [in sync at `<sha>` | ahead by N since `<sha>` | n/a (no corpus_source) | unreachable] — omit line if corpus_source is none
+
+## Active Flight Plans
+| Flight plan | Phase | Status | Blocker | Next Action |
+|-------------|-------|--------|---------|-------------|
+| [one row per plan in wiki/flight-plans/, extracted per Step 4.5] | | | | |
+
+(If no flight plans exist: output "No active flight plans" instead of an empty table.)
+
+## Attention Needed
+- [Blocking REVIEW.md items — list if any]
+- [Stale REVIEW.md items — list if any]
+- [Overdue orchestrators — list if any]
+- [Unprocessed raw files — list if any]
+- [Malformed flight plans — list if any]
+- [Reference-integrity violations — from Step 5.6; list each with its status label + path + fix hint verbatim]
+- [Knowledge-debt findings — from Step 5.10; `[FAIL]` lines and 30d+ stale-REVIEW ages verbatim]
+- [Audit-pending T1 views — from Step 5.8; list each verbatim, with "do not build on these views" until audited]
+- [Corpus drift — if the execution corpus is ahead of the wiki, name the gap and recommend /compile]
+- [Active hold points awaiting operator review]
+- If nothing: "All clear."
+
+## Coverage Gaps (top 3)
+- [Biggest gaps from HEALTH.md and INDEX known-gaps sections]
+
+## Recommendation
+- [What to do this session — e.g., "Run /compile on 3 new raw files", "Conduct pain-point audit to fill operations/ gaps", "Run /audit — it's been 2 weeks", "Open a flight plan for Phase 0"]
+```
+
+## Step 6a — Regenerate SESSION-BRIEFING.md (knowledge-os only)
+
+Using the same inputs already read in Steps 1–5 (receipts, HEALTH.md, REVIEW.md, cadence compliance, unprocessed raw scan) plus the flight-plans scan from Step 4.5, **the corpus observation from Step 5.5, the reference-integrity status from Step 5.6, the derivation-audit status from Step 5.8, and the knowledge-debt status from Step 5.10**, regenerate `SESSION-BRIEFING.md` at the repo root with current state. Follow the SESSION-BRIEFING.md schema in `docs/wiki-schema.md` § 10. If Step 5.5 found corpus drift, carry the **alert** into SESSION-BRIEFING (alert, not reconciliation — reconciling is `/compile`'s job). If Step 5.6 found reference-integrity violations, carry them in too (the script's status label + path + fix hint, verbatim) — detection only; the reconcile is a human `git commit`. If Step 5.8 found audit-pending T1 views, carry those in too, verbatim — detection only; the audit itself is a separate human/operator action.
+
+This is `/flight-plan`'s single write exception — the briefing file overwrite is intentional. Do not preserve old content; the file is regenerated from scratch every run.
+
+## Step 7 — Write Receipt
+
+Create the `receipts/` directory if it does not exist, then write a receipt file in `receipts/` named `YYYY-MM-DDTHHMMSS-flight-plan.md`:
+
+```yaml
+---
+type: flight-plan
+timestamp: [now]
+duration_minutes: [estimate]
+articles_at_briefing: [count, or "n/a" if knowledge-os absent]
+unprocessed_raw: [count, or "n/a"]
+review_items: [count by severity, or "n/a"]
+overdue_orchestrators: [list or empty]
+staleness_alerts: [count, or "n/a"]
+active_flight_plans: [count]
+recommendation: "[one-line summary of recommendation]"
+---
+```
+
+## Step 8 — Append to Changelog
+
+Append one line to `changelog.md` at the project root (create the file if it does not exist):
+```
+[YYYY-MM-DD] /flight-plan — [article count or "build-only"] articles, [unprocessed] unprocessed raw. [recommendation summary].
+```
+
+## Flight Plan Format (for `wiki/flight-plans/<slug>.md` authors)
+
+Each flight plan file should carry a Layer 1 Dashboard block readable by this orchestrator without parsing prose. Suggested shape:
+
+```markdown
+# <Flight plan title>
+
+## LAYER 1 — DASHBOARD
+
+- **Project:** {{project_name}}
+- **Phase:** <e.g., "Phase 0 — Validation">
+- **Workstream:** <e.g., "Product-fit methodology authoring">
+- **Status:** <one-line current state>
+- **Blocker:** <one-line current blocker, or "none">
+- **Next action:** <one-line next concrete action>
+- **Last session:** <YYYY-MM-DD — what was done>
+- **Tier of open work:** <T1 / T2 / T3 / T4>
+- **Hold points:** <named hold points blocking phase exit, or "none">
+
+## LAYER 2 — CURRENT BUILD INCREMENT
+
+| # | Step | Owner | Status | Notes |
+|---|------|-------|--------|-------|
+
+## LAYER 3 — PRIOR INCREMENTS
+
+(Archived state from completed build increments — append-only.)
+```
+
+This shape is convention, not enforced. The Layer 1 Dashboard is the load-bearing part — Step 4.5 extracts from it.
+
+## Rules
+
+- `/flight-plan` is READ-ONLY with one exception: it regenerates `SESSION-BRIEFING.md` on every no-argument run when knowledge-os is present (Step 6a). It never modifies wiki articles, INDEX files, HEALTH.md, REVIEW.md, or any flight plan.
+- Authoring `wiki/flight-plans/*.md` is not this skill's job. The kickoff session authors the initial plan — after `/preflight` stamps the roadmap phase article, the same session fills in `flight-plan-template-v6.md` using the preflighted article (see `core/methodology/HOW-TO-USE-FLIGHT-PLAN.md`) — and `/flight-plan` only ever reads what's there.
+- When invoked with an argument, `/flight-plan` is a targeted read; no receipt, no changelog append, no SESSION-BRIEFING.md regeneration. When invoked with no argument, the full briefing runs and the receipt + changelog (+ SESSION-BRIEFING.md, if knowledge-os present) are updated as above.
+- The briefing should be scannable in under 60 seconds.
+- Lead with deltas, not full state. A cold reader cares about what changed first.
+- If there are no deltas (first run or nothing changed), lead with current state summary.
+- Be honest about gaps. Don't say "good coverage" when domains are empty.
+- If a flight plan in `wiki/flight-plans/` has a stale or contradictory Layer 1 Dashboard (e.g., Next action pointing at an archived plan), surface it under Attention Needed — flight plans rot faster than wiki articles because they track in-progress work.
+- The Step 5.5 corpus observation is **read-only and best-effort** and only runs when `corpus_source` is declared (not `none`). Reading a sibling execution repo is a read, not a write, so it does not break the read-only rule. Never let a corpus read failure block the briefing; report "corpus: unreachable" and move on.
+- The Step 5.6 reference-integrity check is **read-only and best-effort** and runs in **every** mode — it reads governing docs, which exist even in build-only projects, so it is NOT knowledge-os-gated (unlike Step 5.5). It only detects; the reconcile is a human `git commit` (add the missing file, or fix the link). Never let a missing interpreter, missing git, or a script error block the briefing — report "reference check unavailable" and continue.
+- The Step 5.8 derivation-audit gate is **read-only, best-effort, and knowledge-os-gated** (like Steps 5.1–5.7): it only runs `deploy/check-derivation.py --gate` when that script exists. It only detects audit-pending T1 views; it never blocks the briefing and never performs the audit itself. Never let a missing interpreter or missing script block the briefing — report "derivation audit unavailable" and continue.
+
+## Scan telemetry
+
+When this session assembles an answer by scanning many files — an affected-set, a
+cross-link map, "which articles touch X" — append one line per distinct question to the
+session receipt:
+
+`scan: <question-shape> | files~<count> | minutes~<elapsed>`
+
+Plain text, no new file class; skip it when no multi-file scan happened. This is the
+measurement rail for the materialization doctrine's second-query trigger
+(`core/methodology/materialization-doctrine.md`): recurrence of a question-shape across
+receipts is the recorded demand evidence a projection decision cites.

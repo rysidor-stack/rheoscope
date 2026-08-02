@@ -1,0 +1,54 @@
+<!-- Operator fills in each enabled-capability section when the project enables its
+     first autonomous capability — not at INIT. A project with no automation leaves
+     this file empty. See core/methodology/least-privilege-isolation.md for the
+     credential-scope and data-isolation doctrine each declaration must satisfy, and
+     core/methodology/spend-governance.md for the spend cap and stop-condition
+     doctrine. -->
+
+# Automation Isolation — {{project_name}}
+
+This file is the operator's per-capability registry of credential scope, data isolation, and spend governance for every enabled autonomous capability in {{project_name}}.
+
+**When to complete this file:** fill in a capability entry the first time this project enables an autonomous capability (a scheduled run, a parallel build, a write-back capability) — before it first runs. Do not fill it in speculatively at INIT — a project with no enabled automation leaves this file empty, except for the high-blast-radius surface list below, which the operator declares before enabling the *first* capability.
+
+For the doctrine each entry must satisfy, see: `core/methodology/least-privilege-isolation.md` (non-production default, least privilege, pinned config, defense-in-depth) and `core/methodology/spend-governance.md` (provider cap, soft ceiling, stop condition). This file and `core/governance/KILL-SWITCH.md` together answer "is this capability safe to enable": this one declares what it runs as, what it can reach, and what it costs; KILL-SWITCH declares how it is stopped.
+
+---
+
+## Declared High-Blast-Radius Surfaces
+
+*Declared by the operator before the first autonomous capability is enabled. These are the surfaces of {{project_name}} where a bad automated change does the most damage — the ones ADR-#1-style commitments place permanently off-limits to parallel or unattended execution. Name them concretely (a directory, a subsystem, a class of change), so eligibility is checkable, not arguable.*
+
+- [Surface — and one line on why it is high-blast-radius.]
+
+---
+
+## Enabled-Capability Registry
+
+*One entry per enabled autonomous capability. Add an entry when you enable the capability; mark it retired (with date) when you disable it.*
+
+### Capability: [name]
+
+*(Copy and complete this block for each enabled capability.)*
+
+**Environment and data:** [What environment this capability runs against. Non-production by default; if production, state the explicit rationale. Name the data source and confirm it satisfies DATA-POLICY (synthetic / anonymized seeds for dev data).]
+
+**Credential scope:** [The identity this capability runs as and the exact permissions it holds — what it can read, what it can write, and why nothing narrower suffices. Read-only unless a listed function requires write. Never merge or admin scope.]
+
+**Cannot reach:** [What this credential demonstrably cannot touch — the declared high-blast-radius surfaces above, production data stores, secrets outside its scope. Stated so it can be verified, not assumed.]
+
+**Config control:** [Where this capability's automation config lives, who reviews changes to it, and confirmation that its third-party dependencies are version-pinned to immutable references.]
+
+**Spend cap (provider backstop):** [The provider-side hard ceiling set on this capability's credential before enablement. Amount and scope. "n/a" is not accepted — every capability with model API access must carry a cap.]
+
+**Soft per-run ceiling:** [The live-tally token/cost limit at which a single run self-halts. State the limit and the unit (tokens, estimated cost). If the capability has no per-run ceiling — state "n/a" with rationale — note that the provider backstop above remains required.]
+
+**Spend attribution:** [How this capability's spend is read: which distinct credential's provider usage view, and at what cadence the operator reviews it.]
+
+**Stop condition:** [The measurable criterion at which this capability is halted and its value-to-cost ratio reviewed. Includes spend threshold, win criterion (what counts as a win), and kill criterion (what outcome at what spend level triggers disabling). Reads from existing records (verifier reviews, cockpit/flight-plan logs, pilot telemetry) — does not create new ones.]
+
+---
+
+## Notes
+
+*(Optional: pending scope reductions, known gaps against the doctrine, escalation path if a credential is found over-scoped.)*

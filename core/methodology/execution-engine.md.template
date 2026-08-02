@@ -1,0 +1,884 @@
+<!-- Extracted and generalized from a production project.
+     Adapted for rheoscope-harness v{{template_version}}.
+     Tier examples customizable via project.yaml.tier_examples. -->
+
+# Execution Engine
+
+## How Builds Run
+
+**Purpose:** This document governs how a CC Controller session dispatches, manages, and verifies build work. It replaces the generic subagent-driven-development skill and integrates the autonomous execution principles directly into agent prompts.
+
+**Loaded by:** CC Controller sessions. Referenced (not loaded in full) by the flight plan's methodology table.
+
+**Core principle:** Fresh subagent per task. Tier-appropriate verification. Regression gate at every tier. Flight plan updated after every increment. No agent grades its own work at Tier 1–2.
+
+---
+
+## Part 1: Controller Behavior
+
+The CC Controller is the orchestrator for autonomous build sessions. It reads the flight plan, dispatches subagents, manages the execution flow, and updates the flight plan. It does not write feature code itself.
+
+### Controller Startup
+
+1. Read the flight plan's Layer 1 and Layer 2.
+2. Identify increments that are IN PROGRESS or QUEUED.
+3. For each increment, note: name, tier, verification status, build spec path, verification spec path.
+4. If any increment is IN PROGRESS from a prior session, check for completion markers and resumption artifacts before re-dispatching. (See: Idempotent Resumption in Part 3.)
+5. Process increments in the order listed in Layer 2. Do not reorder unless the flight plan explicitly says to.
+
+### Controller Per-Increment Flow
+
+For each increment, the Controller:
+
+1. Reads the tier assignment.
+2. Routes to the appropriate tier protocol (see Part 2).
+3. Executes the protocol steps in order.
+4. **Hard gate:** Updates the flight plan's Layer 2 (increment status, verification status) and appends to Layer 4 BEFORE moving to the next increment. The Controller may not dispatch the next Builder until this update is written to disk.
+5. If any step fails in a way that requires human judgment (verification failure at T1–T2, regression failure, 3 failed attempts), the Controller stops the line and writes a clear report to the flight plan's Layer 2 (Open Questions) and Layer 4 (session log). It does not attempt to self-resolve.
+
+### Controller Shutdown
+
+On session end (normal or unexpected):
+1. Update Layer 2 for any in-progress work — mark as IN PROGRESS with notes on where it stopped.
+2. Append to Layer 4 with a complete session log entry.
+3. Do NOT rewrite Layer 1 — that's for the next interactive session.
+
+---
+
+## Part 2: Tier Protocols
+
+### Tier 1 Protocol — Full Firewall
+
+**When:** {{tier_examples.T1}}. *(Default example: money, inventory, tax, invoices, payments — anything where silent errors cost dollars or corrupt counts.)*
+
+**Prerequisite:** Verification spec must be WRITTEN and verification tests must be WRITTEN (by a prior Verifier session) before build begins. If either is missing, Controller stops and flags in the flight plan.
+
+**Step 0 — Manifest gate (before anything else fires).** Read
+`manifests/<surface>/MANIFEST-INDEX.md` for every surface this increment touches. For every
+touched layer, the required state is CERTIFIED (LIVE satisfies) (`manifest-format.md` §7;
+SUPERSEDED never satisfies). Print the gate banner:
+
+```
+MANIFEST GATE — <surface> @ T1
+  <layer>: <status> (<rows> rows) — PASS | FAIL (needs CERTIFIED (LIVE satisfies))
+  ...one line per touched layer...
+GATE: OPEN | CLOSED
+```
+
+This banner is the session's own gate declaration derived from the MANIFEST-INDEX; the
+engine's packet assembler prints its own shorter machine banner (`BEHAVIORAL-MANIFEST GATE --
+<surface> @ <tier> -- OPEN` + a REQUIRED READING line; on refusal, a reason line instead) —
+both read the same INDEX, and the session banner is authoritative for the record.
+
+If any touched layer fails, the gate is CLOSED: this increment does not fire, and **the next
+dispatch is the extraction (or certification), not the build.** A design freeze without its
+manifests is an incomplete freeze. The increment also declares its change move here —
+**definition amendment** (manifest rows amended and certified FIRST; the build that follows
+is conformance restoration against the amended rows), **projection change** (refactor-class:
+full-tier conformance sweep before and after must show zero row deltas, or it was not a
+refactor), or **conformance restoration** (defect-fix: cite the red row IDs this increment
+turns green). An increment that declares no move, or fits none, is malformed — refuse it
+(`manifest-format.md` §8; doctrine §9.1).
+
+```
+STEP 0 — PRE-BUILD REGRESSION GATE
+  Dispatch Runner subagent.
+  Runner runs: all tests in tests/verified/ (every prior increment).
+  Results logged to: results/regression-run-pre-[date].json
+  Gate: ALL tests must PASS.
+  If any FAIL → Controller stops. Reports to flight plan. Does not proceed.
+
+STEP 1 — BUILD
+  Dispatch Builder subagent using the Builder Prompt Template (Part 4).
+  Builder receives: build spec, codebase access, Principles 1-6 (instantiated).
+  Builder does NOT receive: verification tests, verification spec.
+  Builder implements, writes incremental artifacts, produces completion markers, commits.
+  Builder reports back to Controller.
+
+STEP 2 — VERIFICATION RUN
+  Dispatch Runner subagent.
+  Runner runs: tests/verified/[this-increment]/ against the build.
+  Results logged to: results/verification-run-[date].json
+  If PASS → proceed to Step 3.
+  If FAIL → Controller stops. Writes failure details to flight plan.
+    Operator diagnoses in next interactive session — recommended support: the
+      operator-dispatched, read-only Diagnosis session (Part 5 recovery protocol,
+      Part 4 template; different model family from the Builder).
+    Operator may dispatch a new Builder with fix instructions.
+    The original Builder is never shown test results directly.
+
+STEP 3 — CODE QUALITY REVIEW
+  Dispatch Code Quality Reviewer subagent using the Reviewer Prompt Template (Part 4).
+  Reviewer receives: diff (base SHA to current), code-conventions.md, build spec.
+  Standard review. If issues found:
+    Dispatch a fresh Builder subagent to fix (not the original Builder).
+    Re-dispatch Reviewer after fix.
+    Loop until approved. Max 3 loops — after 3, stop the line.
+
+STEP 4 — POST-BUILD REGRESSION GATE
+  Dispatch Runner subagent.
+  Runner runs: ALL tests in tests/verified/ (every increment, including this one).
+  Results logged to: results/regression-run-post-[date].json
+  Gate: ALL tests must PASS.
+  If any prior increment's tests now FAIL → regression detected.
+    Controller stops. Reports which tests regressed and which increment caused it.
+    Does not attempt to fix.
+
+STEP 4b — MUTATION PASS (OPTIONAL — grades the tests, not the build)
+  After Step 4 passes, optionally dispatch a Runner subagent.
+  Runner introduces representative mutants into a throwaway copy of the
+    increment's changed code (diff-scoped) and re-runs
+    tests/verified/[this-increment]/ against each mutant.
+  Results logged to: results/mutation-run-[date].json (score + surviving mutants).
+  Surviving mutant = operator FLAG (a weak test): a Verifier session strengthens it.
+    Never the original Builder; tests/verified/ stays append-only.
+  NOT a gate — never blocks the increment until a stable kill-rate baseline exists.
+  Run manually per increment (the harness ships no scheduler).
+  Doctrine + tooling: verification-architecture.md Part 8. T2: optional, same mechanics.
+
+STEP 5 — FLIGHT PLAN UPDATE
+  Controller writes to disk:
+    - Layer 2: increment status → COMPLETE, verification status updated
+    - Layer 2: any new Open Questions or Risks discovered during build
+    - Layer 4: session log entry with Did/Decided/Verified/Flagged/Next
+  Only after this write completes does Controller proceed to next increment.
+```
+
+### Tier 2 Protocol — Full Firewall (Cascade Variant)
+
+**When:** {{tier_examples.T2}}. *(Default example: multi-step workflows where one action triggers downstream actions.)*
+
+**Step 0 — Manifest gate (before anything else fires).** Read
+`manifests/<surface>/MANIFEST-INDEX.md` for every surface this increment touches. For every
+touched layer, the required state is CERTIFIED (LIVE satisfies) (`manifest-format.md` §7;
+SUPERSEDED never satisfies). Print the gate banner:
+
+```
+MANIFEST GATE — <surface> @ T2
+  <layer>: <status> (<rows> rows) — PASS | FAIL (needs CERTIFIED (LIVE satisfies))
+  ...one line per touched layer...
+GATE: OPEN | CLOSED
+```
+
+This banner is the session's own gate declaration derived from the MANIFEST-INDEX; the
+engine's packet assembler prints its own shorter machine banner (`BEHAVIORAL-MANIFEST GATE --
+<surface> @ <tier> -- OPEN` + a REQUIRED READING line; on refusal, a reason line instead) —
+both read the same INDEX, and the session banner is authoritative for the record.
+
+If any touched layer fails, the gate is CLOSED: this increment does not fire, and **the next
+dispatch is the extraction (or certification), not the build.** A design freeze without its
+manifests is an incomplete freeze. The increment also declares its change move here —
+**definition amendment** (manifest rows amended and certified FIRST; the build that follows
+is conformance restoration against the amended rows), **projection change** (refactor-class:
+full-tier conformance sweep before and after must show zero row deltas, or it was not a
+refactor), or **conformance restoration** (defect-fix: cite the red row IDs this increment
+turns green). An increment that declares no move, or fits none, is malformed — refuse it
+(`manifest-format.md` §8; doctrine §9.1).
+
+**Identical to Tier 1** with one addition:
+
+In Step 2, the Runner also executes **cascade completeness tests** — end-to-end tests that trigger step 1 of the cascade and verify that all downstream steps fire correctly. These are defined in the verification spec and written by the Verifier.
+
+Individual steps may also have unit-level verification tests. The cascade test is what proves the chain works, not just the links.
+
+Tier 1's verification-failure recovery applies unchanged at this tier — including the operator-dispatched, read-only **Diagnosis session** (Part 5 recovery protocol; Diagnosis Prompt Template in Part 4).
+
+### Tier 3 Protocol — Spec Review + Code Quality
+
+**When:** {{tier_examples.T3}}. *(Default example: data integrity, customer records, stateful operations — things that matter but aren't money.)*
+
+**Prerequisite:** Build spec must exist. Verification spec is recommended but not required.
+
+**Step 0 — Manifest gate (before anything else fires).** Read
+`manifests/<surface>/MANIFEST-INDEX.md` for every surface this increment touches. For every
+touched layer, the required state is EXTRACTED or better (`manifest-format.md` §7; SUPERSEDED
+never satisfies). Print the gate banner:
+
+```
+MANIFEST GATE — <surface> @ T3
+  <layer>: <status> (<rows> rows) — PASS | FAIL (needs EXTRACTED or better)
+  ...one line per touched layer...
+GATE: OPEN | CLOSED
+```
+
+This banner is the session's own gate declaration derived from the MANIFEST-INDEX; the
+engine's packet assembler prints its own shorter machine banner (`BEHAVIORAL-MANIFEST GATE --
+<surface> @ <tier> -- OPEN` + a REQUIRED READING line; on refusal, a reason line instead) —
+both read the same INDEX, and the session banner is authoritative for the record.
+
+If any touched layer fails, the gate is CLOSED: this increment does not fire, and **the next
+dispatch is the extraction (or certification), not the build.** A design freeze without its
+manifests is an incomplete freeze. The increment also declares its change move here —
+**definition amendment** (manifest rows amended and certified FIRST; the build that follows
+is conformance restoration against the amended rows), **projection change** (refactor-class:
+full-tier conformance sweep before and after must show zero row deltas, or it was not a
+refactor), or **conformance restoration** (defect-fix: cite the red row IDs this increment
+turns green). An increment that declares no move, or fits none, is malformed — refuse it
+(`manifest-format.md` §8; doctrine §9.1).
+
+```
+STEP 0 — PRE-BUILD REGRESSION GATE
+  Same as Tier 1. Always runs. Every tier.
+
+STEP 1 — BUILD
+  Dispatch Builder subagent using the Builder Prompt Template (Part 4).
+  Builder receives: build spec, codebase access, Principles 1-6 (instantiated).
+  Builder writes own tests (acceptable at this tier).
+  Builder commits, produces completion markers.
+
+STEP 2 — SPEC REVIEW
+  Dispatch Spec Reviewer subagent using the Spec Reviewer Prompt Template (Part 4).
+  Reviewer receives: build spec (full text), implementer's report.
+  Reviewer reads actual code — does NOT trust the report.
+  If issues found:
+    Same Builder subagent fixes (substrate sharing is acceptable at T3).
+    Re-dispatch Spec Reviewer. Loop until approved. Max 3 loops.
+
+STEP 3 — CODE QUALITY REVIEW
+  Same as Tier 1 Step 3.
+
+STEP 4 — POST-BUILD REGRESSION GATE
+  Same as Tier 1.
+
+STEP 5 — FLIGHT PLAN UPDATE
+  Same as Tier 1.
+```
+
+### Tier 4 Protocol — Builder Self-Verified
+
+**When:** {{tier_examples.T4}}. *(Default example: UI, notifications, display logic, low-risk features.)*
+
+**Step 0 — Manifest gate (before anything else fires).** T4 is manifest-exempt: no
+MANIFEST-INDEX read or gate banner is required before build dispatch. The exemption and its
+reason are named in the receipt (`manifest-format.md` §7). The increment still declares its
+change move here — **definition amendment**, **projection change**, or **conformance
+restoration** (`manifest-format.md` §8; doctrine §9.1) — the three-move taxonomy carries no
+tier exemption; an increment that declares no move, or fits none, is malformed — refuse it.
+
+This banner is the session's own gate declaration derived from the MANIFEST-INDEX; the
+engine's packet assembler prints its own shorter machine banner (`BEHAVIORAL-MANIFEST GATE --
+<surface> @ <tier> -- OPEN` + a REQUIRED READING line; on refusal, a reason line instead) —
+both read the same INDEX, and the session banner is authoritative for the record.
+
+```
+STEP 0 — PRE-BUILD REGRESSION GATE
+  Same as Tier 1. Always runs. Every tier.
+
+STEP 1 — BUILD + SELF-REVIEW
+  Dispatch Builder subagent using the Builder Prompt Template (Part 4).
+  Builder implements, writes tests, self-reviews per the template's checklist.
+  Builder commits, produces completion markers.
+
+STEP 2 — POST-BUILD REGRESSION GATE
+  Same as Tier 1.
+
+STEP 3 — FLIGHT PLAN UPDATE
+  Same as Tier 1.
+```
+
+---
+
+## Part 3: Autonomous Execution Principles
+
+These six principles apply to every subagent — Builder, Verifier, Runner. They are instantiated in every agent prompt, not loaded as a separate document.
+
+### Principle 1: Durable Execution
+
+No step's result should depend on the session staying alive. Results are written incrementally after each independently meaningful unit of work. If the session dies at step 7 of 10, steps 1–6 are on disk and recoverable.
+
+**Instantiation pattern for prompts:**
+```
+DURABLE EXECUTION:
+Write results incrementally to [path].
+Work unit: [what constitutes one meaningful piece — e.g., one API endpoint, one parser, one test].
+After completing each work unit, write its result to disk before starting the next.
+If this session dies, the next session must be able to pick up from the last written result.
+```
+
+### Principle 2: Clean State
+
+Before starting, verify the environment is clean. Produce `clean-state-check.json` documenting what was checked and cleared.
+
+**Protected items:** Attempt markers from Principle 6 are never cleaned. They are diagnostic history, not debris.
+
+**Instantiation pattern:**
+```
+CLEAN STATE:
+Before starting, check for: [orphaned processes, stale temp files, port conflicts, cached tokens — project-specific].
+Produce: [path]/clean-state-check.json listing what was checked, what was found, what was cleared.
+Do NOT clean attempt markers (step-N-attempt-*.json). Those are diagnostic history.
+```
+
+### Principle 3: Completion Markers
+
+Every task produces a named artifact proving it finished. Write-last rule: the marker is the last action. Binary status: PASS or FAIL only. No partial, no blocked, no skipped.
+
+**Instantiation pattern:**
+```
+COMPLETION MARKERS:
+After completing [task], write: [path]/[task-name]-complete.json
+Contents: { status: "PASS"|"FAIL", timestamp, [task-specific result data] }
+Write-last rule: this file is the LAST thing you write for this task.
+It must contain data that could only exist after the work is done.
+Binary: PASS or FAIL. Nothing else. BLOCKED is FAIL with a reason. PARTIAL is FAIL with a reason.
+```
+
+### Principle 4: Idempotent Resumption
+
+On restart, check what's already done. Validate existing markers before trusting them. Resume at the first incomplete step.
+
+**Instantiation pattern:**
+```
+IDEMPOTENT RESUMPTION:
+Before starting, check for existing completion markers at [path].
+For each marker found: validate it (check that contents are real, not empty/template).
+If marker is valid: skip that task.
+If marker is invalid or missing: treat task as incomplete.
+Produce: [path]/resumption-audit.json listing every marker found, validated or rejected, and where execution resumed.
+```
+
+### Principle 5: Result Integrity
+
+Every marker includes a sanity check that the agent cannot fake without doing the work. The check is defined by the orchestrator in the prompt, not chosen by the agent.
+
+**Instantiation pattern:**
+```
+RESULT INTEGRITY:
+For each task, the following sanity checks apply:
+  [Task 1]: [specific check — e.g., "response timestamp within last 5 minutes"]
+  [Task 2]: [specific check — e.g., "output file size > 0 and contains valid JSON"]
+  [Task N]: [specific check]
+You execute these checks. You do not design them.
+Produce: [path]/integrity-checks.json with each check, the value found, and PASS/FAIL.
+```
+
+### Principle 6: Failure Memory
+
+Before retrying a failed step, check for prior attempt markers. Each retry must change the approach, not just parameters. After 3 failed attempts, stop the line.
+
+**Instantiation pattern:**
+```
+FAILURE MEMORY:
+Before attempting [task], check for existing attempt markers at [path]/[task]-attempt-*.json.
+If prior attempts exist, read them. Your approach must be substantively different.
+Meaningful diff: different tool, library, algorithm, sequence, data format.
+Not meaningful: same command with longer timeout, same tool with different flag.
+After 3 total attempts: STOP. Write [path]/[task]-blocked.json with all attempt details. Do not retry.
+```
+
+### Enforcement Rule
+
+Every principle produces artifacts. Self-reported status without a verifiable artifact is not compliance. The agent doesn't get to grade its own work — its artifacts do.
+
+---
+
+## Part 4: Prompt Templates
+
+Evidence artifacts these prompts produce — `results/` run outputs, visual-evidence captures, diagnosis reports — are bound by `core/governance/DATA-POLICY.md` (masking at capture, entities by ID, declared retention with receipted purge).
+
+### Builder Prompt Template
+
+```
+You are implementing: [increment name]
+
+## Task Description
+[FULL TEXT of build spec — pasted in, not a file reference]
+
+## Context
+[Where this fits in the project. Dependencies. Architecture notes.]
+
+## Manifests (required reading — the contract)
+
+- Behavioral manifests for every layer this increment touches: [list paths + seed@version]
+- Declared change move: [definition amendment | projection change | conformance restoration]
+- **Execution step one is manifest certification**: replay the goldens against the pinned
+  seed BEFORE writing any code. A golden that cannot be reproduced escalates to the hub —
+  never silently obey either source.
+- **Any conflict between this prompt (or any spec) and a manifest row: the manifest wins.**
+  If you find a conflict no rule resolves, or a row that cannot be discharged as written —
+  stop and flag it; do not improvise a resolution.
+- T4 only: if this increment runs manifest-exempt, the exemption's reason is stated here and
+  carried into the receipt.
+
+## Before You Begin
+If you have questions about requirements, approach, dependencies, or anything unclear — ask now.
+It is always better to ask than to guess.
+
+## Execution Constraints (non-negotiable)
+
+DURABLE EXECUTION:
+[Instantiated per Principle 1 — path, work unit, incremental write behavior]
+
+CLEAN STATE:
+[Instantiated per Principle 2 — what to check, where to write check file]
+
+COMPLETION MARKERS:
+[Instantiated per Principle 3 — path, file name, required contents]
+
+IDEMPOTENT RESUMPTION:
+[Instantiated per Principle 4 — where to check for prior markers]
+
+RESULT INTEGRITY:
+[Instantiated per Principle 5 — specific sanity checks per task, defined by orchestrator]
+
+FAILURE MEMORY:
+[Instantiated per Principle 6 — path for attempt markers, max 3, meaningful diff required]
+
+## Scope Constraint — Verification Firewall
+[T1-T2 only]: Do NOT read, access, or reference any files in tests/verified/.
+Do NOT read verification specs. Your job is to build what the build spec says.
+Verification is handled by a separate agent you will never interact with.
+
+[T3-T4]: You may write your own tests in tests/builder/[increment]/.
+
+## Visual Evidence Capture (T4 and UI-touching T3 increments only)
+After the build works, capture visual evidence of each changed screen or flow state:
+- A screenshot per changed screen is the required floor; a short recording only
+  where the behavior is temporal (animation, multi-step flow).
+- Mask AT CAPTURE using the capture tool's element masking — the binding region
+  list is core/governance/DATA-POLICY.md § Mask-at-capture (never restated here).
+- Write to results/visual-evidence/[increment]/ with a one-line caption per
+  artifact; file names from increment names, dates, and IDs only — never PII.
+- Where a baseline exists in results/visual-evidence/baselines/, attach the
+  visual diff; flagged regions are evidence for operator review, not pass/fail.
+- If this project has no capture tooling, report "visual evidence unavailable" —
+  the textual gates stand unchanged.
+Reviewer checklist + storage/baseline rules: verification-architecture.md Part 5,
+"Visual Evidence".
+
+## Your Job
+1. Implement exactly what the task specifies.
+2. Write tests if applicable (T3-T4: yes. T1-T2: only builder-internal tests, supplemental).
+3. Write results incrementally (Principle 1).
+4. Produce completion markers (Principle 3).
+5. Commit your work.
+6. Self-review (see below).
+7. Report back.
+
+While you work: if you encounter something unexpected, ASK. Don't guess.
+
+## Self-Review Checklist (before reporting)
+
+Completeness:
+- Did I implement everything in the spec?
+- Did I miss any requirements?
+- Are there edge cases I didn't handle?
+
+Quality:
+- Are names clear and accurate?
+- Is the code clean and maintainable?
+- Does it follow patterns in the existing codebase?
+
+Discipline:
+- Did I avoid overbuilding? (YAGNI)
+- Did I only build what was requested?
+- Did I follow code-conventions.md patterns?
+
+Testing (T3-T4):
+- Do my tests verify behavior, not just mock behavior?
+- Are edge cases covered?
+- Visual evidence (T4 / UI-touching T3): captured, masked at capture, captioned?
+
+If you find issues during self-review, fix them before reporting.
+
+## Report Format
+When done, report:
+- What you implemented
+- What you tested and results
+- Files changed
+- Completion marker location
+- Self-review findings (if any)
+- Any issues or concerns
+- Manifest rows replayed / passed / failed (by row ID; a defect is a row, a fix is a row
+  turned green). "QA passed" or "works" without row coverage is not an acceptable claim for
+  any manifested layer.
+- The completeness hunts behind the denominator (which of: source cross-check, variant
+  matrix, precondition sweep, adversarial review, twin-build divergence pressured the row
+  total) — cite their receipts.
+- Declared change move, and for projection changes: sweep-invariance evidence (zero row
+  deltas, before/after).
+```
+
+### Spec Reviewer Prompt Template (Tier 3 only)
+
+```
+You are reviewing whether an implementation matches its specification.
+
+## What Was Requested
+[FULL TEXT of build spec]
+
+## What the Implementer Claims They Built
+[From implementer's report]
+
+## Critical: Do Not Trust the Report
+
+The report may be incomplete, inaccurate, or optimistic. Verify everything independently.
+
+DO NOT:
+- Take their word for what they implemented
+- Trust claims about completeness
+- Accept their interpretation of requirements
+
+DO:
+- Read the actual code
+- Compare implementation to requirements line by line
+- Check for missing pieces
+- Look for extra features not in spec
+
+## Your Job
+
+Read the code and verify:
+
+Missing requirements:
+- Everything requested was implemented?
+- Requirements skipped or missed?
+- Claims about working features that aren't actually implemented?
+
+Extra work:
+- Things built that weren't requested?
+- Over-engineering or unnecessary features?
+
+Misunderstandings:
+- Requirements interpreted differently than intended?
+- Right feature, wrong implementation?
+
+## Report
+- Spec compliant — all requirements met, nothing extra
+- Issues found — [list specifically: what's missing or extra, file:line references]
+```
+
+### Code Quality Reviewer Prompt Template
+
+```
+You are reviewing code quality for: [increment name]
+
+## What Was Built
+[From implementer's report — summary only]
+
+## Diff to Review
+Base SHA: [commit before this increment]
+Head SHA: [current commit]
+
+## Code Conventions
+[FULL TEXT of code-conventions.md — or "No project conventions established yet. Review against general best practices for [stack]."]
+
+## Your Job
+
+Review the diff for:
+
+Structure:
+- Is the code organized logically?
+- Are files in the right places per project conventions?
+- Is responsibility properly separated? (Business logic vs. sync adapter, etc.)
+
+Clarity:
+- Are names clear and accurate?
+- Is control flow easy to follow?
+- Would a new developer understand this without explanation?
+
+Robustness:
+- Error handling present and meaningful?
+- Edge cases considered?
+- No silent failures?
+
+Conventions:
+- Follows code-conventions.md patterns?
+- Consistent with existing codebase?
+- No one-off patterns that diverge from established approach?
+
+## Report
+
+Strengths: [what's good]
+Issues:
+- Critical (must fix): [blocks approval]
+- Important (should fix): [strong recommendation]
+- Minor (consider): [optional improvement]
+Assessment: APPROVED / NEEDS CHANGES
+```
+
+### Runner Prompt Template
+
+```
+You are running verification and/or regression tests.
+
+## Your Job
+
+Run the following test suites against the current build:
+
+[SPECIFY EXACTLY WHICH SUITES — paths to test directories]
+
+For each test:
+- Execute it
+- Record: test name, expected result, actual result, PASS/FAIL, timestamp
+- Do NOT fix anything. Do NOT interpret results. Do NOT suggest fixes.
+
+## Output
+
+Write results to: [specified path]
+
+Format:
+{
+  "run_date": "[ISO timestamp]",
+  "run_type": "[verification | regression-pre | regression-post]",
+  "increment": "[increment name or 'full-suite']",
+  "results": [
+    {
+      "test": "[test name]",
+      "expected": "[expected outcome]",
+      "actual": "[actual outcome]",
+      "status": "PASS" | "FAIL",
+      "timestamp": "[ISO]"
+    }
+  ],
+  "summary": {
+    "total": N,
+    "passed": N,
+    "failed": N,
+    "status": "ALL PASS" | "FAILURES DETECTED"
+  }
+}
+
+## Visual Evidence Capture (only when the dispatch asks for it)
+
+If this dispatch includes visual-evidence capture (T4 and UI-touching T3
+increments), capture it against the running build after the test run:
+- Screenshots per changed screen (required floor; recording only for temporal
+  behavior), masked AT CAPTURE per core/governance/DATA-POLICY.md
+  § Mask-at-capture.
+- Write to results/visual-evidence/[increment]/ with a one-line caption each;
+  attach the visual diff where a baseline exists in
+  results/visual-evidence/baselines/. Flagged regions are evidence for operator
+  review — you still do not interpret results.
+- If capture tooling is absent, record "visual evidence unavailable" in your
+  report; the textual gates stand unchanged.
+Checklist + storage/baseline rules: verification-architecture.md Part 5,
+"Visual Evidence".
+
+Report the summary to the Controller. Nothing else.
+```
+
+### Diagnosis Prompt Template (Tier 1–2 verification failures — operator-dispatched)
+
+Dispatch rules, for the operator (not part of the pasted prompt):
+
+- Run this in a **fresh session on a different model family from the Builder** that built
+  the failing increment. The mechanism is yours: paste into a chat session on another
+  provider, or a CC session running a different model family. No tooling or configuration
+  required — this is a portable prompt.
+- The report comes back to **you and only you**. Never paste the report — or any excerpt
+  of its evidence section — into a Builder or Verifier session. Only the RELAY-SAFE block
+  may be forwarded, after you have read it and decided. The two-part structure below
+  exists so the document itself decides what is safe to forward, not your judgment in the
+  moment.
+
+```
+You are diagnosing a verification failure. You are READ-ONLY: you classify and explain.
+You do not fix code, do not fix tests, do not edit specs, and do not dispatch anything.
+
+## What You May Read (the complete read set)
+
+- Failure artifacts: [paste the verification-run results JSON + any error logs]
+- The verification spec: [FULL TEXT]
+- The build spec: [FULL TEXT]
+- The test code for this increment: [paste the failing tests from tests/verified/[increment]/]
+- The diff: [base SHA → head SHA of the increment]
+
+You may not see, and must not ask for: the Builder's session content or report, the
+Verifier's session content, or anything outside the list above.
+
+## Your Job — Forced Classification
+
+Classify the failure as EXACTLY ONE of:
+
+1. build-bug — the code does not do what the build spec requires; the test is right.
+2. test-bug — the test demands something the verification spec does not require;
+   the code is right.
+3. spec-ambiguity — the build spec and verification spec genuinely disagree, or both
+   are silent and the two sides filled the gap differently.
+4. infra-flake — the failure is environmental (timeout, port conflict, missing
+   dependency, nondeterministic ordering), not behavioral; a re-run would likely pass.
+5. operator-decision — the failure hinges on a business judgment the documents do not
+   settle (two defensible behaviors). State the decision needed and the options.
+
+The schema is CLOSED: no other classes, no "mixed", no "unknown". If you are uncertain,
+classify as operator-decision and state the uncertainty as the decision to be made.
+If two classes seem to apply, pick the one whose fix should happen first and say why.
+
+## Report Format (two parts — this structure is mandatory)
+
+# PART A — OPERATOR-ONLY EVIDENCE — never paste into any agent session
+
+- Classification: [one of the five]
+- Confidence: [high / moderate / low]
+- Evidence for the call: [point at specific places in the read set — which test, which
+  assertion, which spec sentence, which diff hunk — and why they support this class]
+- Runner-up class: [the second-most-plausible class and why it loses]
+
+Data minimization (binding, per core/governance/DATA-POLICY.md): reference entities by
+opaque ID, never by name or email. Quote from logs only the minimum lines the call
+requires. Sensitive personal data (for example, full payment-card numbers or government
+identifiers) must never appear in this report, even if the failure artifacts contain it —
+cite the artifact file and line number instead.
+
+# PART B — RELAY-SAFE — may be forwarded verbatim after operator review
+
+Fix instructions at the BUSINESS-RULE level only. This block must not contain:
+
+- For build-bug (Builder-bound instructions): no test names, no assertion text, no
+  expected/actual values from test output, no tests/verified/ paths.
+- For test-bug (Verifier-bound instructions): no implementation file paths, no function
+  or variable names, no algorithmic descriptions of the code.
+- For spec-ambiguity or operator-decision: state the question to settle in plain
+  language and name the spec section(s) involved — no test internals, no implementation
+  internals.
+- For infra-flake: state what to re-run and which environmental condition to fix
+  first — no test internals, no implementation internals.
+
+If useful instructions cannot be written within these exclusions, say so in PART A and
+write PART B as "escalate: operator must translate" — never relax the exclusions.
+
+## Output
+
+Write the report to: results/diagnosis/[increment]-diagnosis-[date].md
+File name from increment name and date only — never PII.
+Retention: 90 days, receipted purge, per core/governance/DATA-POLICY.md § Retention
+and purge.
+```
+
+---
+
+## Part 5: Recovery
+
+### Session Death Recovery
+
+When a Controller session starts and finds evidence of a prior interrupted session:
+
+1. Read the flight plan. Check Layer 2 for IN PROGRESS increments.
+2. Check for completion markers in the increment's results directory.
+3. Check for `resumption-audit.json` from a prior recovery.
+4. Follow Principle 4 (Idempotent Resumption): validate existing markers, skip completed work, resume at first incomplete step.
+5. Produce a new `resumption-audit.json` documenting the recovery.
+6. Continue the tier protocol from the step where it stopped.
+
+### Verification Failure Recovery (Tier 1–2)
+
+When the Runner reports verification failures:
+
+1. Controller writes failure details to the flight plan (Layer 2: Open Questions, Layer 4: session log).
+2. Controller does NOT attempt to fix.
+3. Operator reviews in next interactive session.
+4. **Failure diagnosis (recommended).** The operator dispatches a Diagnosis session using
+   the Diagnosis Prompt Template (Part 4): a fresh, read-only session on a **different
+   model family from the Builder** that classifies the failure as exactly one of five
+   classes, with evidence. Dispatch is the operator's call, not the Controller's —
+   failures are rare and a session has a cost. The operator may instead diagnose
+   directly; the protocol recommends the Diagnosis session whenever the operator cannot
+   read the failure evidence fluently. Either way, the Runner's raw PASS/FAIL record
+   stands untouched — diagnosis interprets it, never amends it.
+   The diagnosis report goes to the **operator only**. Neither the report nor excerpts
+   from its evidence section are ever pasted into a Builder or Verifier session; only
+   its RELAY-SAFE block may be forwarded, and only after the operator has read it and
+   decided (see the template's two-part structure).
+5. Operator decides, per classification:
+   - **build-bug** → operator dispatches a new Builder with fix instructions — the
+     operator's own instructions or the report's relay-safe block; never raw test
+     output, never the report's evidence section.
+   - **test-bug** → operator dispatches a Verifier session to fix the test — same rule:
+     the relay-safe block or the operator's own instructions; never implementation
+     details.
+   - **spec-ambiguity** → operator refines the verification spec, re-dispatches both.
+   - **infra-flake** → operator has the Runner re-run. A failure that recurs is not
+     flake — reclassify.
+   - **operator-decision** → the failure hinges on a business judgment only the operator
+     can make (two defensible behaviors, an unstated rule). Operator decides the rule,
+     records it in the verification spec, then proceeds as spec-ambiguity.
+6. After fix: Runner re-runs. Loop until PASS.
+
+*(Deferred, maximalist forms — logged, not built: automatic Diagnosis dispatch on every
+failure; structured-JSON diagnosis artifacts for tooling consumption; diagnosis
+dashboards or trend tracking. Don't build them until manual dispatch actually hurts.)*
+
+### Regression Failure Recovery
+
+When the post-build regression gate finds a prior increment's tests failing:
+
+1. Controller identifies which tests failed and which increment they belong to.
+2. Controller writes to flight plan: "[current increment] build regressed [prior increment] — [failed test names]."
+3. Controller does NOT attempt to fix.
+4. Operator reviews. The fix may require understanding the interaction between increments — this is human judgment territory.
+
+---
+
+## Part 6: Red Flags
+
+**Never:**
+- Start building before the regression gate passes.
+- Let a Builder see `tests/verified/` at any tier.
+- Let a Builder self-resolve a T1–T2 verification failure.
+- Skip the flight plan update between increments.
+- Dispatch multiple Builders in parallel (they will conflict) — forbidden unless under Part 7's parallel-build / serial-integration regime; serial dispatch remains the default.
+- Paste a diagnosis report — or any excerpt of its evidence section — into a Builder or Verifier session. Only the operator-reviewed RELAY-SAFE block may be forwarded (Part 5 recovery protocol).
+- Accept "close enough" on spec compliance (issues found = not done).
+- Let the Controller fix code directly (context pollution).
+- Proceed past a regression failure.
+- Delete attempt markers (they're diagnostic history).
+- Downgrade a tier assignment mid-build. Tier decisions happen during planning.
+- Let an agent design its own integrity checks (Principle 5 — orchestrator defines them).
+- Fire a build-class increment with no MANIFEST GATE banner in its record, or land a
+  "refactor" without before/after sweep invariance — both are gate bypasses; stop and audit.
+
+**If a Builder asks questions:**
+- Answer clearly and completely.
+- Provide additional context if needed.
+- Don't rush them into implementation.
+
+**If a reviewer finds issues:**
+- At T1–T2: dispatch a fresh Builder subagent to fix. Not the original.
+- At T3–T4: same Builder subagent fixes. Re-dispatch reviewer. Loop until approved. Max 3 loops.
+
+**If a subagent fails completely:**
+- Dispatch a new subagent with specific fix instructions and the failure context.
+- Never try to fix manually from the Controller (context pollution).
+- After 3 total failures on the same task: stop the line.
+
+---
+
+## Part 7: Parallel Build, Serial Integration
+
+Serial dispatch is the default. The Part 6 red flag — never dispatch multiple Builders in parallel — stands everywhere except under the regime this Part defines, and reverting to serial is always the safe state. This Part exists so that when a project deliberately enables parallel builds, the relaxation is governed, not improvised.
+
+**1. The frame: parallel build, strictly serial integration.** Parallelism applies to the *build*, never to *integration*. The unit of parallelism is the **increment**; the serialization point is the existing **post-build regression gate**. Parallel Builders work in isolated git worktrees; their work re-enters the project one increment at a time through that gate. There is no new orchestration layer — the Controller already serializes integration; this regime only lets builds overlap.
+
+**2. The independence predicate.** Two increments may build concurrently only if their **declared profiles** are pairwise independent on **all five** clauses: (1) disjoint file sets; (2) disjoint schema/state surface; (3) no shared invariant; (4) no runtime data dependency; (5) no shared mutable runtime resource (database, service account, external API key, fixture store — isolated or namespaced per worktree, per `core/methodology/least-privilege-isolation.md`). Independence is a **specification-level** property, not a merge-conflict property: textually clean merges routinely carry semantic conflicts — two increments can each pass alone and jointly break an invariant neither file-set reveals. The predicate therefore screens declared profiles at dispatch time; checking file names is not the predicate. T1/T2 increments and cross-cutting changes are excluded by definition and stay serial. Increments touching a declared high-blast-radius surface (the registry in `core/governance/AUTOMATION-ISOLATION.md`) are ineligible, full stop.
+
+**3. The mandatory guardrails.** Independence is never assumed, only screened — so all four guardrails are mandatory wherever parallel dispatch is enabled. They are the regime, not tuning options:
+
+- **Serial merge queue.** Parallel work integrates strictly one increment at a time, in dependency order.
+- **Auto-rebase + retest before each merge.** Every increment is rebased onto the current integration head and its own tests re-run against that rebased state before it merges.
+- **Full post-merge regression gate, per merge.** The full verified suite — never a delta scoped to the changed files. Cross-increment regressions are precisely what a delta scope cannot see; the full gate, not the predicate, is the true safety net.
+- **Rollback-to-serial-by-default.** Any gate failure or rebase conflict halts the queue, reverts the integration branch to its last known-good state, and flips the project back to serial dispatch. Remaining queued work completes serially; parallel dispatch stays off until the operator re-decides it.
+
+**4. Enablement: the precondition trio.** Before parallel dispatch is first enabled in a project, three declarations exist and are satisfied — a capability satisfying two of the three is not enabled:
+
+- **Scope it** — the capability is declared in `core/governance/AUTOMATION-ISOLATION.md`: credential scope, environment and data posture, spend cap, soft per-run ceiling, and stop condition, per `core/methodology/least-privilege-isolation.md` and `core/methodology/spend-governance.md`. A worktree isolates the checkout, not credentials or data.
+- **Stop it** — its halt action is registered in `core/governance/KILL-SWITCH.md`.
+- **Revert it** — its rollback-to-serial path is documented **and tested** per `core/methodology/rollback-kill-switch.md`. Untested rollback is a hypothesis, not a rollback.
+
+**5. The cap.** At most **3** concurrent worktrees. The cap is deliberately a fixed number in this document, not a configuration knob: raising it is a doc edit a project makes consciously, with the trade-off argued, never a parameter that drifts upward.
+
+**6. Builder boot contract.** Each parallel Builder boots from a **self-contained dispatch packet**: declared inputs, declared target files, the increment's independence profile and the evidence for it, the tier, and this Part's rules. The contract names what a Builder receives, not the transport — today the packet is a kickoff prompt; any future packet assembler must satisfy the same contract.
+
+**7. Crash-only Builders: artifacts, not transcripts.** A parallel Builder may be killed at any instant. All Builder state that matters lives as committed work in its worktree plus a **machine-readable result manifest** (a *result manifest* is a parallel-build recovery record — distinct from the *behavioral manifests* of `manifest-driven-builds.md` and from the memory engine's `dispatch-manifest.json` transport artifact; never shorten any of the three to a bare "manifest" where the referent could be ambiguous) — files touched, tests run and their results, self-reported tier, completion status. The merge queue judges committed artifacts and manifests only, never conversation transcripts. Worktrees are disposable: a killed Builder costs at most its current turn — discard the worktree and re-dispatch.
+
+**8. Untrusted content.** A parallel Builder that consumes externally-sourced content falls under the untrusted-trigger rule and the credential/egress separation of `core/methodology/least-privilege-isolation.md`.
+
+**9. Telemetry as record, dashboards as projection.** Every pilot or parallel run appends machine-readable telemetry records — append-only, one record per event. Any dashboard, summary, or cockpit view is **regenerated from the records, never hand-accreted**; a summary that cannot be re-derived from its records is not evidence. Builder/Verifier substrate identity — vendor and model id, recorded as separate fields — is taken from invocation/response metadata where available, never from hand-typed strings.
+
+**10. Single-writer integration.** The serial merge queue is the **single writer to the integration branch**. Parallel Builders write only their own isolated worktrees; integration is the one serialized point where shared state is committed. The merge queue is the integration branch's single-writer lock — drafters draft, one writer commits — not merely a convenience ordering.
+
+---
+
+*Document version: 1.0*
+*Created: April 2026*
+*Origin: Unified build architecture merger. Replaces subagent-driven-development skill, absorbs autonomous-execution-principles-v1.1.md, integrates Principle 7 (Verification Firewall) as tier routing. Prompt templates contain instantiated principles, not references to external documents.*
+*Philosophy: The Controller orchestrates. Subagents execute. Principles are directives, not policies. The flight plan is the single source of truth. Auto-update is structural, not optional.*

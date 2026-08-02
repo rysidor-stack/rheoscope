@@ -1,0 +1,35 @@
+# planted-impact-24hr.yaml -- F13 planted-defect mutation spec #2 (tp:348/350(c)).
+# d1-class dropped clause for the FULL-population batch (every batch needs its own
+# planted leg): removes the Summit Climbing Gym 24-hour access membership claim
+# ($70/mo / $700/yr tier, the night-shift-workforce differentiator) from a fixture copy
+# of the view -- all four statements of it (2 price-table rows, the Unique Offerings
+# item, the strengths-takeaway bullet), with both lists renumbered so the drop is
+# seamless. The claim is load-bearing in the consumed event (raw lines 42-43, 110, 146).
+# Each `find` must occur exactly once in the live view (drift guard in audit-content.py).
+view: wiki/market-intel/summit-climbing-gym.md
+event: raw/2026-04-10-ryan-summit-climbing-gym-competitive-analysis.md
+class: d1-dropped-clause
+description: drop the 24-hour access membership tier claim from the view
+edits:
+  - find: |
+      | 1 Month Membership w/ 24 Hour Access* | $70 |
+    replace: ""
+  - find: |
+      | 1 Year Membership w/ 24 Hour Access* | $700 |
+    replace: ""
+  - find: |
+      2. **24-hour access membership** — $70/mo or $700/yr. Unusual for a climbing gym; appeals to hospital shift workers with odd schedules
+    replace: ""
+  - find: '3. **Free gear rental**'
+    replace: '2. **Free gear rental**'
+  - find: '4. **Free route-setting consults**'
+    replace: '3. **Free route-setting consults**'
+  - find: '5. **100% guarantee on all equipment checks**'
+    replace: '4. **100% guarantee on all equipment checks**'
+  - find: '6. **Dedicated bouldering-only night**'
+    replace: '5. **Dedicated bouldering-only night**'
+  - find: |
+      5. **24-hour access tier** — clever for the city's night-shift workforce
+    replace: ""
+  - find: '6. **Youth climbing team twice weekly**'
+    replace: '5. **Youth climbing team twice weekly**'

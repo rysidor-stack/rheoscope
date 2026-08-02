@@ -1,0 +1,26 @@
+# Fixture: locked handoff whose lock raw is registered event_class 'judgment' /
+# event_class_origin 'judgment' -- the class-4 shape from the 2026-07-06
+# adjudication (the live gateway-sync case). Expected: checks (a) and (b) PASS
+# under the canonical F6 predicate (judgment-origin = maximally conservative =
+# lock-class); exit 0. Contrast inv-badcls, where
+# the registration is an EXPLICIT non-lock class ('compile'/explicit) and still
+# fires.
+handoff_id: 2026-07-02-fjudg
+status: locked
+tier: T1
+authored: 2026-07-02
+authored_by: fixture-author
+answered: 2026-07-02
+answered_by: fixture-answerer
+locked: 2026-07-02
+locked_by_raw_file: raw/fjudg-lock.md
+decision_under_investigation: fixture decision under test
+parent_phase: fixture-phase
+hypothesis_carried: "fixture hypothesis"
+hypothesis_outcome: confirmed
+target_substrate: fixture-substrate
+rounds_completed: 0
+round_modes: []
+round_overrides: []
+supersedes: null
+superseded_by: null

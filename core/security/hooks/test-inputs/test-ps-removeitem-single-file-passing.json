@@ -1,0 +1,1 @@
+{ "tool_input": { "command": "Remove-Item -Force C:\\temp\\file.txt" } }

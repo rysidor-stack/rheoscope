@@ -1,0 +1,21 @@
+# engine-caps.yaml -- per-view-type size caps for the memory engine (ECO-3).
+#
+# PROVISIONAL VALUES. Derived from the wiki-schema guideline "if an article
+# exceeds ~300 lines, split it" (docs/wiki-schema.md). Reconcile against this
+# instance's real cap policy and fold into deploy/entities.yaml at P1/P2 (the test reads
+# this file, never hardcodes -- so migrating the home is a one-line change).
+#
+# ECO-3 contract: caps are measured on LF-NORMALIZED UTF-8 byte length
+# (read binary -> replace b"\r\n" with b"\n" -> len), NEVER os.path.getsize.
+# This repo is `* text=auto` + core.autocrlf=true, so the same file is CRLF in
+# the Windows working tree and LF in the index/VPS checkout; a byte cap measured
+# raw would flip a boundary verdict between checkouts. LF-normalization makes the
+# verdict checkout-invariant.
+#
+# view types are the derivation-block `view` enum: topic | dashboard | index | briefing.
+caps:
+  topic: 50000        # a standard topic article (~300 lines of prose at ~165 B/line)
+  dashboard: 40000
+  index: 30000
+  briefing: 30000
+  default: 50000      # used when a view type cannot be determined

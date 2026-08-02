@@ -1,0 +1,4 @@
+# residue-p1.yaml -- P1 dry-run snapshot (NOT live). SHA-bound (B4).
+rehearsal_sha: 44b9fda
+residue_bound: 22  # ceil(0.17 * 124 events)
+residue:

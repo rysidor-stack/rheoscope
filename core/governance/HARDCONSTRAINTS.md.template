@@ -1,0 +1,27 @@
+<!-- Authored fresh for the harness. Operator populates the Active
+     constraints section during INIT.md Step 2c. -->
+
+# Hard Constraints — {{project_name}}
+
+This document is the immutable thou-shalt-not list for {{project_name}}. Constraints land here when:
+
+1. **Non-negotiable.** Breaking them is a project failure, not a trade-off.
+2. **Stable.** Once entered, they do not move without an explicit governance ADR.
+3. **Testable or observable.** "Don't be evil" is not a constraint; "Never log PII to stdout" is.
+
+## Constraint format
+
+Each constraint:
+
+- **Constraint:** one-sentence statement of what cannot be true.
+- **Rationale:** why this matters.
+- **Test:** how a session would verify the constraint is upheld.
+- **Locked:** YYYY-MM-DD (date constraint was added).
+
+## Active constraints
+
+(Populated during INIT.md Step 2c.)
+
+## Retired constraints
+
+(Constraints that were active but explicitly retired via governance ADR. Includes the retirement rationale.)

@@ -1,0 +1,212 @@
+---
+name: handoff
+description: Run a substrate-separated decision handoff end to end in ONE pass — author the packet, dispatch the cross-vendor answer leg over the bridge (zero couriering, zero per-send approvals), file output + meta, then lock (T2/T3 in-pass; T1 via a headless cross-vendor close leg whose lock deliberation returns to this conversation for the operator's single yes). Supersedes handoff-author + handoff-receive (v3.0-78). Also: --round N appends an explicit escalation round; --file-external files a deep-research output produced outside the bridge; every invocation first auto-retries any parked leg or pending close.
+---
+
+# /handoff — single-pass substrate-separated handoff
+
+You are running a full handoff: author → cross-vendor answer → lock, one session, one pass.
+The canonical protocol is `handoffs/METHODOLOGY.md` where the project has one (it governs
+folder shape, packet sections, meta shape, roles-in-writing, lock-raw naming); on projects
+without it, `core/handoffs/HANDOFF-*.md` apply. The handoff envelope is the project's
+`handoffs/` directory (`core/handoffs/` on projects that keep it there). Read the protocol
+this session before writing anything.
+
+**What changed vs the old three-skill march (v3.0-78, 2026-07-31):** the operator no longer
+carries packets between vendors or approves each send — answer legs ride the contained
+cross-vendor bridge (`bridge/handoff-leg.js`, same transport/consent class as `/cross-check`;
+standing grant: `deploy/evidence/operator-2026-07-31-wired-compile-dispatch-grant.md`).
+Rounds beyond 1 are an explicit escalation, not a default shape. Operator touches per
+decision: **T2/T3 = zero (beyond having asked); T1 = one — the lock itself.**
+
+## Step 0 — auto-retry parked work (every invocation, before anything else)
+
+Scan the envelope's current-protocol folders' `meta.yaml`:
+
+1. **`close: pending`** (status `answered`) → if `close-deliverable.json` already exists
+   (a nightly tick re-ran the leg and landed it with nobody present to say yes), skip to
+   Step 5-T1 point 4 (surface the deliberation, take the one yes); otherwise run Step
+   5-T1's close-leg procedure for that folder now. This is the no-manual-fallback
+   contract: a failed close leg parks and is auto-retried here (or by the nightly
+   standing-loop tick) — never by an operator act.
+2. **status `open` with `packet-round-N.md` but no `output-round-N.md`** → re-dispatch the
+   answer leg (Step 4) for that round. (An answer leg that died parked here.)
+
+Report what was retried and its outcome, then proceed to the invocation's own subject.
+Zero operator action; the only human touch a retry can produce is the T1 lock yes when a
+close deliberation lands.
+
+## Invocation modes
+
+- **Default** — new handoff, round 1, through to lock.
+- **`--round N <folder>`** — explicit escalation: append round N to an existing handoff
+  (today's round machinery, opt-in). Signal: you want to attack the verdict, or a T1 close
+  deliberation was declined.
+- **`--file-external <folder>`** — file an output produced OUTSIDE the bridge (deep-research
+  legs only: GPT-Pro/Gemini research tiers are not bridge-reachable). The old receive
+  Mode B, retained as the rare opt-in paste path.
+
+## Step 1 — resolve the decision (round 1)
+
+Resolve the decision identifier from: (1) the operator's invocation phrase, (2) conversation
+context, (3) open decision slots in `wiki/flight-plans/`. One clean resolution → propose
+"Authoring a handoff for <X>. Confirm?"; multiple or zero → ask with 2–4 options. If a
+folder for this decision already exists at status `open`/`answered`, this is `--round N+1`,
+not a new folder; at `locked`/`superseded`, ask: new handoff or revisit?
+
+## Step 2 — gather inputs
+
+- **Tier** (T1/T2/T3 — T4 should not handoff; warn and stop)
+- **Hypothesis** (one sentence, named so the verifier can attack it; ratify with operator)
+- **Load-bearing questions** (numbered, falsifiable where possible)
+- **Scope in / scope out**; **required reference materials**; **inquiry-specific anti-patterns**
+- **Target substrate**: default is the bridge's cross-vendor leg (OpenAI/GPT, mechanically
+  recorded). Name it as such in meta. Deep-research targets → plan for `--file-external`.
+
+## Step 3 — build the folder and packet
+
+Per the protocol doc: create `<envelope>/<YYYY-MM-DD>-<slug>/` with `meta.yaml` (status
+`open`, pruned shape, `authored_by` = this session's substrate identity), `context.md`,
+`brief.md` (six sections), `README.md` (orientation only; no duplicated methodology), and
+the INDEX Active row. Inline every reference one level deep into `packet-round-1.md`
+(§ 0–§ 6 per the protocol; inline mode — the leg is tool-less and reads nothing else).
+Confirm inclusions with the operator before finalizing. Token budget: warn at ~80K tokens;
+never truncate § 4 prior outputs.
+
+**Taint rule (non-negotiable, same as /cross-check):** no secrets, credentials, customer
+PII, or untrusted scraped text in the packet — it enters the other vendor's context. Redact
+or abort; never dispatch a tainted packet.
+
+## Step 4 — dispatch the answer leg (no approvals, no couriering)
+
+```
+node "${CROSS_VENDOR_BRIDGE_DIR:-.claude/skills/bridge}/handoff-leg.js" \
+  --role answer \
+  --packet-file <folder>/packet-round-N.md \
+  --out <folder>/output-round-N.md \
+  --attest-out <folder>/output-round-N.attest.json \
+  [--effort medium|high] [--timeout-ms 300000]
+```
+
+Consent is the standing grant named above — do not surface a per-send approval. The leg is
+contained (read-only, tool-less, no network) and lands the deliverable atomically; exit
+non-zero = `LEG FAILED` = nothing landed. On failure: leave status `open`, report loudly,
+done — Step 0 retries it next invocation or nightly tick. Never hand-courier instead.
+
+On success, validate the deliverable (verdict tag; brief questions addressed; substrate
+signature present) — if malformed, delete the output file and re-dispatch once; twice
+malformed → leave at `open` and report. Then file:
+
+- `meta.yaml`: `status: answered`, `answered` date, `rounds_completed: N`,
+  `hypothesis_outcome` from the verdict tag, and **`answered_by` copied from the
+  attestation sidecar** (`vendor`/`runtime_model` + "contained bridge handoff-leg,
+  read-only, tool-less" + date). F17 discipline: identity is copied from the mechanical
+  record, never typed from memory or from the leg's own prose.
+- INDEX Active row → `answered`.
+
+## Step 5 — lock
+
+### T2/T3 — lock in-pass (this was never firewalled)
+
+This session runs the close protocol (`.claude/skills/handoff-close/SKILL.md`) itself, now:
+convergence check (trivial at one round), locking deliberation with the operator in this
+conversation, then write the lock raw (protocol naming: `raw/<date>-ryan-decision-<n>-<slug>.md`
+with the `informed_by` back-link), `confidence-audit.md`, meta → `locked` (+ `locked_by` =
+this session's identity), INDEX → Archive, flight-plan mark if one exists. Then register the
+raw (`python deploy/register-intake.py --root .` where the project has the registration
+chain) and run `python deploy/check-loop-state.py`. No operator yes beyond the deliberation
+they were part of.
+
+### T1 — headless close leg (the firewall, enforced by dispatch mechanics)
+
+The authoring session NEVER locks a T1. Fire the close protocol as a headless cross-vendor
+leg:
+
+1. **Assemble `<folder>/close-packet.md`**: inline the close protocol
+   (`.claude/skills/handoff-close/SKILL.md`), `meta.yaml`, `brief.md`, `context.md`, every
+   `output-round-*.md`, any existing confidence-audit draft, plus the concrete targets: the
+   exact lock-raw path (next decision number + protocol naming), the `informed_by` id it
+   must carry, and the deliverable field contract (handoff-leg.js `--role close` schema).
+2. **Dispatch:**
+   ```
+   node "${CROSS_VENDOR_BRIDGE_DIR:-.claude/skills/bridge}/handoff-leg.js" \
+     --role close \
+     --packet-file <folder>/close-packet.md \
+     --out <folder>/close-deliverable.json \
+     --attest-out <folder>/close-deliverable.attest.json \
+     --effort high
+   ```
+3. **Leg failed** (non-zero exit, nothing landed): set `close: pending` in `meta.yaml`
+   (status stays `answered`), report, stop this branch. The park is information (it
+   surfaces in the decision inbox), never an operator task; Step 0 or the nightly
+   standing-loop tick retries it. **There is no manual fallback** — operator ruling
+   2026-07-31. Do not run the close yourself; do not ask the operator to.
+4. **Leg landed**: read `close-deliverable.json`.
+   - `halt` non-empty → HALT path per the close protocol: write `HALT.md` from the
+     deliberation, meta `status: halted` (clear `close:`), INDEX row, no raw file. Surface
+     to the operator as information.
+   - Otherwise surface the leg's `deliberation` and `convergence_verdict` **verbatim** in
+     this conversation and ask the ONE question: **"Lock it?"** This is the operator's
+     single touch — it is the decision itself.
+5. **On yes**, apply the leg's artifacts VERBATIM (you are a typist; the close substrate
+   authored them): write `decision_raw` to the packet-named raw path, `confidence_audit`
+   to `<folder>/confidence-audit.md`, meta → `status: locked`, `locked` date,
+   `locked_by_raw_file`, `hypothesis_outcome`, clear `close:`, and **`locked_by` copied
+   from `close-deliverable.attest.json`** (F17 — never typed). INDEX → Archive with the
+   leg's outcome word. Flight-plan mark if one exists. Register the raw and run
+   `check-loop-state.py` as above. The three-substrate record now reads: author (this
+   session's family) ≠ answer leg ≠ close leg substrate — all mechanically recorded.
+6. **On no**: the operator is contesting the deliberation — that is the `--round N`
+   escalation signal. Offer it; meta stays `answered` (no `close:` marker — this is an
+   operator decline, not a leg failure; record it in the session record).
+
+## `--round N <folder>` — explicit escalation
+
+Per the protocol's multi-round mechanics: ask mode (**extension** or **pressure-test**),
+require "what's new this round" (the convergence-check fuel; warn on the
+asymptotic-confidence trap and the tier round-cap; overrides recorded in
+`round_overrides`), append the round addendum to `brief.md`, build `packet-round-N.md`
+(§ 4 carries ALL prior outputs verbatim, never truncated).
+
+**Substrate rotation check before dispatch:** the round's substrate must differ from ALL
+prior `answered_by` substrates. The bridge leg is OpenAI/GPT — if a prior round was
+already bridge-answered, the bridge is same-vendor for this round and MUST NOT be used:
+route to `--file-external` (deep-research/other family) or have a fresh session on a
+different family produce the output (that session invokes `/handoff --round N` and, after
+stating its substrate satisfies the constraint, writes `output-round-N.md` itself per the
+protocol's receiving rules). When the bridge IS legal for the round, dispatch and file
+exactly as Steps 4. Then proceed to Step 5 (lock) as normal.
+
+## `--file-external <folder>` — file a deep-research output
+
+The operator pastes (or points at) the external substrate's output. Validate before
+writing: verdict tag present; brief questions addressed; substrate signature present;
+primary sources cited where claims are non-obvious. Validation failures are flagged
+specifically, never silently filed. Gather from the operator: producing substrate + date +
+extended-thinking (no mechanical channel exists here — this identity is operator-attested,
+and `answered_by` says so). Write `output-round-N.md` verbatim (you are filing, not
+generating — never produce analytical content in this mode), update meta + INDEX as in
+Step 4, then proceed to Step 5.
+
+## Scope boundary
+
+`/handoff` does NOT: compile wiki articles (`/compile` is separate); edit prior outputs,
+brief, context, README (immutable after authoring); re-litigate filed round verdicts
+(inputs to the lock, not subjects of it); write decision content anywhere but the lock raw
+(not in meta, not in INDEX).
+
+## Anti-patterns
+
+- Authoring without resolving the decision identifier first
+- Dispatching a packet whose references were paraphrased instead of inlined verbatim
+- Surfacing a per-send approval for a bridge leg (consent is the standing grant; asking
+  again is the v3.0-86 anti-pattern in reverse)
+- Typing `answered_by`/`locked_by` instead of copying the attestation sidecar (F17)
+- Hand-couriering a bridge-reachable leg, or "helpfully" running a failed close yourself —
+  park-and-retry is the contract; automation-or-wait, never an operator step
+- Locking a T1 in the authoring session (the firewall; the close leg exists for this)
+- Skipping the convergence check at `--round N` because the operator seems sure
+- Round-dispatching the bridge when a prior round was already bridge-answered
+  (same-vendor "cross"-check — the v3.0-76 conflation class)
+- Writing `close: pending` for an operator's lock decline (pending means a DEAD LEG, not
+  a contested deliberation)

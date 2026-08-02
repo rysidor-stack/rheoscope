@@ -1,0 +1,82 @@
+<!-- Secret/data isolation precondition doctrine (least privilege).
+     Authored for rheoscope-harness v{{template_version}}.
+     Loaded by: CC Controller and operator before enabling any autonomous capability.
+     Sibling to rollback-kill-switch.md (how to stop it; this document is who it
+     runs as and what it can reach).
+     No substitution variables beyond the standard project identity. -->
+
+# Least-Privilege and Isolation
+
+## Enablement Precondition
+
+No autonomous capability may be **enabled** until both of the following are declared and minimized:
+
+(a) Its **credential scope** — what identity it runs as, what that identity can read and write, and why nothing narrower suffices.
+(b) Its **data-isolation posture** — what environment and data it runs against, defaulting to non-production.
+
+Both declarations are recorded per capability in `core/governance/AUTOMATION-ISOLATION.md` before enablement. As with the rollback/kill-switch precondition, this is structural: a capability whose credential scope is undeclared or broader than its function requires is not "enabled with caveats" — it is not enabled.
+
+**Grounding — the standing autonomy commitments:**
+
+- **The project's highest-blast-radius surfaces never receive unattended autonomy.** Declaring those surfaces, and the credential boundaries that keep automation off them, is how that commitment becomes checkable rather than aspirational.
+- **Parallel build and gated write-back gate on the precondition trio.** The parallel-build capability and gated write-back (the scheduled sentinel's phase-2) must not be enabled before all three enablement preconditions — this document (credential-and-data isolation), spend governance, and rollback/kill-switch — land. This document is the isolation standard those capabilities must satisfy.
+
+---
+
+## The Core Insight: a Worktree Is Not a Credential Boundary
+
+An isolated checkout (a git worktree, a copied working directory, a scratch clone) isolates the **files** a session edits. It does not isolate:
+
+- **Credential scope.** A process in an isolated worktree holds exactly the same secrets, tokens, and connection strings as one in the main checkout. Two parallel builds in separate worktrees share one blast radius.
+- **Runtime side-effects.** Code run from an isolated checkout still reaches whatever databases, services, and external systems its credentials reach. The isolation ends at the filesystem.
+
+Credential and data isolation is therefore a **separate, explicit control** — it must be designed and declared per capability, never assumed to fall out of checkout isolation. This is the load-bearing reason this document exists as a T1 precondition rather than a hygiene note.
+
+---
+
+## Doctrine
+
+**Non-production by default.**
+All automation — scheduled runs, parallel builds, write-back — runs against non-production environments and non-production data unless the operator explicitly declares otherwise per capability, with rationale. Production access is the exception that must be argued, never the default that must be remembered to disable. (Dev/test data itself must satisfy `core/governance/DATA-POLICY.md` — synthetic or irreversibly anonymized seeds.)
+
+**Least privilege, narrowest scope, read-only by default.**
+Every credential an automated job holds is scoped to the **narrowest level the host platform offers** and the **minimum permissions the job's function needs**. Read-only is the default; write permission is elevated per-job, only where that job requires it, and never broader than the job. A credential scoped to everything-the-repo-can-see, when a tighter scope exists, fails this standard regardless of how trusted the job is.
+
+**Automation never holds merge or admin scope.**
+A sentinel or automated job holds the minimum permission for its function — and that function never includes merging its own output or administering the system it runs in. Accepting automation's output is the operator's act, with the operator's credentials.
+
+**Automation config is access-controlled and its dependencies pinned.**
+The configuration that defines what automation runs (workflow definitions, scheduler config, job scripts) is itself a privileged surface: whoever can edit it can redirect every credential it touches. It is access-controlled — changes to it are reviewed, not drive-by. Its third-party dependencies (plugins, container images, packages it executes) are **version-pinned to immutable references**, so a compromised upstream cannot silently change what runs with your credentials.
+
+**Forbidden on declared high-blast-radius surfaces.**
+Parallel or unattended execution is **forbidden** on the surfaces this project declares as high-blast-radius (the project names them in `core/governance/AUTOMATION-ISOLATION.md`) — the standing commitment that those surfaces never receive unattended autonomy. This ties to the parallel-build capability's independence predicate: an increment touching a declared surface is ineligible for parallel build, full stop — independence is not argued case-by-case on those surfaces.
+
+**Platform protections are defense-in-depth, not the credential firewall.**
+Environment-protection rules, required reviewers, OIDC trust policies, and similar platform features harden the perimeter — but they have failed before and will fail again. The credential firewall is the scope of the credential itself: a token that cannot write cannot be escalated into writing by a platform bug. In particular, sensitive credentials are kept **off untrusted-trigger surfaces** — any automation path that can be initiated or influenced by untrusted input must not be able to reach them. **The same hazard at the context layer is the taint co-residency invariant:** untrusted-derived content must not co-reside with credentials and a push/egress channel in a single session (see `core/governance/CLAUDE.md` § Security perimeter) — credential scope governs what a job *holds*; co-residency governs what a session's *context* may combine.
+
+---
+
+## Opt-in platform reference (example: GitHub Actions)
+
+*This section is one platform's mapping of the doctrine above — an opt-in reference, not core doctrine. If your automation runs elsewhere (another CI system, a local scheduler, a cron host), adapt the doctrine to that host's primitives and ignore the specifics below.*
+
+If your automation runs on GitHub Actions:
+
+- **Read-only default token:** set the default `GITHUB_TOKEN` permissions to read-only at the repository/organization level; elevate per-job in the workflow's `permissions:` block only where needed.
+- **Narrowest secret scope:** store secrets at the **environment** level with required reviewers, not at the repository level — any write-capable job can read all repository-level secrets; isolation exists only at environment level.
+- **Sentinel/PR-bot scope:** if a job opens pull requests, enable PR-creation by Actions explicitly (it is off by default) and grant exactly `contents: write` + `pull-requests: write` — never merge or admin scope.
+- **Pinned dependencies:** pin third-party actions to full commit SHAs, not tags or branches.
+- **Access-controlled config:** put `.github/workflows/` under CODEOWNERS so workflow changes require review.
+- **Untrusted-trigger hazard:** treat `pull_request_target` (and any trigger that runs with elevated context against fork-supplied input) as an untrusted-trigger surface — keep sensitive credentials off workflows using it.
+
+---
+
+## Forward Hooks
+
+**Worktree-isolated parallel build:** must satisfy this document before enablement — because the precondition trio gates it, and because the worktree-is-not-a-credential-boundary insight above is specifically about this capability. Its `AUTOMATION-ISOLATION.md` entry, including the project's declared high-blast-radius surfaces it may not touch, is written before the first parallel batch runs.
+
+**Gated write-back (the scheduled sentinel's phase-2):** same requirement — credential scope and data-isolation posture declared and minimized before enablement.
+
+**Read-only sentinel (the scheduled sentinel's phase-1):** the read-only sentinel may precede the full precondition regime — but even under its minimal gate, the sentinel must declare a **read-only, minimal credential scope** before its first scheduled run. The earliest automation is precisely where an over-scoped credential becomes a habit. The minimal gate for phase-1 is defined in the operate-sentinel phase-1 recipe (`docs/recipes/operate-sentinel/sentinel-phase-1.RECIPE.md`, § The minimal gate).
+
+**Sibling preconditions:** `core/methodology/rollback-kill-switch.md` defines how an enabled capability is stopped and reverted, and `core/methodology/spend-governance.md` defines what it may spend; this document defines what it runs as and what it can reach. A capability is safe to enable only when all three are satisfied — see `core/governance/KILL-SWITCH.md` and `core/governance/AUTOMATION-ISOLATION.md` together.

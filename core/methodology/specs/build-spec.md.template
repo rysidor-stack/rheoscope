@@ -1,0 +1,43 @@
+<!-- Per-increment build spec template.
+     Adapted for rheoscope-harness v{{template_version}}.
+     Author one of these per increment at specs/build/<increment-slug>.md.
+     Fed to Builder sessions per the execution-engine prompt template. -->
+
+# Build Spec: [increment name]
+
+*One of these per increment. Filename matches the increment slug used in the flight plan's Layer 2.*
+
+## Task Description
+
+[What to build, in plain language. Specific enough that a Builder reading this cold can implement without guessing intent. Not so specific that it dictates implementation details unrelated to correctness.]
+
+## Context
+
+- **Where this fits:** [Module / subsystem / phase this belongs to.]
+- **Dependencies:** [What this increment depends on. What depends on this increment.]
+- **Architecture notes:** [Anything about the surrounding system the Builder needs to know.]
+
+## Acceptance Criteria
+
+[How "done" is recognized. Specific, observable, ideally testable.]
+
+- [ ] Criterion 1
+- [ ] Criterion 2
+- [ ] ...
+
+## Tier
+
+T[1-4] — see `tier-definitions.md`.
+
+[One sentence explaining why this tier. If T1–T2, state the verification spec path under `specs/verification/<increment-slug>.md`.]
+
+## Files Likely Affected
+
+[Best guess at scope. The Builder may discover more; this is for planning, not a hard boundary.]
+
+- `path/to/file-1`
+- `path/to/file-2`
+
+## Notes
+
+[Anything else: pitfalls observed in prior similar work, references to ADRs or governance docs, links to relevant external docs.]

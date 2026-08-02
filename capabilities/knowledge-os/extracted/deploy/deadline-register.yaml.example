@@ -1,0 +1,68 @@
+# deadline-register.yaml.example -- the deadline-and-trigger register (v3.0-42, session C
+# build decision D4; long-horizon seam census 2026-07-22, item 1 "LIFETIME").
+#
+# Time-bound promises and conditional re-open triggers otherwise live as prose only, buried
+# in raw/ and wiki/ narrative until someone happens to reread the right paragraph -- this
+# register is the one place they are enumerated as rows a machine can walk. Consumer:
+# deploy/check-deadlines.py, invoked by hand or by /sweep (report-only, degrade-never-block:
+# an absent or malformed register never stops the sweep).
+#
+# ROW SCHEMA (per row, under the top-level `rows:` list). Each row is a flat mapping; every
+# value is a SINGLE physical line (no folded/multi-line scalars) -- the sensor is a small
+# hand-rolled/PyYAML-backed line-oriented reader, not a general document processor, so this
+# file deliberately stays inside that subset:
+#   what     -- plain English: what the deadline/trigger is.
+#   when     -- ISO date (YYYY-MM-DD) or an approximate month (YYYY-MM). Exactly one of
+#               `when` / `if` is present on a row, never both, never neither.
+#   if       -- plain-English condition text for a re-open trigger that does not have a
+#               calendar date. Conditions do NOT self-evaluate -- this register only
+#               surfaces them; a human or a session judges whether the condition fired.
+#   source   -- a repo-relative file path (or, when the fact is not stated anywhere in the
+#               corpus, a citation to whatever document motivated the row -- never a
+#               fabricated precise date/source).
+#   owner    -- who is on the hook: a person ("operator") or a surface ("session").
+#   status   -- one of: watching | fired | discharged.
+#
+# LIFECYCLE RULE: rows are appended and edited by sessions as facts firm up, but a
+# DISCHARGE is a recorded status change (status: discharged), never a deletion. History
+# lives in git, not in a second file. The sensor computes "overdue" for a still-`watching`
+# dated row on its own; editing `status` to `fired`/`discharged` is how a human/session
+# records that the firing was seen and is being acted on -- the sensor never edits this
+# file itself.
+#
+# This is a TEMPLATE EXAMPLE -- copy to deploy/deadline-register.yaml in an instantiated
+# project and replace the rows below with that project's real, corpus-grounded deadlines
+# and triggers. The rows shown here are illustrative shape only, not real facts about any
+# project -- never seed a live register with invented dates; ground every row against the
+# corpus first, or cite the document that motivated it if the exact fact isn't stated
+# anywhere yet.
+
+rows:
+  # a dated deadline, grounded in a real corpus fact (replace with your own citation)
+  - what: "Example: a TLS/service certificate rotates on a fixed cadence and its rotation runbook does not exist yet"
+    when: 2026-08-17
+    source: wiki/systems/example-system.md
+    owner: operator
+    status: watching
+
+  # an approximate deadline (YYYY-MM only) -- treated as the first of that month, and the
+  # sensor labels it "approximate" everywhere it is shown
+  - what: "Example: a credential or license is known to expire sometime in a given month, but the exact day is not recorded anywhere"
+    when: 2027-07
+    source: "raw/2026-01-01-example-source.md (approximate month only; exact date not stated)"
+    owner: operator
+    status: watching
+
+  # a conditional re-open trigger -- no calendar date, just a condition to watch for
+  - what: "Example: re-open a resolved decision if an upstream field ever changes shape"
+    if: "some named upstream field changes from its current constrained shape to free text"
+    source: wiki/systems/example-system.md
+    owner: session
+    status: watching
+
+  # a discharged row -- kept for history, counted in the summary only, never deleted
+  - what: "Example: a past deadline that has already been handled and closed out"
+    when: 2025-01-01
+    source: wiki/systems/example-system.md
+    owner: operator
+    status: discharged

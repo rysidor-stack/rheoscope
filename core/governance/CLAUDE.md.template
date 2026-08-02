@@ -1,0 +1,117 @@
+<!-- Extracted and generalized from a production project, restructured for the core + capabilities model
+     (Decision V2-3). Schema files no longer separate (Decision V2-19). -->
+
+# CLAUDE.md — {{project_name}} Schema
+
+This file governs how this Rheoscope instance works. Every agent session — Claude Code or any other agentic tool working in this tree — reads this before doing anything else (non-Claude agents arrive via the root `AGENTS.md` pointer; the filename is a Claude Code convention, the contract is substrate-neutral).
+
+---
+
+## What this is
+
+A {{project_name}} project instantiated from rheoscope-harness v{{template_version}} on {{instantiated_date}}.
+
+This harness uses the **core + capabilities** model:
+
+- **Core (always present):** methodology kernel, governance, handoffs, security perimeter.
+- **Capabilities (opt-in per project):**
+
+{{enabled_capabilities_list}}
+
+## Project identity
+
+- **Name:** {{project_name}}
+- **Slug:** {{project_slug}}
+- **Description:** {{project_description}}
+- **Personnel:** {{personnel_tags_csv}}
+- **Instantiated:** {{instantiated_date}}
+
+## Core
+
+Always loaded. Always trusted as canonical.
+
+- `core/methodology/` — execution engine, verification architecture, flight plan, tier definitions
+- `core/governance/PROJECT-COMPASS.md` — operator-facing project orientation
+- `core/governance/HARDCONSTRAINTS.md` — immutable thou-shalt-not list
+- `core/governance/DATA-POLICY.md` — what artifacts may contain (PII/masking), retention windows, receipted purge
+- `core/handoffs/` — three-session decision inquiry protocol
+- `core/security/hooks/` — Claude Code PreToolUse hooks (network egress, .env writes)
+- `CONTEXT.md` — canonical glossary (Pocock format)
+
+## Capabilities wired
+
+The following capabilities were instantiated. Each is documented at its runtime location, with its RECIPE.md propagated to `docs/recipes/` (for any deferred recipes) and runtime files at their canonical paths.
+
+{{enabled_capabilities_list}}
+
+For deferred capabilities (recipes only — code does not exist in v1.0), see `docs/recipes/`.
+
+## Orchestrator inventory
+
+Orchestrators (Claude Code skills) present after instantiation. The exact list depends on enabled capabilities. CC populating this template should list each enabled orchestrator with a one-line description and `triggers_at` tag (e.g., `/compile` — triggers_at: per-session; `/audit` — triggers_at: weekly; `/preflight` — triggers_at: per-phase-kickoff, stress-test, or reconfigure; `/doctor` — triggers_at: init-end, on-demand).
+
+## Governance documents
+
+The following documents are the load-bearing project authority. The AI treats them as canonical when making decisions:
+
+{{governance_docs_list}}
+
+Populated during the INIT.md kickoff interview.
+
+## Directory preservation rule
+
+**No orchestrator may delete, rename, or silently drop a wiki subdirectory without explicit operator authorization.** Authorization is explicit operator instruction (e.g., "delete wiki/foo"). Absence of an instruction is not authorization. Inferring "unused" or "empty" is not authorization.
+
+When adding a new domain, never remove an existing one. The set after a schema edit must be a strict superset of the set before.
+
+## Security perimeter
+
+`core/security/hooks/` contains PreToolUse hooks that block named risks before they reach the filesystem or network. See `core/security/hooks/README.md` for the perimeter spec and how to add a new hook.
+
+**Taint co-residency invariant — boot-time capability isolation (session composition, not a hook).** Untrusted-derived content, live credentials, and a sanctioned egress/push channel must never share one session's context. *Named risk:* a session that ingests external, unverified text (web-scraped pages, vendor documents, third-party intake) while holding credentialed tools **and** a push/egress capability can be steered by injected instructions to write secrets into a file a later push carries off-machine — exfiltration through sanctioned channels, with no blocked tool invoked and every egress hook green (the hooks match named tools, not this composition). *Enforcement — the wall is which tools exist at boot, not a rule the agent follows:* capability is a function of the session's boot-context origin. A session whose boot context carries any non-trusted-origin content — assessed across its whole lineage, not just the immediately-pasted bytes — is **never granted** credential or egress/push tools: those tools are **absent from its toolbox**, not merely forbidden. An injection can fully own the agent's reasoning and still cannot exfiltrate through any credentialed or sanctioned push/egress channel, because those tools were never granted — you cannot call a tool that was never granted. (This is application-layer tool-grant isolation; OS-level secret containment of the worker process — e.g. running an untrusted-context session with no host credentials in its environment — is a separate deployment concern, not a claim of this invariant.) Enforce mechanically, where the agent has no vote; never as an instruction the attacked agent is asked to obey. The PreToolUse hooks cannot catch this composition; boot-time tool-grant can. There is **no "attestation" exception** that lets tainted content co-reside with credentials; any injection-scanner is optional defense-in-depth only (it can be evaded, or hijacked into reporting "clean"), and the wall holds regardless. When the opt-in memory engine (the knowledge-os capability) is built, it makes this mechanical at session boot — origin-tagged context determines the grant, credentialed sessions structurally cannot ingest untrusted content, and the engine's own writes to trusted memory are human-in-the-loop by design.
+
+## Session discipline
+
+These rules govern how sessions operate within this harness instance. They are operational disciplines, not hard constraints (those live in `HARDCONSTRAINTS.md`). New disciplines surface as a project ages — append to this section, and mirror a rule to `harness-backlog.md` as a candidate harness-template default if it would generalize.
+
+### Backlog logging
+
+Any issue, gap, or improvement candidate that is a property of the **harness template** rather than this project's content gets logged to `harness-backlog.md`, in the session it's surfaced. Entries are numbered `v<template_version>-N`, where `<template_version>` is read at runtime from `project.yaml` (the harness version this project runs — e.g. `v2.0-3` on a v2.0 harness) and `N` restarts at 1 per version. Never hardcode the prefix; read it. Includes:
+
+- Bugs in init scripts (`init.ps1`, `init.sh`, `init-validate.*`)
+- Missing files in the harness default tree
+- Naming collisions with project conventions
+- Missing capabilities that operators have to install post-init
+- Methodology deltas between harness docs and installed-skill protocols
+- Schema gaps in `project.yaml.schema.json`
+- UX traps in error messages
+
+If unclear whether something is harness-template or project-content, default to logging — easier to reclassify than to recover. Use the `/log-backlog` skill for formatted logging; it appends a single entry per invocation following `harness-backlog.md`'s documented format.
+
+### RTDT — Read the Damn Thermometer
+
+If scope creeps or complexity inflates during a session, name it explicitly and propose the cut. Don't silently bulldoze. The cost of naming friction is low; the cost of unnamed scope creep is high. Applies to sessions, flight plans, and individual implementations.
+
+### Decision-lock substrate firewall
+
+T1 decisions (hard-to-reverse / silent-error class — see `HARDCONSTRAINTS.md` and `core/methodology/tier-definitions.md`) require distinct substrates for authoring and locking. Same-substrate self-review is not lockable for T1. The `/handoff-close` skill's Step 1 enforces this by reading `meta.yaml.authored_by` and refusing to lock if the closing substrate matches the authoring substrate at T1. This rule governs decisions, which have no executable test — the domain where substrate separation is the primary firewall (see `core/methodology/verification-architecture.md`, core principle).
+
+### Read orientation at session start
+
+First action of every session: read `core/governance/CLAUDE.md` (this file), then `core/governance/PROJECT-COMPASS.md`, then `SESSION-BRIEFING.md` if `/flight-plan` has populated it. Two-minute orientation prevents twenty-minute mistakes. Sessions that skip orientation tend to violate hold points, miss locked decisions, and reinvent project conventions.
+
+### Single-writer rule on wiki articles (knowledge-os projects)
+
+Only `/compile` writes to `wiki/<domain>/*.md`. Direct human edits to compiled wiki content are not supported — wiki content flows through `raw/` → `/compile`. Documented exceptions (per `docs/wiki-schema.md` § 14): `SESSION-BRIEFING.md` is regenerated by `/flight-plan`; `wiki/flight-plans/*.md` may be edited directly by interactive sessions (`/flight-plan` is a core skill); `core/handoffs/` content has its own multi-session lifecycle.
+
+### Anchor-risk audit at lock time
+
+When locking a T1 or T2 decision, explicitly audit whether the hypothesis was rationalized through the verifier output or genuinely tested. If `hypothesis_outcome` is `confirmed` and the verifier reasoning is thin, push back before locking. The `/handoff-close` skill's Step 5 includes this audit; manual locks should do it explicitly.
+
+## What this file is not
+
+- Not a project plan — that's the flight plan (`/flight-plan` is a core skill; plans live at `wiki/flight-plans/`)
+- Not documentation for humans — humans read PROJECT-COMPASS.md
+- Not a build spec — those are in `specs/`
+
+Every agent session's first action: read CLAUDE.md. If it's not in here or in one of the capabilities' RECIPE.md files at `docs/recipes/`, the session doesn't know about it.

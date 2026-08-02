@@ -1,0 +1,83 @@
+# signing-config.yaml -- instance-level trust-boundary config for the R-1 promotion gate
+# (deploy/promote-candidate.py; spec harness-v3.0/specs/r1-build-decisions-2026-07-22.md
+# Part 6, design brief r1-session-intake-writer-design-brief-2026-07-21.md extension (d)).
+#
+# GOVERNS: which signing keys this instance accepts as the OPERATOR's own hand. A staged
+# session candidate can only be promoted into an operator-provenance raw event when the
+# commit that INTRODUCED its gate artifact verifies against one of the fingerprints listed
+# here. Nothing else in the engine reads this file.
+#
+# WHY A KEY AT ALL (the control this file exists to hold up): temporal separation is not
+# approval. A session can commit, and git authorship is spoofable -- so an attacker-directed
+# EARLIER run could commit a gate artifact for a later run to consume, and every
+# presence/binding/predates-the-run check would pass. The only boundary a session cannot
+# cross is a key it physically never holds. That is this file's entire subject: the
+# fingerprint of a key that lives with the operator, passphrase-protected, prompted at each
+# signing.
+#
+# OPERATIONAL RESIDUAL, RECORDED HONESTLY (not something the code can enforce): a key added
+# to a long-lived ssh-agent is reachable by every process on the machine for the agent's
+# lifetime, sessions included. The control's strength rests on the operator being PROMPTED
+# at each signing -- i.e. on the key NOT being agent-cached. If that premise ever stops
+# holding, this gate degrades to the same predates-the-run premise the legacy `ryan-*`
+# filename rule rests on, and should be re-reviewed.
+#
+# FAIL-SAFE DEFAULT (same doctrine as deploy/origin-config.yaml, deploy/safe-allowlist.yaml):
+# this file ABSENT, PyYAML unavailable at runtime, the content unparseable/structurally
+# malformed, or ANY member of operator_signing_keys invalid, all degrade to an EMPTY pinned
+# set -- and an empty pinned set means NOTHING CAN EVER BE PROMOTED. The failure direction
+# is always refusal, never a grant. A partially-honored trust config is worse than an
+# honestly empty one, so one bad member voids the whole list (the same strict member
+# validation deploy/origin.py's load_origin_config() applies to human_prefixes).
+#
+# THIS IS AN OPERATOR-GATED TRUST-CONTROL SURFACE (ROUTE-1-style note, mirroring
+# origin-config.yaml's own convention): adding a fingerprint here decides whose signature
+# can mint operator provenance on this instance. Treat edits as an operator-authored,
+# out-of-band change only -- NEVER something an agent/executor edits on its own initiative.
+#
+# Schema:
+#   signature_mode: ssh | gpg
+#   operator_signing_keys:
+#     - fingerprint: "SHA256:..."     # as `ssh-keygen -lf <key>.pub` prints it
+#       public_key:  "ssh-ed25519 AAAA... comment"    # the PUBLIC key line; not secret
+#       principal:   "someone@example.com"            # the allowed-signers principal
+#
+# SSH is this fork's chosen mode: git has supported it since 2.34 and it needs no
+# gpg-agent on Windows.
+#
+# WHY THE ENTRY CARRIES THE PUBLIC KEY, NOT JUST THE FINGERPRINT (verified against git
+# 2.54, not assumed): a good SSH-signed commit reports %G? = "G" and %GF = the same
+# "SHA256:..." string ssh-keygen prints -- but %G? is only "G" when the signer appears in
+# the repo's configured gpg.ssh.allowedSignersFile, which is REPO-LOCAL CONFIG A SESSION
+# CAN EDIT. Pinning a fingerprint alone would rest the verdict partly on a mutable file.
+# So the promoter ignores repo git config entirely: it writes a TEMPORARY allowed-signers
+# file from the public_key pinned here and verifies with
+# `git -c gpg.ssh.allowedSignersFile=<temp> ...`. A session that adds its own key to the
+# repo's allowed-signers still produces a %GF outside the pinned set (refused); a session
+# that deletes the repo's config changes nothing, because the promoter never read it.
+#
+# The promoter additionally checks that each pinned `fingerprint` really is the fingerprint
+# of its own `public_key`. A config where the two disagree is malformed -- and malformed
+# means the entire pinned set is empty (see the fail-safe default above).
+#
+# TO ARM THIS INSTANCE (operator, in the operator's own hands -- a session must never run
+# step 1):
+#   1. ssh-keygen -t ed25519 -C "rheoscope-operator-signing" -f ~/.ssh/rheoscope_signing
+#      (set a passphrase; do NOT add it to a long-lived agent -- see the residual above)
+#   2. ssh-keygen -lf ~/.ssh/rheoscope_signing.pub   -> the SHA256:... field
+#      cat ~/.ssh/rheoscope_signing.pub               -> the public key line
+#   3. put BOTH into an operator_signing_keys entry below, with the principal
+#   4. git config gpg.format ssh
+#      git config user.signingkey ~/.ssh/rheoscope_signing.pub
+#      git config commit.gpgsign false   # sign the gate artifact deliberately, with -S;
+#                                        # signing everything would make the act routine
+#      (step 4 is for the operator's own signing convenience only -- the promoter builds
+#       its own allowed-signers file from the pinned public_key and never reads repo git
+#       config, so nothing here can weaken or strengthen the gate)
+
+signature_mode: ssh
+
+# UNARMED. Empty = no candidate can be promoted to operator provenance on this instance.
+# This is the correct shipped default for the template and for any instance whose operator
+# has not yet generated a signing key.
+operator_signing_keys: []

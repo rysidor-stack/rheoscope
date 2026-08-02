@@ -1,0 +1,210 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://rheoscope-harness/project.yaml.schema.json",
+  "title": "project.yaml schema for Rheoscope",
+  "description": "Validates project.yaml before substitution. See Decision V2-4 (capabilities toggle), V2-5 (handoffs and kickoff-orchestration not valid capability keys).",
+  "type": "object",
+  "required": [
+    "project_name",
+    "project_slug",
+    "project_description",
+    "capabilities",
+    "personnel",
+    "tier_examples",
+    "template_version"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "project_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable project name."
+    },
+    "project_slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Lowercase slug. Must start with a-z or 0-9; subsequent chars a-z, 0-9, hyphen."
+    },
+    "project_description": {
+      "type": "string",
+      "description": "One-sentence project description."
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "Opt-in capability toggles. Keys MUST be exactly the set declared. handoffs is not a capability (always core). kickoff-orchestration is not a capability (documentation-only).",
+      "required": [
+        "knowledge-os",
+        "stress-testing",
+        "code-conventions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "knowledge-os": { "type": "boolean" },
+        "stress-testing": { "type": "boolean" },
+        "code-conventions": { "type": "boolean" }
+      }
+    },
+    "personnel": {
+      "type": "array",
+      "minItems": 1,
+      "description": "At least one personnel entry. Each is identity + role + domain-ownership.",
+      "items": {
+        "type": "object",
+        "required": ["tag", "name", "role", "domains_owned"],
+        "additionalProperties": false,
+        "properties": {
+          "tag": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$",
+            "description": "Short identifier used as a raw-file source tag."
+          },
+          "name": { "type": "string", "minLength": 1 },
+          "role": { "type": "string", "minLength": 1 },
+          "domains_owned": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Wiki subdirectories this person is review authority for. Use ['*'] for all-domains.",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "neutral_source_tags": {
+      "type": "array",
+      "default": ["session", "ref", "field", "system"],
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "wiki_domains": {
+      "type": "array",
+      "default": [],
+      "description": "Wiki subdirectory definitions (only meaningful when capabilities.knowledge-os is true).",
+      "items": {
+        "type": "object",
+        "required": ["name", "default_scope", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "default_scope": { "type": "string", "enum": ["domain", "build", "mixed"] },
+          "description": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "governance_docs": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": ["path", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "description": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "corpus_source": {
+      "type": "string",
+      "default": "none",
+      "description": "Execution-corpus identifier (org/repo), or 'none'. Only meaningful with knowledge-os enabled, when the project's execution plane lives in a separate sibling repo whose shipped-state the wiki observes. Read at runtime by /flight-plan, /compile, /audit; NOT init-substituted. See docs/wiki-schema.md § 16."
+    },
+    "corpus_config": {
+      "type": "object",
+      "description": "Required when corpus_source is not 'none'. Legacy singular form — projects with more than one execution repo use corpus_sources instead.",
+      "additionalProperties": false,
+      "properties": {
+        "clone_path": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string", "minLength": 1 },
+        "probe": { "type": "string", "minLength": 1 }
+      }
+    },
+    "corpus_sources": {
+      "type": "array",
+      "description": "Multi-corpus binding (v3.0.18, backlog v3.0-88): one entry per execution-plane repo the wiki observes. Each corpus keeps its own identity and its own last-reconciled SHA row in wiki/HEALTH.md § Corpus Observation; every consumer (/flight-plan, /compile, /audit, /doctor) reports each corpus independently and surfaces an unreachable declared corpus VISIBLY — partial observation is never silent. Mutually exclusive with a non-'none' corpus_source (declaring both is a config error). The singular corpus_source + corpus_config form stays valid for one-repo projects.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["source", "clone_path", "branch"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "description": "Stable short identifier for HEALTH rows and briefings. Defaults to the repo name segment of source." },
+          "source": { "type": "string", "minLength": 1, "description": "org/repo identifier of this execution corpus." },
+          "clone_path": { "type": "string", "minLength": 1, "description": "Local clone used for read-only observation." },
+          "branch": { "type": "string", "minLength": 1, "description": "The deployed branch." },
+          "probe": { "type": "string", "minLength": 1, "description": "Optional enrichment probe (default git-log-since-sha)." }
+        }
+      }
+    },
+    "tier_examples": {
+      "type": "object",
+      "required": ["T1", "T2", "T3", "T4"],
+      "additionalProperties": false,
+      "properties": {
+        "T1": { "type": "string", "minLength": 1 },
+        "T2": { "type": "string", "minLength": 1 },
+        "T3": { "type": "string", "minLength": 1 },
+        "T4": { "type": "string", "minLength": 1 }
+      }
+    },
+    "template_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Harness template version (provenance) — a quoted string matching the template's root VERSION file at instantiation time. Permissive by design — the schema is NOT the version gate and deliberately carries no version literal of its own. init.ps1/init.sh compare this field against VERSION (the single version source, consumed at init) and emit a migration-aware message on mismatch; project.yaml.example ships the current value. Kept loose here so the schema validates a project.yaml authored against any harness version."
+    },
+    "template_source": {
+      "type": "string",
+      "description": "Public template repository URL (v3.0.12, backlog v3.0-59). Stamped by init; the address 'check for updates' resolves against. Empty string on pre-v3.0.12 instances until backfilled."
+    },
+    "template_release": {
+      "type": "string",
+      "description": "The template release tag this instance actually runs (e.g. v3.0.12). Stamped by init from the template tree's RELEASE file; advanced by adoption sessions in the same commit as each file-level adoption. Distinct from template_version, which tracks the major/minor contract and does not move on patch adoption."
+    },
+    "instantiated_date": {
+      "type": "string",
+      "default": "",
+      "description": "Stamped by init at instantiation time (ISO 8601). Empty pre-instantiation."
+    },
+    "instantiated_capabilities": {
+      "type": "array",
+      "default": [],
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "placeholder_scan_exempt": {
+      "type": "array",
+      "default": [],
+      "description": "Relative paths or path-prefixes (from repo root) that init-validate skips when scanning for unresolved {{...}} placeholders. For META docs that legitimately contain literal placeholder syntax (the init scripts, build logs, this example file). A trailing '/' denotes a directory prefix. Operators append project-specific files that document the convention.",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "dependency_scan_skip": {
+      "type": "array",
+      "default": [],
+      "description": "Directory NAMES that init-validate's {{...}} placeholder scan skips wherever they appear at any depth (case-sensitive segment match, not prefix). For vendored/generated dirs (node_modules, .next, build, dist, ...) whose third-party content would otherwise yield false unresolved-placeholder failures. The single source both validators (powershell-yaml + yq) read, so both consume the identical set; the match is case-sensitive on both sides and a scalar (non-list) value is ignored by both. .git is always skipped separately. See v3.0-14.",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "corpus_source": { "not": { "const": "none" } }
+        },
+        "required": ["corpus_source"]
+      },
+      "then": {
+        "required": ["corpus_config"],
+        "properties": {
+          "corpus_config": {
+            "required": ["clone_path", "branch"]
+          }
+        }
+      }
+    },
+    {
+      "if": { "required": ["corpus_sources"] },
+      "then": {
+        "properties": {
+          "corpus_source": { "const": "none" }
+        }
+      }
+    }
+  ]
+}

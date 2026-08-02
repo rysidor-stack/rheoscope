@@ -1,0 +1,62 @@
+<!-- Per-increment verification spec template.
+     Adapted for rheoscope-harness v{{template_version}}.
+     Authored via the Verification Spec Drill (see verification-architecture.md Part 3).
+     Fed to Verifier sessions; the Verifier writes tests from this without ever
+     seeing the build spec, codebase, or feature code. -->
+
+# Verification Spec: [increment name]
+
+## Business Rules
+
+[Plain English description of what this increment does — from the user/business perspective, not the implementation perspective. The drill exists to make these precise.]
+
+## Invariants
+
+*Statements that hold at all times, regardless of state.*
+
+- [Always-true statement 1]
+- [Always-true statement 2]
+
+*If using the business-logic / sync-adapter layer separation (see `verification-architecture.md` Part 6), annotate each invariant: `[BL]` = business logic, `[SA]` = sync adapter.*
+
+## State Transitions
+
+| From State | Action | To State | Conditions |
+|-----------|--------|----------|------------|
+| | | | |
+
+Invalid transitions (must be rejected):
+
+- [state] → [state]: [why it's invalid]
+
+## Data Shapes
+
+| Field | Type | Constraints | Notes |
+|-------|------|-------------|-------|
+| | | | |
+
+## Boundary Conditions
+
+| Condition | Expected Behavior |
+|-----------|-------------------|
+| [zero / empty input] | |
+| [maximum / overflow] | |
+| [negative value, if applicable] | |
+| [duplicate input] | |
+| [concurrent access] | |
+
+## Failure Modes
+
+| Failure | System Behavior | Recovery |
+|---------|-----------------|----------|
+| [what breaks] | [what happens] | [how it recovers or escalates] |
+
+## Test Guidance for Verifier
+
+*Optional: specific notes about test approach. NOT implementation details — business context that helps the Verifier write better tests. Examples: "test in isolation from external API by mocking the response at the adapter layer," or "tests should run in under 5s each to keep the verification suite snappy."*
+
+[guidance here, or remove the section]
+
+---
+
+*See `verification-architecture.md` Part 2 for the field-by-field explanation of this template and Part 3 for the Verification Spec Drill that produces a well-formed spec.*

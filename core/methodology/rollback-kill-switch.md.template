@@ -1,0 +1,75 @@
+<!-- Rollback and kill-switch precondition doctrine.
+     Authored for rheoscope-harness v{{template_version}}.
+     Loaded by: CC Controller and operator before enabling any autonomous capability.
+     No substitution variables beyond the standard project identity. -->
+
+# Rollback and Kill-Switch
+
+## Enablement Precondition
+
+No autonomous capability may be **enabled** until it satisfies both conditions:
+
+(a) A **rollback path** to a known-good state is documented, written down before enablement, and tested.
+(b) The capability **responds to the global kill-switch**, as defined in `core/governance/KILL-SWITCH.md`.
+
+This is a structural precondition, not a post-build checklist item. A capability whose rollback path or kill-switch response is absent or untested is not "enabled with caveats" — it is not enabled.
+
+**Grounding — the standing autonomy commitments:**
+
+- **T1 surfaces never receive unattended autonomy.** The kill-switch is how that commitment is enforceable at runtime.
+- **Parallel build and gated write-back gate on the precondition trio.** The parallel-build capability and gated write-back (the scheduled sentinel's phase-2) must not be enabled before all three enablement preconditions — credential-and-data isolation, spend governance, and this document — land. This document is the standard those capabilities must satisfy.
+- **Parallel build carries "rollback-to-serial-by-default" as a mandatory property** — the first named instance of the rollback requirement defined below.
+
+---
+
+## Kill-Switch: Required Shape
+
+The kill-switch for this project is defined in `core/governance/KILL-SWITCH.md`. Whatever its concrete form, the implementation must satisfy all of the following properties. The concrete halt action is the operator's to determine.
+
+**Single action, total halt.**
+One operator action halts all autonomous activity — scheduled runs, parallel builds, write-back — simultaneously. There is no per-capability whack-a-mole: a kill-switch that stops one automation while leaving another running is not a kill-switch.
+
+**Fail-safe / fail-closed.**
+When it is unclear whether automation is running, the kill-switch assumes it is and halts. The safe state is stopped, not running.
+
+**Independent of the thing it kills.**
+The kill path does not depend on the automation being responsive or healthy. A wedged or crashed autonomous process must not prevent the kill-switch from firing.
+
+**Leaves the system in an inspectable state.**
+After the kill-switch fires, the system is in a known, observable state — not an ambiguous mid-flight state requiring additional surgery to assess.
+
+**Documented where the operator finds it under stress.**
+The kill-switch is the operator's control, not a developer's tool. Its location, trigger, and confirmation are written in `core/governance/KILL-SWITCH.md`, where the operator reaches for it when something is wrong.
+
+---
+
+## Rollback: Required Shape
+
+Every autonomous capability must define its rollback path before enablement. The path must satisfy all of the following:
+
+**Revertible to a known-good state.**
+Every change an autonomous capability can make is revertible to a state that was known-good before the capability ran. "Known-good" means a state the operator can describe and verify, not merely "before."
+
+**Tested before enablement.**
+The rollback path is exercised before the capability is enabled. Untested rollback is not rollback — it is a hypothesis. At minimum, the operator must demonstrate the revert works against a representative scenario before enabling the capability.
+
+**Written before enablement.**
+The rollback procedure is documented before the capability is turned on, not after the first incident. An undocumented rollback is unavailable under the stress conditions when it is needed.
+
+**First named instance: parallel build's rollback-to-serial-by-default.**
+The parallel-build capability's independence is never assumed: serial merge queue, auto-rebase/retest before merge, full post-merge regression gate, and rollback-to-serial-by-default are mandatory, not optional. When parallel build is built, its rollback path must meet the three requirements above, with the serial queue as the documented and tested known-good fallback. The concrete steps are authored when parallel build is built — they do not exist yet.
+
+**Concrete steps are per-capability.**
+The rollback procedures for the parallel-build capability and gated write-back (the scheduled sentinel's phase-2) are authored when those capabilities are built. This document is the standard they must meet; it does not substitute for the steps themselves.
+
+---
+
+## Forward Hooks
+
+**Worktree-isolated parallel build:** must satisfy both the kill-switch shape and the rollback shape above before enablement. Rollback-to-serial-by-default is the required rollback instance; its tested form is authored at build time for that increment.
+
+**Gated write-back (the scheduled sentinel's phase-2):** same requirement — kill-switch response and rollback path must both be satisfied before enablement.
+
+**Read-only sentinel (the scheduled sentinel's phase-1):** the read-only sentinel may precede the full precondition regime. Even under that minimal gate, the kill-switch must be wired — a scheduled read-only process holds credentials and must be haltable. The minimal gate for phase-1 is defined in the operate-sentinel phase-1 recipe (`docs/recipes/operate-sentinel/sentinel-phase-1.RECIPE.md`, § The minimal gate).
+
+**Sibling preconditions:** `core/methodology/least-privilege-isolation.md` defines what an enabled capability runs as and what it can reach, and `core/methodology/spend-governance.md` defines what it may spend; this document defines how it is stopped and reverted. A capability is safe to enable only when all three are satisfied — see `core/governance/KILL-SWITCH.md` and `core/governance/AUTOMATION-ISOLATION.md` together.

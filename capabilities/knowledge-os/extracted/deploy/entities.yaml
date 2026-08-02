@@ -1,0 +1,27 @@
+# entities.yaml -- governed entity vocabulary (memory-engine v3, P1). ROUTE-1 governs it;
+# GOLD-2 freezes routing against it. M(E) = subscribes.entities match U cascades_to naming.
+#
+# An ENTITY is a stable subject one or more VIEWS are about and that events route to.
+# Entities are derived from the wiki views (the schema-* articles -> business entities;
+# the systems articles -> platform/system entities); high-frequency event tags become
+# ALIASES. Not one-entity-per-tag: the 654 raw tags are mostly event-level detail,
+# decisions, and phase labels, which are NOT entities.
+#
+# DRAFT for operator review (2026-06-30): subscriptions are assigned by view name/domain
+# and are the routing source of truth the backfill will stamp into each view's
+# subscribes.entities. Verify the assignments before this is frozen (GOLD-2).
+#
+# Shape per entity: aliases[] (each -> exactly one entity), views[] (>=1 unless parked),
+# cascades_to[] (each resolves to an entity or a view), parked (permits 0 views).
+
+entities: {}
+
+# ---- example entry (illustrative shape only -- delete before authoring real entities) ----
+# orders:
+#   aliases: [order, purchase-order, schema-orders]
+#   views: [wiki/systems/orders.md]
+#   cascades_to: [customers]
+
+# ACC-2 journal-hole allowlist (consolidated here per test-plan:71; staleness.py merges
+# this with the sibling deploy/known-holes.yaml).
+known_holes: []

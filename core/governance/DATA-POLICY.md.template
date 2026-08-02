@@ -1,0 +1,89 @@
+<!-- PII-retention and mask-at-capture policy. Ships as core: the rules below
+     bind every artifact-producing feature regardless of which capabilities are
+     enabled. Retention defaults are policy, not config — no substitution
+     variables beyond the standard project identity. -->
+
+# Data Policy — {{project_name}}
+
+This document governs what harness-produced artifacts may contain, how long they live, and how they are destroyed. It exists because evidence artifacts — screenshots, differential-test outputs, telemetry logs, test-run results, dev-database seeds — are where customer data leaks out of production-grade controls and into loosely-guarded working files.
+
+**Why capture-time, not cleanup-time:** prevention must happen when the artifact is created. Some captures cannot be undone — a screenshot with an unmasked customer email cannot be un-taken once it is committed, synced, or pasted into a session, and downstream systems may keep copies you no longer control. After-the-fact scrubbing is not a reliable recovery path. (Some upstream systems make this concrete: certain payment processors, for example, lock redaction irreversibly for a fixed window — but the principle holds for any sensitive capture.)
+
+---
+
+## Hard rules (every artifact, no exceptions)
+
+1. **Entities by ID.** Artifacts reference customers, accounts, and records by opaque ID, never by name, email, or other direct identifiers.
+2. **PII fields are enumerated, or absent.** If an artifact type must carry a PII field, that field is explicitly listed and justified in the artifact type's spec. Unlisted PII in an artifact is a policy violation, not an oversight.
+3. **No PII in file names.** Artifact file names are built from IDs, dates, and increment names only.
+
+Weakening or removing a hard rule requires a governance ADR in `docs/adr/`, same as `HARDCONSTRAINTS.md`. Tightening needs no ceremony.
+
+**Domain-specific hard rules are the project's to add.** The harness ships no assumptions about a project's data domain. A project that handles a specific high-risk data class should add a matching entry to `HARDCONSTRAINTS.md` during the INIT kickoff (Step 2c). Example, for a payment-handling project — ready to copy: **Constraint:** full card numbers (PAN) and CVV never appear in any project artifact. **Rationale:** irreversible PCI-scope expansion; processor redaction cannot recover a leak. **Test:** grep evidence/log/seed directories for 13–19 digit sequences passing a Luhn check; any hit fails.
+
+---
+
+## Mask-at-capture (visual evidence)
+
+Screenshots and recordings used as verification evidence are masked **when captured**, not scrubbed later. Masking is applied by the capture step itself (e.g. element masking in the capture tool), and the reviewer checklist for any visual-evidence review includes: *"no unmasked sensitive region visible."*
+
+**Masked regions:**
+
+- Customer names
+- Email addresses
+- Phone numbers
+- Physical addresses
+- Government identifiers (SSN, tax IDs)
+- Dates of birth
+- Financial identifiers shown in the UI (e.g. card last-4 and expiry, account numbers) — masked in stored evidence even when they legitimately appear on screen
+- Balances and amounts tied to an identifiable customer
+- Visible auth secrets (tokens, API keys, passwords)
+- Customer-entered free-text fields (notes, comments — they can contain anything)
+
+**Not masked:** opaque entity IDs (the approved reference form), layout and chrome, and data that is synthetic by construction. Evidence captured against fully synthetic test data may skip masking, but the artifact must record that its data source was synthetic.
+
+---
+
+## Retention and purge
+
+Retention windows are declared per artifact type. **Any new evidence-artifact type that may carry PII must declare its window in this table before it ships** — an artifact type in that class with no declared window may not be produced.
+
+| Artifact type | Canonical location | Retention |
+|---------------|-------------------|-----------|
+| Visual evidence (screenshots/recordings) | `results/visual-evidence/` | 90 days |
+| Visual-evidence baselines (approved reference screenshots) | `results/visual-evidence/baselines/` | Until superseded (purged, receipted, when a newer approved baseline replaces it or the screen it depicts is retired — the 90-day visual-evidence purge never touches this directory) |
+| Differential-oracle run outputs | `results/differential/` | 90 days |
+| Approved-divergence ledger | `results/differential/approved-divergences.md` | Life of the cutover (archived, receipted, at legacy decommission — the 90-day run-output purge never touches it) |
+| Diagnosis reports (verification-failure triage) | `results/diagnosis/` | 90 days |
+| Spend-telemetry logs | `results/telemetry/` | 365 days |
+| Sentinel run receipts (scheduled-monitor runs) | `results/sentinel-receipts/` | 365 days |
+| Purge receipts | `results/purge-receipts/` | Indefinite |
+
+Test-run results (`results/*.json` verification/regression runs) carry no declared window in the minimal policy: they must contain no PII under the hard rules, so retention is an audit-trail question, not a data-safety one. Keep them as long as their audit value warrants; deleting them is an audit-trail decision needing no receipt, because no data-safety window applies.
+
+**Purge is receipted.** Every purge — manual or automated — writes a receipt to `results/purge-receipts/purge-YYYY-MM-DD.json` recording: date, artifact type, window applied, count and names of files removed, and who/what ran it. Receipts are PII-free by construction (hard rule 4 makes file names safe to list) and are kept indefinitely as the destruction audit trail.
+
+**Until purge tooling exists**, purge is a documented manual step: each feature build that creates one of these artifact types must either ship its purge mechanism or schedule the manual purge in the flight plan. Producing artifacts with no purge path violates this policy.
+
+Projects may tighten windows without ceremony. Lengthening a window is a governance ADR.
+
+---
+
+## Dev-database seeds
+
+Development and worktree databases are provisioned **only from synthetic or irreversibly anonymized seed data — never raw production copies.** Anonymization must not be reversible from inside the dev environment (no re-identification key alongside the data). Each seed records its provenance (synthetic generator or anonymization run) so a reviewer can verify the source.
+
+---
+
+## Gate semantics and consumption contract
+
+**General rule:** no feature that produces evidence artifacts may run against customer data until its build demonstrates conformance with this policy. "The rules exist" is necessary but not sufficient — the consuming build must show its capture/output/provisioning step implements them.
+
+Build specs for artifact-producing features carry the matching gate language below, verbatim or strengthened:
+
+- **Visual-evidence capture:** *"Capture applies the mask-at-capture region list (DATA-POLICY § Mask-at-capture) before any artifact is written. The reviewer checklist includes the no-unmasked-sensitive-region check. This build ships or schedules the 90-day purge for `results/visual-evidence/`. No runs against customer data until all three hold."*
+- **Differential/oracle outputs:** *"Diff outputs reference entities by ID; any PII field is enumerated and justified in this spec; no raw sensitive personal data ever. This build ships or schedules the 90-day purge for `results/differential/`. No customer-data runs until these hold."*
+- **Telemetry/logging:** *"Logs are PII-minimized and reference entities by ID. Per-feature attribution keys must not embed customer identifiers. 365-day retention with receipted purge. No customer-data runs until these hold."*
+- **Dev-DB provisioning:** *"Worktree/dev databases are provisioned only per DATA-POLICY § Dev-database seeds — synthetic or irreversibly anonymized, provenance recorded, never raw production copies. No dev-database provisioning until these hold."*
+
+The operator owns the gate: a build claiming conformance is verified against this document, not against its own report.

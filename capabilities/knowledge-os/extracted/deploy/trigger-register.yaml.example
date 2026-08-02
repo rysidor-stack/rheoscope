@@ -1,0 +1,77 @@
+# Trigger register -- declared conditions -> proposed actions (backlog v3.0-64).
+# Evaluated by deploy/check-triggers.py (read-only, stateless). Rows PROPOSE; they never
+# run anything in v1 (authorization: propose is the only implemented class; the field
+# exists so rows survive the v3.0-63 arming machinery unchanged). A fired condition
+# re-arms only when its resets_on receipt is minted -- no cooldown state is stored.
+# Predicate vocabulary is CLOSED (six entries; see check-triggers.py's header). Free-text
+# conditions belong in deadline-register.yaml's Watching list, not here: deadlines = dates
+# a human owns; triggers = conditions a script owns. Retire rows (status: retired), never
+# delete them. Design: harness-v3.0/specs/trigger-register-spec-2026-07-28.md.
+rows:
+  - id: audit-cadence
+    condition: { predicate: days_since_receipt, type: audit, days: 14 }
+    action: "/audit"
+    rationale: "Cadence table: /audit every 1-2 weeks."
+    resets_on: audit
+    authorization: propose
+    source: ".claude/skills/flight-plan/SKILL.md cadence table"
+    status: active
+
+  - id: compile-raw-pending
+    condition: { predicate: unprocessed_raw, min_count: 1 }
+    action: "/compile"
+    rationale: "Unabsorbed raw intake exists; mirrors the standing loop's existing compile gate (declared here, not changed)."
+    resets_on: compile
+    authorization: propose
+    source: ".claude/skills/standing-loop/SKILL.md compile-on-branch gate"
+    status: active
+
+  - id: discover-post-shard
+    condition: { predicate: articles_changed_since_receipt, type: discover, min_count: 8 }
+    action: "/discover"
+    rationale: "Post-shard cadence made concrete: enough wiki churn since the last discover run to make a cross-corpus pass worthwhile. Threshold operator-tunable."
+    resets_on: discover
+    authorization: propose
+    source: ".claude/skills/discover/SKILL.md (run on-demand or post-shard)"
+    status: active
+
+  - id: conformance-smoke-cadence
+    condition: { predicate: days_since_receipt, type: conformance, days: 14 }
+    action: "/conformance (smoke tier)"
+    rationale: "Smoke tier on cadence per the conformance skill; coverage counted, never vibes."
+    resets_on: conformance
+    authorization: propose
+    source: ".claude/skills/conformance/SKILL.md cadence line"
+    status: active
+
+  - id: scan-telemetry-materialization
+    condition: { predicate: count_lines_matching, glob: "receipts/*.md", regex: "^scan:", min: 10 }
+    action: "Build the materialization sensor over accumulated scan-telemetry lines (backlog v3.0-61 step 2)"
+    rationale: "The 'telemetry has accumulated' condition, declared instead of remembered -- second-query demand evidence per the materialization doctrine."
+    authorization: propose
+    source: "harness-backlog.md v3.0-61; core/methodology/materialization-doctrine.md"
+    status: active
+
+  - id: decisions-pending-freshness
+    condition: { predicate: file_age, path: DECISIONS-PENDING.md, days: 2 }
+    action: "Regenerate DECISIONS-PENDING.md (deploy/decision-inbox.py, write-side session or /standing-loop)"
+    rationale: "The waiting-on-you list decays fast; a stale inbox means decisions ride yesterday's picture."
+    authorization: propose
+    source: "deploy/decision-inbox.py header; /sweep step 8"
+    status: active
+
+  - id: standing-loop-arming-review
+    condition: { predicate: file_age, path: deploy/evidence/operator-standing-loop-authorization.md, days: 90 }
+    action: "Arm-or-retire decision for /standing-loop: it ships staged-unarmed (ready to run; armed only by a committed operator authorization artifact + rollback rehearsal receipt + a schedule). Either arm it (see .claude/skills/standing-loop/SKILL.md section Activation gate; if your authorization artifact uses a dated filename, re-point this row's path at it in the same commit) or record a dated not-running-it decision and retire this row citing it. Once armed, this row becomes a 90-day re-affirmation cadence: re-commit the artifact to reset the clock."
+    rationale: "Staged-unarmed is a graduation state, not a resting state: file_age treats absence as MET, so this row stays lit until the instance decides. Unarmed-by-default remains the SHIPPING invariant (a fresh instance must never arrive armed); STAYING unarmed indefinitely is drift, not safety. Backlog v3.0-70."
+    authorization: propose
+    source: "harness-backlog.md v3.0-70; .claude/skills/standing-loop/SKILL.md section Activation gate"
+    status: active
+
+  - id: r1-arming-review
+    condition: { predicate: file_age, path: deploy/signing-config.yaml, days: 180 }
+    action: "Arm-or-retire decision for the R-1 promotion gate: deploy/signing-config.yaml is absent (staged-unarmed -- nothing can ever be promoted) or has sat unrevisited 180+ days. Either arm it (operator-only key act; see signing-config.yaml.example TO ARM steps) or record a dated not-using-R-1 decision and retire this row citing it. If already armed: re-affirm the pinned keys still match the operator's actual key custody (passphrase-protected, NOT agent-cached -- the file's recorded residual), then re-commit the file to reset this review clock."
+    rationale: "file_age's absence-is-MET makes this row both the never-armed graduation forcer and, once armed, a 180-day pinned-key revalidation cadence. Unarmed-by-default is the shipping invariant; staying unarmed is a decision this row keeps dated instead of drifting. Backlog v3.0-70."
+    authorization: propose
+    source: "harness-backlog.md v3.0-70; deploy/signing-config.yaml.example header"
+    status: active

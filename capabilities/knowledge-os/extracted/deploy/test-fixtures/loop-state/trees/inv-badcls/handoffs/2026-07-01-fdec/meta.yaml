@@ -1,0 +1,23 @@
+# VIOLATION FIXTURE: locked_by_raw_file resolves to a real raw file that IS
+# registered, but its event_class ("compile") is not in {informed_by, lock}.
+# Trips extension check (b): "registered with event_class 'compile',
+# expected one of ['informed_by', 'lock']."
+handoff_id: 2026-07-01-fdec
+status: locked
+tier: T1
+authored: 2026-07-01
+authored_by: fixture-author
+answered: 2026-07-01
+answered_by: fixture-answerer
+locked: 2026-07-01
+locked_by_raw_file: raw/ryan-flock.md
+decision_under_investigation: fixture decision under test
+parent_phase: fixture-phase
+hypothesis_carried: "fixture hypothesis"
+hypothesis_outcome: confirmed
+target_substrate: fixture-substrate
+rounds_completed: 0
+round_modes: []
+round_overrides: []
+supersedes: null
+superseded_by: null

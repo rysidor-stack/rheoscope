@@ -1,0 +1,10 @@
+[
+  {
+    "event": "receipts/compile.md",
+    "origin": "corpus",
+    "origin_evidence": "fixture: deliberately mis-registered asserts_corpus_state=false",
+    "event_class": "compile",
+    "event_class_origin": "explicit",
+    "asserts_corpus_state": false
+  }
+]

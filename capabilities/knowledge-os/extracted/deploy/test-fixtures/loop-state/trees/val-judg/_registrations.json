@@ -1,0 +1,10 @@
+[
+  {
+    "event": "raw/fjudg-lock.md",
+    "origin": "corpus",
+    "origin_evidence": "fixture: judgment-origin lock raw (F6 predicate case)",
+    "event_class": "judgment",
+    "event_class_origin": "judgment",
+    "asserts_corpus_state": false
+  }
+]

@@ -1,0 +1,589 @@
+<!-- Extracted and generalized from a production project.
+     Adapted for rheoscope-harness v{{template_version}}.
+     Domain-specific examples in the source (POS / inventory / external integration)
+     have been genericized; the six drill categories and the structural protocol
+     are preserved verbatim. -->
+
+# Verification Architecture
+
+## How Correctness Is Proven
+
+**Purpose:** This document governs how verification works across the build lifecycle — from spec authoring through test creation, execution, and runtime monitoring. It defines the firewall between Builder and Verifier, the verification spec drill for authoring, and patterns for runtime monitors.
+
+**Loaded by:** Interactive operator sessions (when writing verification specs), CC Verifier sessions (when authoring tests). Referenced by the Controller (for routing decisions) but the Controller loads the execution engine, not this document in full.
+
+**Core principle:** For code, deterministic verification — tests and regression gates — is the primary firewall; substrate separation is defense-in-depth against correlated failure. For decisions with no executable oracle, substrate separation is the primary firewall.
+
+A wrong line of code fails an independently-authored test regardless of which model wrote either side; what separation adds for code is protection against *correlated* failure — the same blind spot writing the bug and the test that misses it. A wrong decision (an architecture choice, a schema design, a scope lock) has no test that can fail, so independent review on a separate substrate is the primary defense there, not a supplement. Whether same-family judges systematically favor their own outputs is an open research question — the evidence is mixed, not settled in either direction. The harness treats substrate separation as risk management against correlated blind spots, not as a proven cure for judge bias.
+
+---
+
+## Part 1: The Firewall
+
+### Three Roles, No Overlap
+
+| Role | What It Does | What It Sees | What It Never Sees |
+|------|-------------|-------------|-------------------|
+| **Builder** | Writes feature code from the build spec | Build spec, codebase, its own session artifacts | Verification tests, verification spec |
+| **Verifier** | Writes tests from the verification spec | Verification spec, business rules, data shapes | Feature code, build spec, codebase |
+| **Runner** | Executes tests against the build | Tests, deployed/built artifact | Nothing else. Reports results. Does not fix. |
+
+The Builder builds toward the spec. The Verifier tests toward the same spec. Neither sees the other's work. The Runner connects them. The operator interprets the results.
+
+### Firewall Rules
+
+**Rule 1 — Substrate Separation.**
+Builder and Verifier operate in separate sessions with separate context. They share no conversation history, no intermediate artifacts, no chain-of-thought. The only shared document is the original project spec from which both the build spec and verification spec are derived — but they receive different documents derived from it.
+
+**Rule 2 — Temporal Ordering.**
+The Verifier should write tests before or concurrently with the Builder, never after. Tests written after the build is visible risk being influenced by the implementation — even indirectly through the orchestrator's framing. Best practice: dispatch the Verifier session immediately after the verification spec is finalized, before the Builder session begins.
+
+**Rule 3 — The Manifest Set Is Upstream; Specs Are Its Projections.**
+For every layer a build touches, the behavioral-manifest set (see `manifest-driven-builds.md`) is the contract. The build spec ("build this" — the assembly plan) and the verification spec ("correct looks like this") are projections of that same manifest set, derived for different consumers. They must be precise enough that two independent agents produce compatible artifacts. On any conflict between either spec and a manifest row, **the manifest wins.** If the manifests are not precise enough, that's a manifest problem — amend the manifest set (append-only amendment log, same-commit currency), never relax the firewall, and never let either spec improvise the answer. For layers with no manifest yet, the specs remain the interface until the extraction lands — and a missing manifest on a gated tier means the next dispatch is the extraction, not the build. *(Amended 2026-07-20: previously "Spec Is the Interface." The behavioral-manifest layer — manifest-driven-builds v2.1, ratified 2026-07-16 — is upstream of both specs.)*
+
+**Rule 4 — Runner Reports to Orchestrator, Not to Builder.**
+Test results go to the operator (or the Controller, which writes them to the flight plan for the operator). The Builder never sees test results directly. If the Builder needs to fix a verification failure, the operator diagnoses the failure and writes fix instructions — the Builder receives the operator's interpretation, not the raw test output. This prevents the Builder from reverse-engineering the tests through iterative failure feedback.
+
+*Failure diagnosis is compatible with this rule.* To triage a verification failure, the operator may dispatch a read-only **Diagnosis session** (Diagnosis Prompt Template, `execution-engine.md` Part 4) — a fresh session on a different model family from the Builder — which reads the failure artifacts, both specs, the test code, and the diff, and returns a forced classification to the operator alone. This breaches nothing: the firewall constrains what the *Builder* may see, never what a post-hoc reader reporting only to the operator may see. The discipline lives in the output path — the diagnosis report never enters a Builder or Verifier session; only its relay-safe block (business-rule-level instructions, with test internals and implementation internals structurally excluded) may be forwarded, and only by the operator after review. This is the core principle applied: the failed test is deterministic evidence already in hand; classifying *why* it failed is a judgment with no executable oracle, which is exactly where substrate separation is the primary firewall — hence the different-family requirement.
+
+**Exception at Tier 3–4:** The Spec Reviewer (not a separate Verifier) reviews the Builder's code directly and sends findings back to the same Builder for fixing. This is substrate sharing. It's acceptable because the risk level is lower and the review is about spec compliance, not independent business-logic verification. Consistent with the core principle's code-domain scoping: the deterministic gates (the regression suite, the build's own tests) remain in force — what the lower tiers drop is the defense-in-depth layer, not the primary firewall.
+
+**Rule 5 — Regression Suite Is Append-Only for Builders.**
+Once a test enters `tests/verified/`, no Builder session may modify or delete it. Tests can only be modified by a Verifier session or by the operator directly. The Builder can write its own tests in `tests/builder/` — these supplement but never substitute for verified tests.
+
+### When the Firewall Applies
+
+| Tier | Firewall Level | Builder/Verifier Separation |
+|------|---------------|---------------------------|
+| T1 | Full | Mandatory. Separate sessions. Separate specs. Runner in between. |
+| T2 | Full | Same as T1. Cascade tests are authored by Verifier. |
+| T3 | Partial | No separate Verifier. Spec Reviewer checks code against spec. Builder writes own tests. |
+| T4 | None | Builder self-tests. Regression gate is the only external check. |
+
+---
+
+## Part 2: Verification Specs
+
+The verification spec is the hardest document in the system to write well. It defines what "correct" means in business terms — precise enough for an independent agent to write tests from, without seeing the implementation.
+
+### What a Verification Spec Contains
+
+A verification spec answers five questions for each business rule the increment implements:
+
+**Where these five sections come from (manifested layers).** For every layer the increment
+touches that has a behavioral manifest (`manifest-format.md`), the five sections below are
+*derived from* that manifest's rows — each section cites the row IDs it derives from
+(invariants from logic/authorization rows, state transitions from the transition-legality
+tables, data shapes from data-manifest rows, boundary conditions and failure modes from the
+failure/async rows and flagged edge rows). The verification spec adds interrogation, not
+invention: behavior that appears in a verification spec but traces to no manifest row is
+either a missing row (amend the manifest — same-commit currency) or an overreach (delete it).
+For unmanifested layers, the sections are authored directly, as before.
+
+**1. Invariants — What must always be true?**
+Statements that hold at all times, regardless of state. Examples (illustrative):
+- "primary_count + secondary_count = total_count for every entity"
+- "Every customer-facing record with an unfulfilled dependency has a corresponding entry in the action queue"
+- "No external notification fires for a record that wasn't acted on"
+
+**2. State Transitions — What changes, from what to what?**
+Explicit state machines with valid transitions. Examples (illustrative):
+- "Queue entry states: Open → Claimed → Acting → Done → Archived. No skipping. No backward except explicit cancel."
+- "An inbound action moves the source-document line status from Open to Partial or Closed."
+
+**3. Data Shapes — What does the data look like?**
+Field names, types, constraints. Examples (illustrative):
+- "Counter: integer, >= 0, never negative."
+- "Monetary amount: decimal, 2 places, must match source document to the penny."
+- "Notification record: { recipient_id, action_id, parent_record_id, sent_at, delivery_status }."
+
+**4. Boundary Conditions — What happens at the edges?**
+Zero, max, negative, empty, duplicate, concurrent. Examples (illustrative):
+- "Inbound action with quantity 0: no state change, no notification."
+- "Inbound action that exceeds the source document's quantity: system rejects or flags, does not silently accept."
+- "Two operators acting on the same source document simultaneously: no double-count."
+
+**5. Failure Modes — What happens when something breaks mid-flow?**
+Partial cascade, network failure, bad data. Examples (illustrative):
+- "If state update succeeds but notification fails: state stays updated, notification retries, parent record gets a note that notification is pending."
+- "If external-system write times out: retry once, then mark as FAILED with manual-follow-up flag."
+- "Malformed input: reject with specific error, do not silently process."
+
+### Verification Spec Template
+
+See `specs/verification-spec.md.template` for the standalone fill-in form. The structure reproduced here for reference:
+
+```markdown
+# Verification Spec: [increment name]
+
+**Derived from manifests:** [manifest file(s) + row-ID range — e.g. `manifests/<surface>/<layer>-MANIFEST.md` rows `<id>`..`<id>`] (or: none — unmanifested layer)
+
+## Business Rules
+[Plain English description of what this increment does — from the user/business perspective, not the implementation perspective.]
+
+## Invariants
+- [Always-true statement 1]
+- [Always-true statement 2]
+
+## State Transitions
+| From State | Action | To State | Conditions |
+|-----------|--------|----------|------------|
+| | | | |
+
+Invalid transitions (must be rejected):
+- [state] → [state]: [why it's invalid]
+
+## Data Shapes
+| Field | Type | Constraints | Notes |
+|-------|------|------------|-------|
+| | | | |
+
+## Boundary Conditions
+| Condition | Expected Behavior |
+|-----------|------------------|
+| [zero/empty] | |
+| [max/overflow] | |
+| [duplicate] | |
+| [concurrent] | |
+
+## Failure Modes
+| Failure | System Behavior | Recovery |
+|---------|----------------|----------|
+| [what breaks] | [what happens] | [how it recovers or escalates] |
+
+## Test Guidance for Verifier
+[Optional: specific notes about test approach. NOT implementation details — business context that helps the Verifier write better tests.]
+```
+
+---
+
+## Part 3: The Verification Spec Drill
+
+Writing verification specs should not depend on the orchestrator manually thinking through every edge case alone. The drill is a structured protocol for an interactive session where the operator drafts the initial spec and the AI systematically stress-tests it.
+
+**The drill's role under the manifest layer.** For manifested layers, the drill does not
+re-derive what the rows already pin — it hunts what the manifest set MISSED: underdetermined
+behavior, missing variant-axis combinations, preconditions no seed reaches, failure paths no
+row names. A drill finding on a manifested layer therefore resolves in exactly one of two
+ways: a new/amended manifest row (the normal case — append via the amendment protocol,
+`manifest-format.md` §8), or a verification-spec-only note when it is genuinely about the
+verification approach rather than the behavioral contract. A drill that only re-states
+existing rows found nothing.
+
+### How the Drill Works
+
+**Step 1 — Operator drafts business rules.**
+The operator writes the business logic in plain English. Example: "When an inbound action completes against a source document, the relevant counter increases by the action's quantity, the queue entry moves to Done, the linked parent record gets updated, and the relevant downstream stakeholder gets notified."
+
+**Step 2 — The AI runs the drill.**
+The AI asks questions in six categories, one category at a time. For each question, the operator answers with the business rule — or says "I don't know, I need to check with [person]." Every "I don't know" becomes an Open Question in the flight plan.
+
+**Category 1: Boundaries**
+- What happens at zero? (Action with quantity 0.)
+- What happens at max? (Action with quantity greater than the source allows.)
+- What happens with negative numbers? (Reversal/credit scenario.)
+- What happens with decimal quantities? (Fractional values — possible or not?)
+
+**Category 2: Partial Operations**
+- What if 3 of 5 succeed? (Partial completion.)
+- What if results arrive across multiple events? (Multiple partial completions.)
+- What if a result arrives that wasn't expected per the source? (Unexpected element.)
+
+**Category 3: Failures**
+- What if the primary write succeeds but the notification fails?
+- What if the external system is down when the integration runs?
+- What if the recipient's contact info is missing or invalid?
+- What if the cascade completes partially — steps 1–3 succeed, step 4 fails?
+
+**Category 4: Concurrency**
+- What if two operators act on the same source document at the same time?
+- What if an element is being acted on while someone else is editing the parent record?
+- What if a recipient is being notified while their record is being modified?
+
+**Category 5: Bad Data**
+- What if the source document references an entity that doesn't exist?
+- What if the recipient has been deleted or merged?
+- What if the quantity field contains non-numeric data?
+- What if a required field is blank?
+
+**Category 6: Business Logic Traps**
+These are specific to the domain. The AI asks questions that probe implicit business rules:
+- Does the inbound action trigger downstream invoicing, or is that a separate step?
+- If a recipient has an unpaid balance, does notification still happen?
+- If the same element appears on two different parent records for the same recipient, which parent record gets updated?
+- If a source document is for internal use (not customer-facing), does the notification step get skipped or does the cascade differ?
+
+**Step 3 — The AI updates the spec.**
+After each answer, the AI adds the rule to the verification spec. At the end of the drill, the spec should have complete invariants, state transitions, boundary conditions, and failure modes — all in the operator's words, all verified against the operator's understanding of the business.
+
+**Step 4 — Unresolved questions become blockers.**
+Any question the operator couldn't answer goes into the flight plan's Open Questions as a blocker. The verification spec is not finalized until all questions are resolved. If a domain stakeholder needs to weigh in, the question says so explicitly.
+
+**Step 5 — Final check.**
+The AI reads the completed spec back and asks: "If an agent builds exactly this, and another agent tests exactly this, and all tests pass — are you confident the feature is correct?" If the operator hesitates, dig into where the hesitation is. That's the undiscovered edge case.
+
+### When to Run the Drill
+
+- **T1 increments:** Always. No exceptions. The drill is mandatory before build begins.
+- **T2 increments:** Always for the cascade as a whole. Individual steps may be lighter.
+- **T3 increments:** Recommended. The drill catches implicit business rules that the orchestrator might not think to specify.
+- **T4 increments:** Skip. The build spec is sufficient.
+
+---
+
+## Part 4: Verifier Agent Behavior
+
+The Verifier is a CC session that receives a verification spec and produces a test suite. It has no access to the codebase, the build spec, or the Builder's output.
+
+### Verifier Prompt Template
+
+```
+You are writing verification tests for: [increment name]
+
+## Verification Spec
+[FULL TEXT of verification spec — pasted in, not a file reference]
+
+## Your Constraints
+
+You have NO access to:
+- The feature code (it may not exist yet)
+- The build spec (you don't know how this will be implemented)
+- The codebase (you don't know the architecture)
+
+You write tests based ONLY on the verification spec.
+Your tests verify BUSINESS RULES, not implementation details.
+
+## Your Job
+
+For each invariant, state transition, boundary condition, and failure mode in the spec:
+
+1. Write a test that checks whether the rule holds.
+2. The test must be executable against a running system (API calls, database queries, HTTP requests — whatever the spec implies).
+3. Each test documents:
+   - What business rule it verifies (reference the spec by section)
+   - What input it uses
+   - What output it expects
+   - Why that output is correct per the spec
+
+Write tests to: tests/verified/[increment-name]/
+
+## Test Quality Standards
+
+- Tests must be independent (no test depends on another test's output).
+- Tests must be deterministic (same input → same result every time).
+- Tests must be specific (one business rule per test, not "test everything").
+- Tests must fail meaningfully (failure message says which business rule was violated, not just "assertion failed").
+
+## Execution Constraints
+
+[Principles 1-6 instantiated — same as Builder, applied to test authoring.
+Durable: write each test file as you complete it, not all at once.
+Completion markers: one marker per test file confirming it was written and is syntactically valid.
+Result integrity: each test file must be parseable/runnable — not just a file that exists.]
+
+## Report Format
+When done, report:
+- How many tests written
+- Which business rules each test covers
+- Any gaps: business rules in the spec that you could not write a test for (and why)
+- Completion marker locations
+```
+
+**Coverage-bearing receipts (manifested layers).** A verify/QA receipt for a manifested
+layer cites manifest rows replayed / passed / failed by row ID, PLUS the completeness-hunt
+receipts behind the row total (source cross-check, variant matrix, precondition sweep,
+adversarial review, twin-build divergence where run). "Verified" or "QA passed" without row
+coverage is not a claim this architecture accepts — unquantified assurance is how
+overconfidence compounds across sessions. Red rows are classified via the amendment log:
+declared nonconformance (open amendment behind it — a work queue) vs undeclared (no
+amendment — a defect); the receipt says which.
+
+---
+
+## Part 5: Runtime Monitors
+
+Build-time verification proves the code is correct when shipped. Runtime monitors prove the system is still correct while running in the real world.
+
+### What Runtime Monitors Catch
+
+Things that aren't code bugs but cause incorrect behavior:
+- External API changes (an integration target updates response formats or HTML templates without warning)
+- Data drift (counters diverge between systems over time)
+- Infrastructure issues (notification delivery failures, timeout patterns)
+- Business logic edge cases that only appear with real-world data patterns
+- Race conditions or concurrency issues that don't manifest in test environments
+
+### Monitor Structure
+
+A runtime monitor is simple:
+
+1. **Query:** Get a piece of data from the running system.
+2. **Check:** Compare it to an expectation or cross-reference it against another source.
+3. **Alert:** If mismatch, notify the orchestrator.
+4. **Log:** Record the check and its result regardless of pass/fail.
+
+### Monitor Template
+
+```javascript
+// monitor: [monitor-name]
+// frequency: [nightly | daily | weekly | hourly]
+// tier: [T1 | T2 | T3]
+// what it checks: [plain English description]
+// alert on: [what constitutes a failure]
+
+async function run() {
+  const results = {
+    monitor: "[monitor-name]",
+    run_date: new Date().toISOString(),
+    checks: []
+  };
+
+  // 1. Query
+  const actual = await getActualState();
+
+  // 2. Check
+  const expected = await getExpectedState(); // or a hardcoded invariant
+  const passed = compare(actual, expected);
+
+  results.checks.push({
+    check: "[what was compared]",
+    expected: expected,
+    actual: actual,
+    status: passed ? "PASS" : "FAIL"
+  });
+
+  // 3. Log
+  await writeResults(results);
+
+  // 4. Alert
+  if (!passed) {
+    await alert("[notification channel]", results);
+  }
+
+  return results;
+}
+```
+
+### Common Monitor Patterns
+
+**Schema / Parser Health Monitor**
+- Query: Fetch a live response from an external system (e.g., a vendor API, a scraped page).
+- Check: Compare response structure against a stored snapshot of expected structure. Fields present? Types correct? Data extractable?
+- Alert on: Any structural change.
+- Frequency: Nightly.
+- Why: External systems change without warning. This is your early warning.
+
+**Reconciliation Monitor**
+- Query: Get the same count/value from two systems that should agree (e.g., a counter in your database vs. the same counter in an external system).
+- Check: Values match (or are within a defined tolerance).
+- Alert on: Any discrepancy beyond tolerance.
+- Frequency: Daily.
+- Why: Drift accumulates. A small per-transaction rounding error becomes a material discrepancy over weeks.
+- Cutover counterpart: during a strangler cutover, this monitor pairs with the differential oracle (Part 6) — the oracle validates correctness *at cutover*; this monitor watches *ongoing* drift afterward. They are complements, not substitutes.
+
+**Cascade Completeness Monitor**
+- Query: Find recent trigger events (e.g., inbound actions completed in the last 24 hours).
+- Check: For each trigger, verify that all downstream steps completed (counter updated, queue entry updated, parent record updated, notification sent).
+- Alert on: Any incomplete cascade.
+- Frequency: Daily or weekly depending on transaction volume.
+- Why: Individual steps might fail silently. The cascade test at build time proves the chain works; the monitor proves it keeps working.
+
+**Delivery / Execution Monitor**
+- Query: Get items that were supposed to happen (notifications sent, records created, messages processed).
+- Check: Delivery/execution status is confirmed, not just "sent."
+- Alert on: Failure rate above threshold.
+- Frequency: Daily.
+- Why: The system can correctly create a notification but the delivery channel can fail.
+
+### When to Build Monitors
+
+Monitors are not a build-time artifact. They're deployed after the increment ships and enters operation.
+
+- **T1 increments:** Reconciliation monitor and schema health monitor are mandatory. Deploy with the feature.
+- **T2 increments:** Cascade completeness monitor is mandatory if the cascade runs in production (not just on manual trigger).
+- **T3 increments:** Optional. Build if the data is important enough that drift would cause problems.
+- **T4 increments:** Skip.
+
+Monitors are listed in the flight plan's Layer 2 verification status column once deployed. A monitor in alert state is a flag at the next hold point.
+
+### Evidence Artifacts and Data Safety
+
+Monitors, test runs, and every other evidence channel (screenshots, differential outputs, telemetry logs) write artifacts to disk. All of them are bound by `core/governance/DATA-POLICY.md`: sensitive regions are masked at capture, entities are referenced by ID rather than PII, every artifact type carries a declared retention window with receipted purge, and no raw sensitive personal data appears in any artifact. A feature that produces evidence artifacts may not run against customer data until its build demonstrates conformance with that policy — the gate language each such build spec must carry is in the policy's consumption contract.
+
+### Visual Evidence (UI Tiers)
+
+Tests prove behavior in text; for user-facing work, the operator's highest-bandwidth verification channel is *seeing it*. For **T4 increments and UI-touching T3 increments**, the build produces a **visual evidence artifact** alongside the textual gates — an image the operator can judge without reading any code. "UI-touching" is an **operator label assigned at planning time, together with the tier** — tier and label are both planning decisions, never inferred mid-build by a heuristic.
+
+**The artifact.** A screenshot of each changed screen or flow state is the **required floor**. A short recording is **optional**, for behavior a still image would miss (an animation, a multi-step flow). Every artifact carries a **one-line caption** saying in plain words what it shows — image plus caption must stand on their own, no code-reading required. A T4 increment with no user-visible change has no changed screen to capture; record that in the verification status rather than forcing a meaningless image.
+
+**Where stored, how referenced.** Captures live under `results/visual-evidence/[increment]/`; file names are built from increment names, dates, and IDs only (a `DATA-POLICY.md` hard rule — never PII). The increment's row in the flight plan's Layer 2 verification status references the artifact, so the evidence is one click from the cockpit.
+
+**Baselines and diffs.** An **approved baseline** — the operator-accepted reference image for a screen — lives in `results/visual-evidence/baselines/`. Where a baseline exists, the capture step attaches a **visual diff** against it with changed regions flagged. The diff is **evidence for operator review, never an automatic pass/fail**: an expected change (the increment's purpose) and an unexpected one (a regression) look identical to a pixel comparator; only the operator can tell them apart. When an increment intentionally changes a screen, the operator approves the new capture as the replacement baseline; the superseded baseline is purged, receipted, per `DATA-POLICY.md` § Retention and purge. Baselines carry their own retention class there — **until superseded** — so the 90-day purge of run captures never deletes the diff capability out from under the next increment.
+
+**Masking is non-negotiable.** Screenshots are exactly where customer names, emails, and balances leak out of production-grade controls into loose files. Masking is applied **at capture** by the capture tool itself — the binding region list lives in `core/governance/DATA-POLICY.md` § Mask-at-capture and is deliberately not restated here: one list, one home, no fork. Captures against fully synthetic data may skip masking under the policy's carve-out, but the artifact must record that its data source was synthetic.
+
+**Reviewer checklist (canonical home — the prompt templates point here, they do not copy this).** Whoever reviews visual evidence (the operator, or a Spec Reviewer at T3) checks:
+
+1. **No unmasked sensitive region visible** — against `DATA-POLICY.md` § Mask-at-capture, the binding list.
+2. **The caption matches the image** — the artifact actually shows the behavior the increment claims.
+3. **Every flagged diff region is dispositioned** — expected (the increment's change) or escalated to the operator (possible regression). No unexplained changed region passes.
+4. **Baseline currency** — if the screen changed on purpose, the new baseline is operator-approved and the old one superseded (purged, receipted).
+5. **Storage discipline** — artifacts under `results/visual-evidence/[increment]/`, file names free of PII, synthetic data source recorded where the masking carve-out was used.
+
+**Capture tooling (referenced, never bundled).** Use the project's existing UI-stack tooling — e.g. Playwright (whose screenshot baselines, visual diffs, and element masking cover this entire subsection natively) or Puppeteer. Illustrative Playwright shape — masking happens at capture, regions per `DATA-POLICY.md` § Mask-at-capture:
+
+```javascript
+await expect(page).toHaveScreenshot('checkout-summary.png', {
+  mask: [
+    page.locator('[data-testid="customer-name"]'),
+    page.locator('[data-testid="customer-email"]'),
+  ],
+});
+```
+
+If the project has **no usable capture tooling**, record **"visual evidence unavailable"** in the increment's verification status and the textual gates stand unchanged — best-effort, like the drift sensors. A missing screenshot never blocks a verified build; a present screenshot never substitutes for the tests.
+
+**Data safety (binding).** Visual evidence artifacts are governed by `core/governance/DATA-POLICY.md`. Its consumption contract requires every build spec that produces them to carry this gate language, verbatim or strengthened:
+
+> *"Capture applies the mask-at-capture region list (DATA-POLICY § Mask-at-capture) before any artifact is written. The reviewer checklist includes the no-unmasked-sensitive-region check. This build ships or schedules the 90-day purge for `results/visual-evidence/`. No runs against customer data until all three hold."*
+
+The purge obligation is real work, not a sentence: the first increment that produces visual evidence either ships the 90-day receipted purge for `results/visual-evidence/` captures or schedules the manual purge in the flight plan (per `DATA-POLICY.md` § Retention and purge — manual is acceptable until purge tooling exists). Baselines are exempt from that purge; they live by their own until-superseded window.
+
+**Conformance is demonstrated, not declared.** This subsection existing does not make captures safe. Before this project's first capture runs against customer data, the operator reviews that first capture directly against `DATA-POLICY.md` — masking applied, storage and naming correct, purge shipped or scheduled. The first real capture is the conformance event; the build's own claim of conformance is not the evidence.
+
+*(Deferred, maximalist forms — logged, not built: recording/video diffing; CI-wired visual-regression suites on every push; auto-generated baseline galleries. Don't build them until reviewing stills by hand actually hurts.)*
+
+---
+
+## Part 6: Architecture Separation (SaaS Pattern)
+
+For projects where the long-term goal is to own the business logic and swap the underlying system, verification specs must distinguish between two layers:
+
+| Layer | What It Contains | Where It Lives | What Happens at Swap |
+|-------|-----------------|---------------|---------------------|
+| **Business Logic** | Workflow rules, state machines, calculations, data models | Your stack (your database, your API, your app) | Stays. This is the product. |
+| **Sync Adapter** | External system parsing, session management, data push/pull | Integration layer (MCP server, API client, etc.) | Gets replaced. One adapter per external system. |
+
+When writing verification specs, be explicit about which layer a rule belongs to:
+
+- "Inbound action updates the counter in [our database]" → business logic test.
+- "MCP server correctly parses [external system]'s response" → sync adapter test.
+
+Both need tests. They fail for different reasons and get fixed by different agents. If they're entangled in the code, they'll be entangled in the tests, and separating them later is a rewrite.
+
+**Verification spec convention:** Use a `## Layer` annotation on each invariant:
+
+```markdown
+## Invariants
+- [BL] primary_count + secondary_count = total_count (for every entity, in our database)
+- [SA] External system's inventory response contains product_id, quantity, location fields
+- [BL] Inbound action creates a record with item_id, quantity, timestamp, operator_id
+- [SA] Sync adapter write-back succeeds and round-trip read confirms the written value
+```
+
+`[BL]` = business logic. `[SA]` = sync adapter. When you eventually swap the external system, all `[SA]` tests get rewritten for the new adapter. All `[BL]` tests stay unchanged — they prove your product still works regardless of what's underneath.
+
+### The Differential Oracle (Strangler Cutover)
+
+For strangler migrations — where the legacy system is still running while increments cut functionality over to the new stack — the legacy system doubles as a free verification asset: during cutover, run the **same input through legacy and new, and diff the outputs**. A mismatch is a **flag for the operator**, never an automatic failure.
+
+**The legacy system is a behavior oracle, never "the truth."** It tells you what the system *did*, not what it *should do*. Some of its behaviors are bugs the migration exists to fix; treating its output as correct-by-definition would re-import the very defects you are removing. The oracle's value is that it is un-fakeable: greenfield code with thin test coverage can pass its own tests while quietly diverging from years of accumulated behavior — the diff catches what the thin tests don't yet cover.
+
+**Scope (transitional by design).** The pattern applies only to strangler-cutover increments while the legacy system is still available, and it retires when legacy is decommissioned. It **pairs with, does not replace,** the reconciliation monitors in Part 5: monitors watch *ongoing* drift between two live systems; the differential oracle validates correctness *at cutover*.
+
+**Classifying mismatches.** Reuse the `[BL]`/`[SA]` annotation from this Part:
+
+- **`[BL]` business-logic mismatch** — a real divergence. Either the new system is wrong (fix it), or the difference is intentional (record it in the approved-divergence ledger below). The operator decides which; the diff runner never decides for them.
+- **`[SA]` sync-adapter noise** — representation differences with no business meaning (formats, encodings, field ordering, timestamps). Normalize these **before** diffing so they never surface as mismatches at all.
+
+**The approved-divergence ledger.** Some divergence is the point — a legacy bug fixed on purpose, a deliberate behavior change. Record each one in the ledger so intentional fixes stop reading as regressions on every subsequent run. The ledger lives at `results/differential/approved-divergences.md`, is operator-maintained (only the operator moves a mismatch from flagged to approved), and carries its own retention class in `DATA-POLICY.md` — **life of the cutover; the 90-day purge of run outputs never touches it.** Template:
+
+```markdown
+# Approved Divergences — [project]
+
+| Date | Input class | Legacy behavior | New behavior | Why approved | Approved by | First flagged in |
+|------|-------------|-----------------|--------------|--------------|-------------|------------------|
+| [date] | [e.g. refunds with zero-amount lines] | [rounds tax per line] | [sums, then rounds] | [legacy rounding bug, fixed on purpose] | [operator] | [diff-run artifact file name] |
+```
+
+In the minimal form the ledger is documentation for human review: when a diff run flags a mismatch, check the ledger before treating it as a defect. *(Deferred, maximalist form: a structured-JSON ledger the diff runner consumes to auto-suppress approved divergences. Don't build it until ledger-checking by hand actually hurts.)*
+
+**Differential-run artifact.** Each run writes one artifact to `results/differential/` (file names from dates, increment names, and IDs only — never PII). The harness prescribes the record shape; the diff runner that produces it is **project-built per this pattern**, not harness code:
+
+```json
+{
+  "run_date": "[YYYY-MM-DD]",
+  "increment": "[increment name]",
+  "data_source": "synthetic | customer",
+  "records": [
+    {
+      "input": "[input reference — entities by opaque ID, never name/email]",
+      "legacy_output": "[normalized output]",
+      "new_output": "[normalized output]",
+      "match": false,
+      "class": "BL | SA | null when match is true",
+      "approved_divergence": "[ledger row reference, or null if unreviewed]"
+    }
+  ]
+}
+```
+
+Mismatches are **operator-gated**: every `match: false` record with no `approved_divergence` reference is a flag for the operator to disposition — fix the new system, or approve and ledger the divergence.
+
+**Data safety (binding).** Differential outputs are evidence artifacts under `core/governance/DATA-POLICY.md`. Its consumption contract requires every build spec that produces them to carry this gate language, verbatim or strengthened:
+
+> *"Diff outputs reference entities by ID; any PII field is enumerated and justified in this spec; no raw sensitive personal data ever. This build ships or schedules the 90-day purge for `results/differential/`. No customer-data runs until these hold."*
+
+Runs against **fully synthetic data** may skip ID-minimization, mirroring the policy's mask-at-capture carve-out — but the artifact must record `"data_source": "synthetic"`, and the hard rules still bind: no raw sensitive personal data in any artifact, synthetic or not (use synthetic or tokenized stand-ins, never real sensitive values, even in test fixtures).
+
+**Adopting this pattern (numbered steps, per project):**
+
+1. Tag the cutover increment as differential-oracle work in the flight plan and name the input classes legacy will oracle.
+2. Build the diff runner in the project: same input → both systems → normalize `[SA]` representation noise → diff → write the run artifact in the shape above.
+3. Create `results/differential/approved-divergences.md` from the ledger template (empty is fine — it fills as intentional divergences are approved).
+4. Ship the 90-day receipted purge for `results/differential/` run outputs, or schedule the manual purge in the flight plan (per `DATA-POLICY.md` § Retention and purge — manual is acceptable until purge tooling exists). The ledger is exempt: it carries the life-of-cutover window.
+5. Before any run against customer data, verify the gate language above holds against `DATA-POLICY.md` — the operator owns this gate; the build's own claim of conformance is not the evidence.
+6. At legacy decommission, retire the pattern and archive the ledger (receipted): it is the permanent record of every intentional behavior change shipped during the migration.
+
+---
+
+## Part 7: The Honest Limitations
+
+**The orchestrator is a shared substrate.** The operator writes both specs. If the operator's mental model of the business logic is wrong, both specs inherit the error. Mitigation: the Verification Spec Drill forces explicit reasoning about edge cases. For T1 money flows, a domain stakeholder reviews the verification spec in plain English. The stakeholder doesn't need to understand tests — they need to confirm the business rules are right.
+
+**The Verifier is only as good as the spec.** Vague specs produce vague tests. "Counter updates correctly" is not testable. "Counter increases by exactly the action's quantity, verified by round-trip read" is testable. The drill exists to force this precision.
+
+**Runtime monitors have blind spots.** They check what you thought to check. A failure mode you didn't anticipate won't have a monitor. Mitigation: after every production incident, ask "what monitor would have caught this?" and build it. The monitor suite grows from experience, not just planning.
+
+**The firewall adds latency.** Three-agent separation means three CC sessions for a T1 increment instead of one. This is real cost — tokens and time. The cost is justified by the risk level. If it feels too expensive, check the tier assignment. Maybe it's actually T3 and the lighter process is appropriate. But never downgrade a tier to save tokens on something that touches money.
+
+**Tests can have bugs too.** A Verifier agent can write a test that passes on correct code but also passes on incorrect code (weak test). Mitigation: the Verification Spec Drill forces specific expected values, not just "assert something." And over time, production incidents that slip through tests reveal which tests need strengthening. At T1, the **mutation pass (Part 8)** closes this limitation directly: it deliberately breaks the code and checks that the tests notice — a surviving mutant is a weak test caught before a production incident teaches the same lesson.
+
+---
+
+## Part 8: The Mutation Pass (Tests Grade the Tests)
+
+Build-time verification rests entirely on the verified tests — and Part 7 admits its sharpest limitation ("Tests can have bugs too"): a Verifier can write a weak test that passes on correct code *and* on broken code, proving nothing. The mutation pass exists to close that gap. It does not verify the code; it verifies the tests.
+
+**What it is.** After an increment's verification run passes, deliberately break the code in small, representative ways — flip a comparison operator, shift a boundary, negate a condition. Each small break is a **mutant**. Re-run the increment's verified tests against each mutant: a suite that fails on the mutant has **killed** it (the tests were really testing); a mutant that **survives** every test is the signature of a weak test — the behavior changed and no test noticed.
+
+**Where it sits (T1; T2 optional).** The pass is an **optional Runner step at T1** — Step 4b of the execution engine's T1 protocol — run **after** the standard verification run and the post-build regression gate have passed. It grades the tests; it never replaces the gates. **T2 is optional with the same mechanics.** Lower tiers skip it: mutation runs are compute-heavy (the suite re-runs once per mutant), and gating the cost to the money tier is the deliberate bound.
+
+**Diff-scoped, run manually — honest scheduling note.** The pass mutates the **increment's changed code only** (diff-scoped), never the whole codebase. And it runs **manually, per increment, by the Runner**: the harness ships no scheduler, so "nightly mutation runs" do not operationally exist here. If the project later wires its own scheduler (CI cron or an operate-phase trigger), nightly or whole-suite runs become possible — until then, claiming them would imply machinery that isn't there.
+
+**Flag, never gate.** Output per run: a **mutation score** (killed / total) and the **list of surviving mutants**, written to `results/mutation-run-[date].json` — the mutation tool's native report satisfies this if it records both. A surviving mutant is an **operator flag**, not a build failure: the operator routes it to a **Verifier session** to strengthen the weak test — never to the Builder (`tests/verified/` stays append-only for Builders, Part 1 Rule 5). A build-fail threshold is **optional and off by default**, and must not be enabled until a **stable kill-rate baseline** exists across enough T1 increments to know what normal looks like — a gate calibrated on one run is noise enforcing itself.
+
+**Invariants held.** Mutants are applied to a throwaway working copy and discarded — never committed, never left in the tree. The pass never modifies `tests/verified/`. The verification and regression gates have already passed before it starts; nothing in it reopens them.
+
+**Artifact classification.** `results/mutation-run-[date].json` is code-derived — mutants and kill rates come from the code, never from customer data — so it is **test-run class under `core/governance/DATA-POLICY.md`**: no PII by construction, no declared retention window; keep it as long as its audit value warrants.
+
+**Tooling (referenced, never bundled).** Use the project stack's mutation framework — e.g. Stryker (JS/TS), mutmut (Python), PIT (JVM), cargo-mutants (Rust). The harness prescribes the pass, not the tool. If the stack has no usable mutation framework, record **"mutation testing unavailable"** in the increment's verification status and the textual gates stand unchanged — best-effort, like the drift sensors.
+
+*(Deferred, maximalist forms — logged, not built: kill-rate dashboards and trend tracking; CI wiring; scheduled whole-codebase runs; graduating the pass to a blocking threshold once a stable kill-rate baseline exists.)*
+
+---
+
+*Document version: 1.0*
+*Created: April 2026*
+*Origin: Unified build architecture merger. Absorbs Principle 7 (Verification Firewall), an earlier project's Verification Layer Addendum (generalized), and new Verification Spec Drill protocol. Project-neutral — instantiate with project-specific verification specs.*
+*Philosophy: Deterministic verification is the primary firewall for code; substrate separation is defense-in-depth there and primary where no test can exist. Specs drive everything. The drill forces precision. Monitors close the loop. Trust is earned by artifacts, not assertions.*

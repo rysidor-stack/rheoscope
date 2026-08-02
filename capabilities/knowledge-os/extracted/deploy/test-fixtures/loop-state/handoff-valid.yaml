@@ -1,0 +1,22 @@
+# Fixture: a fully-conformant current-protocol handoff meta.yaml (schema-only
+# check via check_handoff() -- no disk cross-checks, see run_self_test()).
+# Expected: PASS (no violations after disk-coherence lines are stripped).
+handoff_id: fixture-valid-handoff
+status: locked
+tier: T1
+authored: 2026-07-01
+authored_by: fixture-author
+answered: 2026-07-01
+answered_by: fixture-answerer
+locked: 2026-07-02
+locked_by_raw_file: raw/fixture-valid-handoff-lock.md
+decision_under_investigation: fixture decision under test
+parent_phase: fixture-phase
+hypothesis_carried: "fixture hypothesis"
+hypothesis_outcome: confirmed
+target_substrate: fixture-substrate
+rounds_completed: 0
+round_modes: []
+round_overrides: []
+supersedes: null
+superseded_by: null

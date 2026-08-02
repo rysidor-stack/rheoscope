@@ -1,0 +1,9 @@
+# Fixture: PRE-protocol locked folder (folder date 2026-05-01 < PROTOCOL_EFFECTIVE
+# 2026-05-27) with NO locked_by_raw_file key at all -- the class-1 shape from the
+# 2026-07-06 adjudication. Expected: extension check (b) emits a NOTE (named,
+# counted), NOT a violation; exit 0. The as-authored legacy field shape is the
+# intentional historical record (base checks are lenient for it too).
+handoff_id: 2026-05-01-f-prepp
+status: locked
+decision: fixture pre-protocol decision text
+locked: 2026-05-01

@@ -1,0 +1,107 @@
+<!-- Extracted and generalized from a production project (Tier protocols section).
+     Adapted for rheoscope-harness v{{template_version}}.
+     Tier examples customizable via project.yaml.tier_examples. -->
+
+# Tier Definitions (T1–T4)
+
+The four tiers govern how much verification effort an increment receives. Tier is assigned during planning; never downgraded mid-build.
+
+**Rule of thumb:** when in doubt, go higher. The cost of over-verification is one extra CC session. The cost of under-verification is a production bug.
+
+---
+
+## T1 — Full Firewall
+
+**When:** {{tier_examples.T1}}. *(Default example: money, inventory, tax, invoices, payments — anything where silent errors cost dollars or break trust irrecoverably.)*
+
+**Protocol shape:**
+- Pre-build regression gate (all prior verified tests must PASS).
+- Builder builds. Builder does NOT see verification tests or verification spec.
+- Runner runs the increment's verification tests against the build.
+- Code-quality reviewer reviews the diff.
+- Post-build regression gate (all verified tests must still PASS — no regressions).
+- Optional mutation pass after the gates (tests-grade-the-tests, diff-scoped; surviving mutant = operator flag, never blocking until a stable kill-rate baseline exists) — see `verification-architecture.md` Part 8; also optional at T2, same mechanics.
+- Flight plan update is a hard gate before the next increment.
+
+**Prerequisite:** verification spec MUST be written and verification tests MUST be written (by a prior Verifier session) before build begins. If either is missing, the Controller stops the line.
+
+**Behavioral-manifest gate:** every touched layer CERTIFIED (LIVE satisfies) in the surface's MANIFEST-INDEX before any build dispatch fires (`manifest-format.md` §7).
+
+**Failure behavior:** if any verification test fails, the Controller stops. The operator diagnoses. The original Builder is never shown the test results.
+
+---
+
+## T2 — Full Firewall (Cascade Variant)
+
+**When:** {{tier_examples.T2}}. *(Default example: multi-step workflows where one action triggers downstream actions.)*
+
+**Protocol shape:** identical to T1 with one addition: the Runner also executes **cascade completeness tests** — end-to-end tests that trigger step 1 of the cascade and verify all downstream steps fire correctly. Individual steps may also have unit-level tests, but the cascade test is what proves the chain works.
+
+**Behavioral-manifest gate:** every touched layer CERTIFIED (LIVE satisfies) in the surface's MANIFEST-INDEX before any build dispatch fires (`manifest-format.md` §7).
+
+---
+
+## T3 — Spec Review + Code Quality
+
+**When:** {{tier_examples.T3}}. *(Default example: data integrity, customer records, stateful operations — things that matter but aren't money.)*
+
+**Protocol shape:**
+- Pre-build regression gate.
+- Builder builds. Builder may write own tests (substrate sharing is acceptable at T3).
+- UI-touching T3 (an operator label assigned at planning, with the tier): the Builder also captures masked visual evidence — see `verification-architecture.md` Part 5, "Visual Evidence".
+- Spec Reviewer subagent reads the actual code (does NOT trust the implementer's report) and verifies it matches the build spec.
+- Code-quality reviewer reviews the diff.
+- Post-build regression gate.
+- Flight plan update.
+
+**No separate Verifier session.** The Spec Reviewer plays the verification role; the firewall is partial.
+
+**Behavioral-manifest gate:** every touched layer EXTRACTED or better (`manifest-format.md` §7).
+
+---
+
+## T4 — Builder Self-Verified
+
+**When:** {{tier_examples.T4}}. *(Default example: UI, notifications, display logic, low-risk features.)*
+
+**Protocol shape:**
+- Pre-build regression gate.
+- Builder builds, writes tests, self-reviews per checklist.
+- Builder captures masked visual evidence of each changed screen (screenshots; masked at capture) — see `verification-architecture.md` Part 5, "Visual Evidence".
+- Post-build regression gate.
+- Flight plan update.
+
+No external review beyond the regression gate. The Builder grades its own work; only the regression suite can catch regressions.
+
+**Behavioral-manifest gate:** exempt — the exemption and its reason are named in the receipt (`manifest-format.md` §7).
+
+---
+
+## Firewall by tier
+
+| Tier | Firewall Level | Builder/Verifier Separation | Manifest Gate |
+|------|---------------|-----------------------------|----------------|
+| T1   | Full          | Mandatory. Separate sessions. Separate specs. Runner connects them. | CERTIFIED |
+| T2   | Full          | Same as T1. Cascade tests are authored by Verifier. | CERTIFIED |
+| T3   | Partial       | No separate Verifier. Spec Reviewer checks code against spec. Builder writes own tests. | EXTRACTED |
+| T4   | None          | Builder self-tests. Regression gate is the only external check. | exempt-with-named-reason |
+
+---
+
+## Tier assignment heuristics
+
+- If silent errors cost money or break user trust irrecoverably → **T1**, always.
+- If one action triggers downstream actions and the cascade must complete atomically → **T2**.
+- If the data is important but not money — customer records, stateful operations, audit trails → **T3**.
+- If failures are visible and recoverable, and silent corruption isn't a risk → **T4**.
+- If you have to think about whether it's T2 or T3, it's **T2**.
+
+Never downgrade a tier to save tokens on something that touches money.
+
+---
+
+## Customization
+
+Tier examples are configurable per project via `project.yaml.tier_examples`. The shape of the four tiers — what counts as full firewall, partial, none — is invariant. The *examples* that bring those abstract tiers down to a project's domain are not.
+
+See `execution-engine.md` for the full tier protocol step-by-step (Part 2) and the Builder/Verifier/Runner prompt templates (Part 4). See `verification-architecture.md` for how the firewall applies to spec authoring and runtime monitors.

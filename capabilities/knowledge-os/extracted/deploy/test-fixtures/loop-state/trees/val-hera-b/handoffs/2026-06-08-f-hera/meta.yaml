@@ -1,0 +1,10 @@
+# Fixture: a HARNESS_ERA_FOLDERS-named folder (template-repo-era governance
+# artifact) whose locked_by_raw_file is a ../../ path outside this fork's raw/
+# ledger -- the class-3 shape from the 2026-07-06 adjudication. Expected:
+# extension check (b) emits a NOTE (named one-off, same scope as the base
+# checks' HARNESS_ERA exemption), NOT a violation; exit 0.
+handoff_id: 2026-06-08-f-hera
+status: locked
+locked: 2026-06-09
+locked_by_raw_file: ../../harness-v2.0/adr/2026-06-09-1-v2.0-scope-lock.md
+hypothesis: fixture harness-era extra field (template-era shape)

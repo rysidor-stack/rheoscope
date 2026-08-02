@@ -1,0 +1,45 @@
+# verify-routing-register.yaml -- declared tier anchors for every verify-leg routing
+# surface (backlog v3.0-77; the router-side backstop for the 2026-07-29 tier-promotion
+# incident). check-substrate.py's anti-promotion pin protects the POLICY
+# (substrate_gate_ok); the pickler instance's promotion never touched the policy -- it
+# edited the ROUTING (driver dispatch, backend passthrough, bridge direction) so a
+# routine leg could only ever reach a vendor-pinned verifier. These rows declare, per
+# routing surface, the one short semantic source line that EMBODIES its tier declaration;
+# deploy/check-verify-routing.py asserts each marker is still present. A missing marker
+# is a BLOCKING finding: either the tier declaration was edited (the promotion class --
+# revert it) or a legitimate refactor moved it (update the row IN THE SAME commit, citing
+# the decision that authorized the change). Raising a leg's tier is a decision, not a fix.
+#
+# Honest residual (recorded, not hidden): marker presence catches edits TO the declared
+# tier lines -- the incident's exact shape -- not every conceivable routing rewrite
+# around them. The runtime backstop stays check-substrate.py (policy pin, 23/23) and the
+# journaled substrate blocks (F17/F18) on every leg.
+#
+# Row schema: id, file, marker (exact substring, one line), means, decision-ref.
+
+rows:
+  - id: driver-routine-dispatch
+    file: deploy/compile-driver.py
+    marker: 'gate_kind="routine"'
+    means: the ordinary wired-compile verify leg dispatches at ROUTINE tier (model_id separation suffices)
+    decision-ref: v3.0-65 build spec; v3.0-76 (tier doctrine)
+  - id: backends-gate-passthrough
+    file: deploy/compile-backends.py
+    marker: "self.gate_kind"
+    means: the backend passes its CONSTRUCTED gate kind through to substrate_gate_ok -- never a hardcoded stricter literal
+    decision-ref: v3.0-65 build spec
+  - id: substrate-routine-branch
+    file: deploy/check-substrate.py
+    marker: "return absorb_model != verify_model"
+    means: ROUTINE tier is model_id difference, same-vendor compliant
+    decision-ref: v3.0-76 (anti-promotion pin guards this branch's semantics)
+  - id: substrate-firewall-branch
+    file: deploy/check-substrate.py
+    marker: "return absorb_vendor != verify_vendor"
+    means: MIGRATION/DESIGN tiers require vendor difference (the cross-substrate firewall stays intact -- de-promotion is watched too)
+    decision-ref: v3.0-76
+  - id: bridge-direction-doc
+    file: .claude/skills/bridge/verify-cli.js
+    marker: "routes to an OpenAI Codex/GPT verifier"
+    means: the Claude-side bridge's declared direction; a vendor-pin rewrite of the bridge (the pickler edit's surface) removes or contradicts this line
+    decision-ref: v3.0-77

@@ -1,0 +1,27 @@
+# planted-gohunt.yaml -- F13 planted-defect mutation spec (tp:348/350(c)).
+# d1-class dropped clause: removes the TrailScout Rewards loyalty-flywheel claim
+# ("1 Credit = $1", margin-based earn rate, member-only earn/redeem) from a fixture copy
+# of the view. The claim is load-bearing in the consumed event (raw lines 28, 112) and
+# is stated in the view at exactly two places (the monetization-stack item + the
+# takeaways bullet); both are removed and the list renumbered so the drop is seamless.
+# Incidental mentions ("credits travel across surfaces", "Now you earn credits") remain --
+# the auditor must notice the MECHANISM claim is gone, not a keyword.
+# Each `find` must occur exactly once in the live view (drift guard in audit-content.py).
+view: wiki/market-intel/trailscout.md
+event: raw/2026-04-10-ryan-trailscout-business-model-analysis.md
+class: d1-dropped-clause
+absence_probes:
+  - "1 Credit = $1"
+  - "earned based on item margin"
+description: drop the Rewards-Credits loyalty-flywheel mechanism claim from the view
+edits:
+  - find: |
+      3. **TrailScout Rewards loyalty flywheel** — "1 Credit = $1." Credits are **earned based on item margin**, varies per SKU, shown under each item. Only members earn and redeem; non-members can shop but leave money on the table.
+    replace: ""
+  - find: "4. **Member perks that push gear spend**"
+    replace: "3. **Member perks that push gear spend**"
+  - find: "5. **High-intent promos**"
+    replace: "4. **High-intent promos**"
+  - find: |
+      - **Loyalty credits tied to margin, not price.** High-margin items (packs, optics, apparel) reward customers more. Protects margin while feeling generous.
+    replace: ""

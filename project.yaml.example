@@ -1,0 +1,161 @@
+# project.yaml — central configuration for a Rheoscope instance.
+# Every project-specific value lives here. Init scripts substitute {{variables}}
+# across all *.template files using these values.
+
+# ---- Identity ----
+project_name: "Example Project"
+project_slug: "example-project"
+project_description: "One sentence describing what this project is."
+
+# ---- Capabilities (Decision V2-4: inclusion is the toggle) ----
+# Each capability is opt-in. Init copies enabled capabilities' extracted/ contents
+# to runtime locations and deferred/*.RECIPE.md files to docs/recipes/<capability>/.
+# After init completes, the capabilities/ directory is deleted from the target.
+#
+# NOTE: handoffs is NOT in this list — it's core. The docs live at core/handoffs/ and the
+# handoff-author/receive/close skills are wired to .claude/skills/ unconditionally.
+# NOTE: flight-plan and log-backlog are also core skills (always wired to .claude/skills/,
+# never toggled). There is no build-orchestration capability — /flight-plan is core and
+# degrades gracefully when knowledge-os is disabled.
+# NOTE: kickoff-orchestration is NOT in this list — it's documentation-only (no
+# extracted/ content; its deferred recipes propagate unconditionally to
+# docs/recipes/kickoff-orchestration/ regardless of any toggle).
+capabilities:
+  knowledge-os: true              # /compile, /audit, wiki structure
+  stress-testing: true            # retired 2026-07-10 — /preflight is a core skill; key accepted, wires nothing
+  code-conventions: true          # Ships an example; operator replaces or extends
+
+# ---- Personnel ----
+# Structured list. Each personnel entry:
+#   tag — short identifier, becomes a source tag (e.g., 'ryan', 'aj')
+#   name — display name
+#   role — one-line role description, used in PROJECT-COMPASS
+#   domains_owned — wiki subdirectories this personnel is review authority for.
+#                   Use ['*'] for solo projects (all domains).
+personnel:
+  - tag: alice
+    name: "Alice"
+    role: "Principal — systems architect, primary decision-maker"
+    domains_owned: ['*']
+
+# ---- Source tags ----
+# Auto-computed: personnel[*].tag + neutral_source_tags
+neutral_source_tags: [session, ref, field, system]
+
+# ---- Wiki domains (only meaningful if knowledge-os capability is enabled) ----
+# Populate during INIT.md walkthrough. Source of truth for /compile routing.
+wiki_domains: []
+# Example after kickoff:
+# wiki_domains:
+#   - name: systems
+#     default_scope: build
+#     description: "Technical knowledge about systems being built"
+
+# ---- Governance docs ----
+# List of canonical-authority documents. Authored during INIT.md walkthrough.
+governance_docs: []
+# Example:
+# governance_docs:
+#   - path: docs/governance/project-thesis.md
+#     description: "Architectural constitution"
+
+# ---- Corpus observation (execution-plane ground truth) ----
+# Only meaningful if knowledge-os is enabled AND this project's execution plane
+# (the code being built) lives in a SEPARATE sibling repo whose shipped-state the
+# wiki observes — never transcribes. Most projects: leave 'none'.
+# Read at runtime by /flight-plan, /compile, /audit (NOT init-substituted).
+# See docs/wiki-schema.md § 16 Corpus Observation.
+corpus_source: none               # none | "<org/repo>" identifier of the execution corpus
+# When corpus_source is not 'none', add:
+# corpus_config:
+#   clone_path: "C:/path/to/execution-clone"   # local clone for read-only observation
+#   branch: main                                # the deployed branch
+#   probe: git-log-since-sha                    # default; add an enrichment probe if useful
+#
+# MORE THAN ONE execution repo? Use the list form instead (v3.0.18, backlog v3.0-88) —
+# leave corpus_source at 'none' (declaring both forms is a config error) and declare:
+# corpus_sources:
+#   - id: app                                   # stable short id (HEALTH rows, briefings);
+#     source: "<org/app-repo>"                  #   defaults to the repo name if omitted
+#     clone_path: "C:/path/to/app-clone"
+#     branch: main
+#     probe: git-log-since-sha                  # optional
+#   - id: platform
+#     source: "<org/platform-repo>"
+#     clone_path: "C:/path/to/platform-clone"
+#     branch: main
+# Each corpus keeps its own last-reconciled SHA in wiki/HEALTH.md § Corpus Observation;
+# /flight-plan, /compile, /audit, /doctor report each corpus independently, and an
+# unreachable declared corpus is surfaced VISIBLY — partial observation is never silent.
+
+# ---- Tier examples ----
+# Four tiers (T1–T4) are fixed. Examples customizable.
+tier_examples:
+  T1: "Anything where silent errors cost dollars or break trust irrecoverably"
+  T2: "Cascading workflows where one action triggers downstream actions"
+  T3: "Data integrity, stateful operations, customer-facing records"
+  T4: "UI, notifications, display logic, low-risk features"
+
+# ---- Template provenance ----
+# Auto-populated at init time. Do not edit manually.
+# template_version must match the template's root VERSION file (the single version
+# source); init fails with a migration-aware message on mismatch.
+template_version: "3.0"
+instantiated_date: ""
+instantiated_capabilities: []
+# template_source / template_release (v3.0.12, backlog v3.0-59): the public template's
+# address and the release tag this instance actually runs. init stamps both (source from
+# its built-in default, release from the template tree's RELEASE file). Adoption sessions
+# advance template_release IN THE SAME COMMIT as each file-level adoption — template_version
+# still tracks the major/minor contract and does not move on patch adoption (MIGRATION.md
+# provenance rule). "Check for updates" = core/governance/check-template-updates.py.
+template_source: ""
+template_release: ""
+
+# ---- Validator: placeholder-scan exemptions ----
+# init-validate scans every file for unresolved {{...}} placeholders. A few META files
+# legitimately contain literal placeholder syntax (the init scripts, the build log, this
+# example file). List them here (relative path from repo root; a trailing '/' is a
+# directory prefix) so the validator skips them. Append any project-specific files that
+# document the {{...}} convention.
+placeholder_scan_exempt:
+  - BUILD-LOG.md
+  - HARNESS-CHANGELOG.md
+  - MIGRATION.md
+  - TEMPLATE-README.md
+  - adr/
+  - harness-v2.0/
+  - handoffs/                   # decision-handoff packets reference or inline literal {{...}} placeholder syntax when discussing the template
+  - harness-v3.0/               # v3.0 strand briefs reference literal {{...}} placeholder syntax when scoping the template (e.g. the contract-layer / packaging briefs)
+  - init.ps1
+  - init.sh
+  - init-validate.ps1
+  - init-validate.sh
+  - project.yaml
+  - project.yaml.example
+  - project.yaml.schema.json
+  - harness-backlog.md
+  - verifier-reviews/
+
+# ---- Validator: dependency / generated-dir skip ----
+# init-validate's {{...}} placeholder scan walks EVERY file. A project that vendors dependencies
+# or builds before validating (node_modules, .next, build outputs, ...) would otherwise get
+# hundreds of false "unresolved placeholder" failures from third-party {{...}} syntax. These
+# directory NAMES are skipped wherever they appear at ANY depth (CASE-SENSITIVE segment match —
+# distinct from placeholder_scan_exempt's path-prefix match). This is the SINGLE source both
+# validators read (powershell-yaml + yq), so both consume the identical set; the match is
+# case-sensitive on BOTH sides (PowerShell -ccontains == bash [[ == ]]) — use the exact lowercase
+# dir name. A scalar (non-list) value is ignored by both. (.git is always skipped separately by
+# both validators, regardless of this list.) Append project-specific generated dirs
+# (e.g. .svelte-kit, target) here.
+# NB: build/dist are skipped wherever they appear, including specs/build/ — those are
+# project-authored docs (post-init, never template files), so they carry no unsubstituted
+# {{template}} placeholders to catch.
+dependency_scan_skip:
+  - node_modules
+  - .next
+  - .turbo
+  - .vercel
+  - coverage
+  - build
+  - dist

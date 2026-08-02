@@ -1,0 +1,53 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+package-lock.json
+
+# Build outputs
+dist/
+build/
+# ...but keep the methodology's per-increment build specs (specs/build/<slug>.md) tracked —
+# the generic build/ rule above would otherwise swallow them (v3.0-13). The dir un-ignore
+# (!specs/build/) is load-bearing and sufficient on its own: re-including the directory restores
+# git's recursion so all descendants track (the parent specs/ is not ignored, so re-inclusion is
+# legal). The contents glob below is redundant belt-and-suspenders, kept for robustness.
+!specs/build/
+!specs/build/**
+.next/
+
+# Claude Code local config (operator-specific paths and credentials)
+.claude/settings.local.json
+
+# Build-time config (used only during harness build, not at instantiation)
+harness-build.yaml
+
+# Pocock fork checkout (temporary during Phase 5)
+.pocock-fork-temp/
+
+# Dry-run output from init.ps1 / init.sh --dry-run (created at firewall checkpoints)
+dry-run-output/
+
+# v2.0 development scratch (temp/working files — not committed)
+harness-v2.0/scratch/
+
+# Cross-vendor verifier source bundles (throwaway zips of files already in the repo)
+harness-v3.0/verification/*-bundle*.zip

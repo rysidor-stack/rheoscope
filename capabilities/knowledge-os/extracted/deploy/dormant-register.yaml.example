@@ -1,0 +1,30 @@
+# dormant-register.yaml.example -- copy to deploy/dormant-register.yaml and edit.
+#
+# The recorded-decision side of /doctor's sensor-reachability check (backlog v3.0-80).
+# A deploy/*.py listed here is DORMANT BY DECISION: reachable from no executable surface
+# (skills, init scripts, .cmd wrappers, deploy registers), and that state is intentional,
+# with the decision that made it so referenced per row. A script neither reachable nor
+# listed here is UNACCOUNTED and WARNs in /doctor until someone decides -- wire an
+# invoker, or add a row. Connecting a capability is a decision, not a fix: orphaned code
+# has two causes (needed-but-unwired vs built-but-undemanded), and the check refuses to
+# guess which -- this file is where the human's answer is recorded instead of
+# re-litigated every run.
+#
+# THIS FILE IS A RECORD, NOT AN INVOCATION SURFACE: the reachability check explicitly
+# excludes it when collecting surfaces, so listing a script here can never make it count
+# as "reachable". Rows whose script was deleted, or became reachable again, WARN as stale
+# until removed.
+#
+# Schema (flat, parsed by doctor.py's line regex -- PyYAML not required):
+#   rows:
+#     - script: <filename under deploy/>
+#       reason: <why dormancy is intentional, one line>
+#       decision-ref: <backlog entry / spec / decision record that made the call>
+
+# Example row (commented):
+#   rows:
+#     - script: check-phase-gate.py
+#       reason: MIG-2 phase-advance runner; fires at phase boundaries only
+#       decision-ref: v3.0-65
+
+rows: []

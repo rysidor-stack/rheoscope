@@ -1,0 +1,23 @@
+# planted-pgwins.yaml -- F13 planted-defect mutation spec #4 (tp:348/350(c)).
+# d1-class dropped clause for the sharpened-contract re-audit batch (replaces the
+# INVALID spec #3, whose "removed" claim survived verbatim in two sibling views --
+# caught by the efficacy floor 2026-07-03; absence_probes now mechanize that check).
+# Removes the replayable-backlog conflict-resolution rule (PG WINS, replay PG->Ledgerly
+# until equal, never silently discard a committed PG write) from a fixture copy of the
+# runbook view -- an unambiguously blocking-class mechanism/data-loss rule (raw line 55),
+# stated exactly once in the view and nowhere else in the wiki. Rotation rule: the
+# fixture view's event PASSED its clean audit (f13-full-2026-07-03), and none of the
+# re-audit batch's events source this view (no unmutated twin ships).
+view: wiki/systems/gateway-flip-rollback-runbook.md
+event: raw/2026-06-27-ryan-flip-rollback-abort-runbook-decisions.md
+class: d1-dropped-clause
+description: drop the replayable-backlog PG-wins / never-discard rule from the runbook
+absence_probes:
+  - "PG wins"
+  - "silently discard"
+  - "Replayable backlog"
+edits:
+  - find: |
+      - **Replayable backlog** → **PG wins.** Replay PG→Ledgerly until equal. **Never silently discard a committed
+        PG write** — it is an acknowledged business fact; discarding it is data loss.
+    replace: ""

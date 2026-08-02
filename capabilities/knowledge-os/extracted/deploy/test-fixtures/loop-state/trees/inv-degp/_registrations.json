@@ -1,0 +1,10 @@
+[
+  {
+    "event": "raw/ryan-degp.md",
+    "origin": "human",
+    "origin_evidence": "fixture: ryan-* raw, degraded-parse frontmatter, inline informed_by form",
+    "event_class": "informed_by",
+    "event_class_origin": "explicit",
+    "asserts_corpus_state": false
+  }
+]

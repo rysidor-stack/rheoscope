@@ -1,0 +1,36 @@
+# origin-config.yaml -- instance-level trust-boundary config for deploy/origin.py's F7/B6
+# operator-decision-file rule (memory-engine v3, P1). GOVERNS: which raw-event FILENAME
+# prefixes origin.py's assign_origin() treats as non-forgeable operator-decision files (a
+# raw event named "<prefix>-*" after its date prefix mints origin: human, per B6 non-
+# forgeability -- the file is pre-existing committed git history, so it predates the
+# current session's run window by construction).
+#
+# THIS IS INSTANCE IDENTITY DATA, NOT ENGINE LOGIC: which human name(s) this instance's
+# raw events are session-transcribed under. A fresh/template instance ships with NO name
+# baked in here -- see the fail-safe default below.
+#
+# FAIL-SAFE DEFAULT (doctrine: never auto-mint human on an unresolvable config): this file
+# ABSENT, PyYAML unavailable at runtime, or the content unparseable/structurally malformed
+# all degrade to an EMPTY human_prefixes list -- nothing auto-mints human in that case. A
+# raw event that would otherwise have matched instead falls through to origin.py's ordinary
+# parseable/unmatched rule (-> corpus), or -- if the event is itself unparseable -- to
+# `unknown` and the B2 operator-attestation queue. Never a silent upgrade to a MORE
+# permissive origin than an unresolvable config would otherwise produce.
+#
+# THIS FILE IS AN OPERATOR-GATED TRUST-CONTROL SURFACE (ROUTE-1-style note, mirroring
+# deploy/safe-allowlist.yaml's own convention): changing human_prefixes changes who this
+# instance trusts to mint origin:human by filename alone. Treat edits as an operator-
+# authored, out-of-band change only -- never something an agent/executor edits on its own
+# initiative.
+#
+# Schema:
+#   human_prefixes: [list of filename prefixes]
+# Each prefix is matched case-insensitively as "^<prefix>-" against the event's basename
+# AFTER its leading YYYY-MM-DD[THHMMSS]- date prefix is stripped (origin.py's own
+# _stem_after_date). E.g. with human_prefixes: [alice], a raw event named
+# "2026-07-05-alice-decision-9.md" matches ("alice-decision-9" starts with "alice-").
+#
+# Derived at init from project.yaml personnel tags (init.sh/init.ps1 section 4, personnel_tags_csv).
+# Operators edit deliberately (trust-boundary; absent/malformed => nothing auto-mints human origin).
+
+human_prefixes: [{{personnel_tags_csv}}]

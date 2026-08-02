@@ -1,0 +1,25 @@
+# Fixture: violations this file must trip (house fixture convention):
+#   1. status 'bogus-status' not in the legal HANDOFF_STATUS set
+#   (check_handoff returns early on an illegal status, so no further
+#   violations from this same fixture are exercised here -- that early-return
+#   behavior is itself the ported behavior under test.)
+# Expected: FAIL (at least 1 violation).
+handoff_id: fixture-invalid-handoff
+status: bogus-status
+tier: T1
+authored: 2026-07-01
+authored_by: fixture-author
+answered: 2026-07-01
+answered_by: fixture-answerer
+locked: 2026-07-02
+locked_by_raw_file: raw/fixture-invalid-handoff-lock.md
+decision_under_investigation: fixture decision under test
+parent_phase: fixture-phase
+hypothesis_carried: "fixture hypothesis"
+hypothesis_outcome: confirmed
+target_substrate: fixture-substrate
+rounds_completed: 0
+round_modes: []
+round_overrides: []
+supersedes: null
+superseded_by: null

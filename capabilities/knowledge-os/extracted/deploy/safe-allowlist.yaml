@@ -1,0 +1,137 @@
+# safe-allowlist.yaml -- the audited SAFE/capability allowlist (memory-engine v3, TCB spec
+# sec4/sec5, Pillar 1). Read by deploy/tool_grant.py's classify/grant decision. This is a
+# CLOSED declarative set: a tool/pattern is SAFE iff it appears here tagged `safe`; every
+# other requested tool -- named here under a dangerous class, OR simply absent -- is
+# dangerous by construction (TCB sec5 DA-4: "fail-dangerous, one direction"; F-5).
+#
+# THIS FILE IS ITSELF A TCB BOOT-READ TRUST-CONTROL SURFACE (TCB sec8a/F-16): no executor
+# or credentialed session may ever write it; deploy/tool_grant.py's executor_write_ok()
+# refuses any write target that resolves onto this path (or transitively feeds it). Treat
+# edits to this file as an operator-authored, out-of-band change only.
+#
+# Classes (tool_grant.py CLASSES): {safe, credential, egress, untrusted-ingestion, interpreter}.
+#   safe                -- proven no path-/URL-/interpreter-typed input, no credential-read,
+#                          no outbound channel (TCB sec5). Grantable to an untrusted session.
+#   credential          -- reads/uses a secret, API key, or authenticated session. Never
+#                          granted to an untrusted (origin_max not in {human, corpus-first-
+#                          party-verified}) session (F-1).
+#   egress              -- any outbound network/push channel. Never granted to an untrusted
+#                          session (F-2); excluded from a tainted packet's credentialed
+#                          profile regardless of descriptor attestation strings (F-11).
+#   untrusted-ingestion -- can pull NEW bytes into the session after boot (fetch, paste,
+#                          arbitrary file read of unaudited paths). Structurally excluded
+#                          from any credentialed grant (F-8, boot-time immutability) --
+#                          exclusion happens AT GRANT, never as a mid-session strip.
+#   interpreter         -- a shell/interpreter/runtime that can reach any secret or socket
+#                          the host process can. NEVER classified `safe`, regardless of
+#                          declared parameters or sandboxing claims (F-6, the name-list FATAL
+#                          closed). An interpreter is always at minimum credential+egress-
+#                          capable for grant purposes.
+#
+# UNKNOWN / UNLISTED TOOL => DANGEROUS (F-5). There is no "assume safe unless proven
+# dangerous" direction anywhere in this file or in tool_grant.py: a tool not matched by any
+# `pattern` below is treated as credential+egress+untrusted-ingestion-capable (the most
+# restrictive union), i.e. excluded from any untrusted grant and from ever satisfying the
+# credentialed-session immutability rule. Adding a tool's capability to a session requires
+# adding it here first, in the open, reviewed -- never inferred.
+#
+# `pattern` is matched against the requested tool name: exact string match, or a trailing
+# `*` glob (prefix match) for namespaced tool families (e.g. `mcp__acme_crm__*`). First
+# matching pattern wins (entries are checked in file order); an unmatched tool is dangerous
+# per the paragraph above -- there is no catch-all `*` entry, and there must never be one.
+
+allowlist:
+
+  # ---- credential-class: MCP connectors that hold or exercise a live authenticated
+  # session / API key. Test-plan naming (TCB tool-grant spec, gate-reg C1/C2).
+  - pattern: "mcp__acme_crm__*"
+    class: credential
+    note: "acme-crm MCP connector family -- authenticated business-system API access"
+  - pattern: "credential-use*"
+    class: credential
+    note: "R-1-era credential broker (deploy/credential-use.ps1) -- exercises a vault
+      secret on the sanctioned path. Classifying it here is what makes the design
+      brief's trifecta claim MECHANICAL: F-1 refuses this grant to any tainted
+      session, so untrusted content + credential-use never co-reside by construction
+      (credential-broker-design-brief-2026-07-23.md, round-1 fold)."
+  - pattern: "credential-store*"
+    class: credential
+    note: "vault entry creation (operator popup path) -- same class, same F-1 wall"
+  - pattern: "credential-remove*"
+    class: credential
+    note: "vault entry deletion -- same class, same F-1 wall"
+
+  # ---- egress-class: any tool that pushes/publishes outside the local workspace.
+  - pattern: "git push"
+    class: egress
+    note: "test-plan naming -- outbound write to a remote"
+  - pattern: "git push *"
+    class: egress
+    note: "argv-qualified form of the same egress tool"
+
+  # ---- interpreter-class: shells/interpreters/runtimes. NEVER safe (F-6), regardless of
+  # any sandbox/attestation claim made about them elsewhere (F-11/F-12 discipline).
+  - pattern: "bash"
+    class: interpreter
+  - pattern: "sh"
+    class: interpreter
+  - pattern: "shell"
+    class: interpreter
+  - pattern: "powershell"
+    class: interpreter
+  - pattern: "pwsh"
+    class: interpreter
+  - pattern: "cmd"
+    class: interpreter
+  - pattern: "python"
+    class: interpreter
+  - pattern: "python3"
+    class: interpreter
+  - pattern: "node"
+    class: interpreter
+  - pattern: "nodejs"
+    class: interpreter
+  - pattern: "ruby"
+    class: interpreter
+  - pattern: "perl"
+    class: interpreter
+
+  # ---- untrusted-ingestion-class: pulls NEW bytes into the session after boot.
+  - pattern: "fetch"
+    class: untrusted-ingestion
+    note: "the harness fetch mediator -- ingest-tags at intake (F-13); still excluded from
+      a credentialed grant by construction (F-8)"
+  - pattern: "web_fetch"
+    class: untrusted-ingestion
+  - pattern: "paste"
+    class: untrusted-ingestion
+  - pattern: "read_arbitrary"
+    class: untrusted-ingestion
+    note: "placeholder name for an unaudited/unbounded file-read capability, as distinct
+      from the small honest read-only repo-tool set below"
+
+  # ---- safe-class: a small, honest, audited set of read-only repo tools proven to have
+  # no path-escape, no credential-read, no outbound channel. Parameter-bounded contracts
+  # only (TCB sec5) -- adding a tool here is a reviewed, audited act, never a default.
+  - pattern: "read_file"
+    class: safe
+    note: "read-only; path containment enforced by deploy/check-path-containment.py
+      upstream of this allowlist -- no credential/outbound capability"
+  - pattern: "list_directory"
+    class: safe
+    note: "read-only directory listing; no credential/outbound capability"
+  - pattern: "grep"
+    class: safe
+    note: "read-only content search; no credential/outbound capability"
+  - pattern: "glob"
+    class: safe
+    note: "read-only path-pattern search; no credential/outbound capability"
+  - pattern: "git status"
+    class: safe
+    note: "read-only local repo state; no network, no credential"
+  - pattern: "git diff"
+    class: safe
+    note: "read-only local repo state; no network, no credential"
+  - pattern: "git log"
+    class: safe
+    note: "read-only local repo state; no network, no credential"

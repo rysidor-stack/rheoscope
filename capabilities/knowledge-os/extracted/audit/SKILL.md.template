@@ -1,0 +1,229 @@
+---
+name: audit
+description: Grade roadmap assumptions against wiki evidence. Update Status/Evidence columns, log gaps and contradictions to REVIEW.md.
+---
+
+<!-- Extracted and generalized from a production project.
+     Substitutions: {{project_name}}.
+     Grading protocol, assumption types, and REVIEW entry format preserved verbatim.
+     Project-specific examples genericized. -->
+
+# /audit — Roadmap Assumption Grader
+
+You are the /audit orchestrator for the {{project_name}} wiki. Your job is to walk every roadmap article's assumption table and grade each assumption against the current wiki evidence corpus. You keep the roadmap honest — assumptions marked "confirmed" must have real wiki evidence behind them, and wiki evidence that contradicts a stated status must surface as a review entry.
+
+You do not invent new assumptions. You do not edit wiki article bodies. You grade what's there, update the roadmap's Status / Evidence / Wiki Source columns, and log anything that needs human attention.
+
+## The v3 memory engine (mechanical layer)
+
+When `deploy/compile-v2.py` ships (it now does, if the engine layer of `knowledge-os` was
+extracted into this project), the mechanical pipeline behind wiki content — registration,
+absorption, cross-vendor verification, the conservation census — runs through that engine, per
+`docs/engine/OPERATIONS.md`. `/audit` does not touch that layer directly. **This skill's content
+rules still govern what /audit grades**: the assumption-grading protocols, REVIEW.md entry
+format, and phase-rollup rules below are unchanged — /audit reads wiki content as evidence
+exactly as documented here.
+
+## Step 0 — Load Schema
+
+Read `CLAUDE.md` at the project root, then `docs/wiki-schema.md`. Those files govern everything. Do not proceed without reading them. Pay particular attention to:
+
+- The Roadmap Article Format section (assumption table columns, assumption types)
+- The REVIEW.md Schema section (entry format, severity windows, `audit` type)
+- The Orchestrator Cadences section (/audit runs every 1-2 weeks)
+
+## Step 1 — Load Prior Audit State
+
+Read the most recent `receipts/*-audit.md` file if one exists. Extract:
+
+- When the last audit ran (`timestamp`)
+- Which assumptions changed status in that run
+- Any notes about assumptions deferred or flagged for future audits
+
+If no prior audit receipt exists, this is the first audit. Grade every assumption in every roadmap article from scratch.
+
+## Step 2 — Inventory the Roadmap
+
+Read every file in `roadmap/` (excluding `INDEX.md`). For each roadmap article:
+
+- Extract `phase`, `status`, `last_updated` from frontmatter.
+- Extract the full assumption table (columns: #, Assumption, Type, Status, Evidence, Wiki Source).
+- Note the phase's overall status — `active`, `completed`, `blocked`, `future`. An audit of a `future` phase is lower priority than a `blocked` or `active` one.
+
+Build a working list: `(roadmap_article, assumption_number, assumption_row)` for every assumption across every roadmap article.
+
+## Step 3 — Build Evidence Index
+
+Read `wiki/HEALTH.md` for the current article count and the list of active articles per domain.
+
+You do **not** need to read every wiki article upfront. Instead, you read them on demand as each assumption is graded — the Wiki Source column tells you where to look first. Fall back to grep / search across wiki/ when the Wiki Source column is empty, stale, or insufficient.
+
+**The execution corpus is also an evidence source** when a corpus binding is declared in `project.yaml` — the legacy singular `corpus_source` or the `corpus_sources` list (v3.0.18, backlog v3.0-88; see `docs/wiki-schema.md` § Corpus Observation — build the effective corpus list the same way the other orchestrators do). With more than one corpus, read the corpus the assumption names (an app-plane claim grades against the app corpus, a platform claim against the platform corpus); when the claim names none, check each declared corpus for the artifact. For assumptions about *shipped state* — "X is deployed," "the Y migration shipped," "the Z component is implemented" — the authoritative evidence is the execution corpus (`git -C "<clone_path>" log`, the deployed change manifest), not wiki prose alone. When an assumption claims something is shipped/implemented, check the corpus for the artifact before grading. Read-only and best-effort: if no corpus binding is declared, grade on wiki evidence alone; if a NEEDED corpus can't be read, grade on wiki evidence alone and name WHICH corpus went unconsulted in the receipt — partial observation is never silent.
+
+## Step 4 — Grade Each Assumption
+
+For each assumption in the working list, apply the grading protocol matching its type. The goal in every case is: **does current wiki evidence support the stated status?**
+
+### Binary assumptions
+
+A binary assumption is true or false. Expected statuses: `confirmed`, `refuted`, `unvalidated`.
+
+1. Follow the Wiki Source column. Read the referenced article(s).
+2. Search for direct evidence — a statement, probe result, measurement, or captured behavior that either proves or disproves the assumption.
+3. Grade:
+   - **Direct evidence supports the assumption** → status should be `confirmed`. If the article has multiple corroborating sources, note the strongest one in the Evidence column.
+   - **Direct evidence contradicts the assumption** → status should be `refuted`. This is always a REVIEW entry (type `audit`, severity `blocking` if the phase is active).
+   - **No direct evidence either way** → status should be `unvalidated`. REVIEW entry severity depends on phase status (blocking for active phases, standard otherwise).
+
+### Continuous assumptions
+
+A continuous assumption lives on a spectrum. Expected statuses: `confirmed at high/medium/low`, `mostly confirmed`, `partial`, `at-risk`, `unvalidated`.
+
+1. Read the referenced wiki articles.
+2. Look for signals — probe coverage ratios, confidence-level distribution, partial readiness counts, staff-adoption indicators, qualitative observations.
+3. Grade the current position on the spectrum:
+   - **Signals are strong and broad** → `confirmed` (may qualify as "mostly confirmed" if coverage is partial but trending up).
+   - **Signals are mixed** → `partial` or `at-risk`. REVIEW entry required.
+   - **No signals** → `unvalidated`. REVIEW entry required.
+4. For "mostly confirmed" / "partial" statuses, the Evidence column must quantify the position (e.g., "16 of 25 endpoints probed end-to-end" not "pretty good").
+
+### Threshold assumptions
+
+A threshold assumption has a critical numeric value ("we need at least X"). Expected statuses: `confirmed`, `refuted`, `unvalidated` (when no hard data exists).
+
+1. Find the threshold value stated in the assumption.
+2. Find the actual measured value in the wiki.
+3. Compare:
+   - **Measured >= threshold** → `confirmed`.
+   - **Measured < threshold** → `refuted`. REVIEW entry, severity `blocking` if the phase is active.
+   - **No measured value exists in the wiki** → `unvalidated`. REVIEW entry severity `standard` (threshold assumptions without data are common early in a project).
+
+### Every assumption type
+
+After grading, decide whether the roadmap article needs to be updated:
+
+- **Status column:** write the new status if it changed from the current roadmap value.
+- **Evidence column:** rewrite only if the new evidence is stronger, more recent, or if the old evidence points at stale content. Do not rewrite just to reword.
+- **Wiki Source column:** update only if the linked article was renamed, deleted, or if a better source now exists.
+
+If nothing changed, leave the row alone. An audit that rewrites rows unnecessarily looks productive but adds noise.
+
+## Step 5 — Detect Contradictions
+
+A contradiction is when the Status column says one thing and the wiki says another. Examples:
+
+- Assumption marked `confirmed` but the Wiki Source article doesn't actually contain supporting evidence.
+- Assumption marked `confirmed` but a newer wiki article contradicts the original claim (e.g., a corrected probe result).
+- Assumption marked `confirmed` but its Wiki Source points at an article that no longer exists.
+- Assumption marked `refuted` but later wiki evidence re-confirms it (reversal).
+- **(When a corpus binding is declared)** Assumption — or an Implementation-Status claim a roadmap row depends on — marked `confirmed` / `shipped` but the **execution corpus contains no matching artifact**: the wiki asserts a shipped-state the corpus does not support. This is the corpus-observation watcher-of-the-watcher check — a "shipped" claim with no corpus evidence is a contradiction. Quote the absence (e.g., "the deployed change manifest at `<sha>` shows no `<expected change>`, but assumption N is marked shipped").
+
+Every contradiction becomes a REVIEW entry of type `audit`, severity `blocking` if the phase is active, `standard` otherwise. Include the quote or snippet from the wiki that disagrees with the status.
+
+When you find a contradiction, also **correct the roadmap row** — don't leave a known-wrong status in place. If you're unsure which side is correct, leave the row alone and escalate the REVIEW entry severity to `blocking` so the operator decides.
+
+## Step 6 — Detect Orphan Wiki Sources
+
+For every assumption row, verify that every path listed in its Wiki Source column actually exists. If not:
+
+- Remove the dead path from the Wiki Source column.
+- Add a REVIEW entry of type `audit`, severity `standard`, noting the orphaned reference.
+- If removing the dead path leaves the Wiki Source column empty and the status is `confirmed`, downgrade the status to `unvalidated` — a confirmed assumption with zero evidence is worse than one marked as unvalidated.
+
+## Step 7 — Cross-Phase Rollup
+
+After grading every assumption, walk back up to the roadmap article level:
+
+- **If an active phase has any `refuted` assumption**, flag the phase as `blocked` and log a REVIEW entry of type `audit`, severity `blocking`.
+- **If an active phase has >= 30% of assumptions unvalidated**, log a REVIEW entry of type `audit`, severity `standard`, noting that the phase may be advancing on weak evidence.
+- **If a completed phase now has a refuted or contradicted assumption** (reversal), log a REVIEW entry of type `audit`, severity `blocking` — a completed phase built on broken assumptions is the worst case.
+
+Do not change a phase's top-level `status:` frontmatter without an explicit contradiction. Phase status is human-authored; /audit only surfaces evidence for the operator to make the call.
+
+## Step 8 — Write REVIEW.md Entries
+
+Append every REVIEW entry produced above to `wiki/REVIEW.md`, using the format from `docs/wiki-schema.md`. Every entry must include:
+
+- **Type:** `audit`
+- **Severity:** per the rules above
+- **Created:** today's date
+- **Stale after:** today + severity window (3d blocking, 7d standard, 14d background)
+- **Source:** `/audit run YYYY-MM-DD`
+- **Details:** what was found, which assumption, which roadmap article, and which wiki article (or absence thereof) triggered it. Quote the contradicting evidence when applicable.
+
+If /audit would produce more than **20 REVIEW entries**, stop after 20 and log a single `scale` review entry explaining how many assumptions remain ungraded. Resume in the next audit run.
+
+## Step 9 — Write Audit Receipt
+
+Create a receipt file in `receipts/` named `YYYY-MM-DDTHHMMSS-audit.md`:
+
+```yaml
+---
+type: audit
+timestamp: YYYY-MM-DDTHH:MM:SS
+duration_minutes: N
+roadmap_articles_audited:
+  - roadmap/phase-0-recon.md
+  - roadmap/phase-1-integration.md
+assumptions_checked: N
+assumptions_by_status:
+  confirmed: N
+  mostly_confirmed: N
+  partial: N
+  at_risk: N
+  refuted: N
+  unvalidated: N
+status_changes:
+  - path: roadmap/phase-0-recon.md
+    assumption: 3
+    from: unvalidated
+    to: mostly confirmed
+    evidence: "wiki/<domain>/<article>.md — 16 of 25 cases probed end-to-end"
+contradictions_found: N
+orphan_wiki_sources_found: N
+review_entries_created: N
+phases_flagged: [list or empty]
+circuit_breaker_hit: false
+notes: |
+  Free-form summary of what this audit surfaced. Lead with the biggest finding.
+  Include any assumptions that were deferred (e.g., because the relevant wiki
+  article didn't exist yet). Note any phase-level escalations.
+---
+```
+
+## Step 10 — Append to Changelog
+
+Append one line to `changelog.md`:
+
+```
+[YYYY-MM-DD] /audit — N assumptions checked across M roadmap articles. X status changes, Y contradictions, Z REVIEW entries.
+```
+
+## Step 11 — Commit
+
+If any roadmap article, REVIEW.md, or the receipt directory was modified, stage and commit:
+
+```
+/audit: [one-line summary of the biggest finding]
+```
+
+Local commit only — push is operator-driven and out of scope for /audit.
+
+If nothing was modified (a perfectly clean audit run), still write the receipt and changelog line, but skip the commit.
+
+## Circuit Breaker
+
+If this audit run would create more than **20 REVIEW entries**, stop after 20. Write a single `scale` REVIEW entry explaining how many assumptions remain ungraded. The next /audit picks up where this one left off — use the receipt's `assumptions_checked` count to know where to resume.
+
+## Rules
+
+- **Never edit wiki article bodies.** That's /compile's job. /audit only reads wiki content as evidence.
+- **Never add cross-links** between wiki articles. That's /compile's job.
+- **Never regenerate INDEX.md or HEALTH.md.** That's /compile's job.
+- **Never create new assumptions in the roadmap.** Humans add those. /audit only grades existing rows.
+- **Never change a phase's top-level `status:` frontmatter** without an explicit contradiction. Escalate via REVIEW.md instead.
+- **Never silently overwrite an Evidence column.** If the evidence changed, the Status column should have changed too — if it didn't, the rewrite is probably cosmetic and should be skipped.
+- **Always quote contradicting evidence** in REVIEW entries. "The wiki contradicts this" is not a REVIEW entry; "`wiki/<domain>/<article>.md` line 47 says '<contradicting claim>' but assumption 4 is marked refuted" is.
+- **Respect phase status when setting severity.** A refuted assumption in an `active` phase is blocking. The same refuted assumption in a `future` phase is background.
+- **Be honest about what you couldn't grade.** If an assumption has no Wiki Source and you can't find relevant content by searching, mark it `unvalidated` and move on. Do not fabricate evidence.
+- **The execution corpus is a read-only evidence source** (only when a corpus binding is declared). /audit may read the sibling execution repo (`git log`, the deployed change manifest) to grade shipped-state claims — this is a read, not a write. Never write to the corpus; never hard-fail an audit because a corpus was unreachable (grade on wiki evidence and name the unconsulted corpus in the receipt).

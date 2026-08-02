@@ -1,0 +1,45 @@
+# environment-manifest.yaml.example -- the toolchain version-drift watch list (v3.0-43a,
+# session C build decision D5).
+#
+# A fresh clone can look green in the transcript while the actual node/python/git/... on
+# this machine has quietly drifted from what was last hand-verified to work -- nothing
+# surfaces that until something breaks live. This manifest is the one place the "last known
+# good" version of each load-bearing tool is recorded; core/skills/doctor/doctor.py's
+# version-drift check reads it, re-runs each row's `probe`, and WARNs on drift or an
+# unreachable tool. Degrade-never-block: doctor SKIPs ("version drift unwatched"), never
+# FAILs, if this file is absent, empty, or PyYAML itself is unavailable to parse it -- an
+# instance that hasn't adopted this manifest yet is not a defect.
+#
+# ROW SCHEMA (per row, under the top-level `tools:` list):
+#   tool              -- plain name of the tool (used in the check's report line).
+#   probe             -- a shell command (argv, no shell features) that prints a version to
+#                        stdout, e.g. "python --version". Run directly (no shell=True), so
+#                        avoid pipes/redirects/quoting tricks -- keep it a plain command.
+#   version_verified  -- the probe's captured first line of output, at the date below, on the
+#                        machine that last hand-verified this row. CAPTURE THE REAL OUTPUT --
+#                        never fabricate a plausible-looking version string.
+#   date              -- ISO date (YYYY-MM-DD) version_verified was captured.
+#
+# LIFECYCLE: when doctor WARNs "version drift" for a row, that's a prompt for a human to
+# re-verify the new version still works, then hand-update version_verified/date -- doctor
+# never edits this file itself.
+#
+# This is a TEMPLATE EXAMPLE -- copy to deploy/environment-manifest.yaml in an instantiated
+# project and replace the rows below with that project's real, freshly-probed toolchain.
+# The rows shown here are illustrative shape only, not verified anywhere.
+
+tools:
+  - tool: python
+    probe: "python --version"
+    version_verified: "Python 3.12.10"
+    date: "2026-01-01"
+
+  - tool: node
+    probe: "node --version"
+    version_verified: "v20.11.0"
+    date: "2026-01-01"
+
+  - tool: git
+    probe: "git --version"
+    version_verified: "git version 2.43.0"
+    date: "2026-01-01"

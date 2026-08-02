@@ -1,0 +1,19 @@
+# planted-d1-dropped-clause.yaml -- F13 planted-defect mutation spec #3 (tp:348/350(c)).
+# d1-class dropped clause for the sharpened-contract re-audit batch. Removes the vendor
+# team-size intelligence claim (~6 Fenwick Softworks employees per RocketReach; Ledgerly
+# probably 10-30 people) from a fixture copy of the view -- both statements (the summary
+# sentence fragment + the confidence-table row). The claim is load-bearing vendor-risk
+# sizing in the consumed event (raw lines 15, 98). Rotation rule: the fixture view's
+# event already PASSED its clean audit (batch f13-full-2026-07-03), so no clean leg is
+# sacrificed. Each `find` must occur exactly once in the live view (drift guard in
+# audit-content.py).
+view: wiki/market-intel/ledgerly-company-origin.md
+event: raw/2026-04-10-ryan-ledgerly-vendor-intelligence.md
+class: d1-dropped-clause
+description: drop the Ledgerly/Fenwick Softworks team-size vendor-risk claim from the view
+edits:
+  - find: "Team size is small — Fenwick Softworks had ~6 employees per RocketReach; Ledgerly is probably 10–30 people total. "
+    replace: ""
+  - find: |
+      | Team size 10–30 | **Medium** — RocketReach says Fenwick Softworks had 6. Ledgerly is presumably larger but no headcount disclosed publicly |
+    replace: ""

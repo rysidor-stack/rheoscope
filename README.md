@@ -1,10 +1,10 @@
 ﻿# Rheoscope
 
-Most AI-run projects share the same weakness: the work happens fast, and nobody can prove what actually happened. Knowledge lives in chat transcripts that evaporate. Builds get declared done on a feeling. Decisions get re-argued every month because nobody wrote down why.
+Rheoscope is a project harness. Wrap it around any project you can think of (a software product, a business, a research effort, a book) and AI does the work while you make only the decisions. You unpack it, answer a founding interview about your venture, and the whole factory is wired for that project alone: the knowledge engine, the build discipline, the verification machinery, the one plain-English briefing you read each day.
 
-Rheoscope is a trust machine: an operating system for projects where AI does the work and a human makes only the decisions. Every fact in its knowledge base traces to a dated source. Every build starts from a written, checkable spec, and the machinery refuses to start without one. Every claim that matters gets challenged by a different vendor's AI before it counts, and the verdict is kept as a receipt. The human sees one plain-English briefing a day, plus the handful of calls that genuinely need a person.
+It exists because AI-run projects share the same weakness: the work happens fast, and nobody can prove what actually happened. Knowledge evaporates with the chat window. Builds get declared done on a feeling. Decisions get re-argued every month because nobody wrote down why.
 
-It is a template: unpack it, answer a founding interview about your venture, and the whole factory (the knowledge engine, the spec-gated build discipline, the verification machinery, the sensors, the security perimeter) is yours, wired for that project alone.
+Underneath the harness is a trust machine, and the phrase is literal. Facts in the knowledge base trace to dated sources; a model's memory of a conversation doesn't count. Builds can't begin until the behavior is written down as a checkable spec, and the machinery refuses to fire without one. When a claim actually matters, an AI from a different vendor is called in to attack it, and the verdict stays on file as a receipt. What lands on your desk is the part that genuinely needs a person: decisions, ratifications, and the GO call on anything irreversible.
 
 **New here? Start with [TEMPLATE-README.md](TEMPLATE-README.md): the operator manual; the guided tour lives at `core/onboarding/TOUR.md`.**
 

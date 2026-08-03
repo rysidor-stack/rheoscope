@@ -14,6 +14,7 @@ over as files in `--staging`.
 
   compile-driver.py --run --root DIR --staging DIR --authorization PATH [--sections]
   compile-driver.py --reverify --root DIR --seq N --staging DIR --authorization PATH
+  compile-driver.py --revert --root DIR --seq N [--reason TEXT]
   compile-driver.py --reconcile --root DIR
   compile-driver.py --self-test
   Exit: 0 clean | 1 validation/gate failure | 2 inconclusive/usage | 3 lock held
@@ -80,7 +81,16 @@ absorb commit precedes verify -- verify_run() grades a COMMITTED run -- so the
 driver guarantees no run ever ENDS holding an unverified absorption:
   * verify leg COMPLETES with a non-confirm verdict (revised/rejected): that is
     verified content; the verdict is journaled data. Exit 1, NO revert -- the run
-    branch stays unmergeable until the non-confirm is adjudicated.
+    branch stays unmergeable until the non-confirm is adjudicated. The SHIPPED
+    adjudication path is `--revert --seq N` (below): it reverts the run commit
+    (journal record restored, revert journaled), after which the correction is
+    re-absorbed through a fresh `--run` over corrected answers -- the full
+    validate/absorb/verify road, never a hand-edit of the written views. Added
+    2026-08-03 (backlog v3.0-local-5's second finding, reported from the first
+    live all-rejected run): the skill instructed "fix the view text and re-run
+    the verify leg", an operation nothing on this CLI performed -- corrections
+    ended committed-but-unverified, and the only honest exits were a manual
+    revert or shipping unverified text.
   * verify leg DOES NOT COMPLETE (bridge error, timeout, DispatchRefused
     mid-run, unparseable verdict, or an absorption-verify leg missing for an
     absorbed view): a leg's outcome is judged BY ITS VERDICT VALUE, not by
@@ -150,6 +160,7 @@ USAGE = (
     "[--sections]\n"
     "compile-driver.py --reverify --root DIR --seq N --staging DIR "
     "--authorization PATH\n"
+    "compile-driver.py --revert --root DIR --seq N [--reason TEXT]\n"
     "compile-driver.py --reconcile --root DIR\n"
     "compile-driver.py --self-test\n"
     "Exit: 0 clean | 1 validation/gate failure | 2 inconclusive | 3 lock held"
@@ -229,8 +240,9 @@ def _worktree_clean(repo):
 
 
 # --------------------------------------------------------------- argv parsing
-_VALUE_FLAGS = ("--root", "--staging", "--authorization", "--seq")
-_BOOL_FLAGS = ("--run", "--reconcile", "--reverify", "--self-test", "--sections")
+_VALUE_FLAGS = ("--root", "--staging", "--authorization", "--seq", "--reason")
+_BOOL_FLAGS = ("--run", "--reconcile", "--reverify", "--revert", "--self-test",
+               "--sections")
 
 
 def parse_args(argv):
@@ -245,7 +257,7 @@ def parse_args(argv):
             "live absorption rides a cross-vendor verify leg (runbook standing "
             "invariant 4). Nothing was run.")
     out = {"mode": None, "root": None, "staging": None, "authorization": None,
-           "seq": None, "sections": False}
+           "seq": None, "reason": None, "sections": False}
     i = 0
     modes = []
     while i < len(args):
@@ -289,6 +301,18 @@ def parse_args(argv):
                 "original run's staging dir, whose stamped "
                 "dispatch-manifest.json carries the F17 absorb identity the "
                 "verify legs must cite)"
+                % ", ".join("--" + m for m in missing))
+        try:
+            out["seq"] = int(out["seq"])
+        except (TypeError, ValueError):
+            raise UsageError("--seq must be an integer journal sequence number")
+    if out["mode"] == "revert":
+        missing = [f for f in ("root", "seq") if not out[f]]
+        if missing:
+            raise UsageError(
+                "--revert requires %s (it reverts ONE named run commit; the "
+                "journal record is restored and the revert is journaled, so "
+                "the reverted run stays visible)"
                 % ", ".join("--" + m for m in missing))
         try:
             out["seq"] = int(out["seq"])
@@ -688,8 +712,9 @@ def _reconcile_advice(seq):
         "  legs over that run:  py deploy/compile-driver.py --reverify --root .\n"
         "  --seq %d --staging <the run's staging dir> --authorization <path>\n"
         "  (use this when the absorption itself is sound and only the transport\n"
-        "  failed), or (b) complete the revert of its run commit and journal it.\n"
-        "  Nothing was written by this invocation." % seq)
+        "  failed), or (b) revert its run commit and journal the revert:\n"
+        "  py deploy/compile-driver.py --revert --root . --seq %d\n"
+        "  Nothing was written by this invocation." % (seq, seq))
 
 
 # --------------------------------------------------------------- revert
@@ -1278,9 +1303,12 @@ def execute_run(root, staging, auth_path, sections=False, engine=None,
         # revert -- invariant 4 wanted a verify on every absorption and one
         # happened. The branch stays unmergeable until adjudicated.
         out("VERIFY NON-CONFIRM: %d of %d absorption leg(s) confirmed, %d of "
-            "%d no-op leg(s) confirmed. The verdicts are journaled data -- read "
-            "them in receipts/verify/, fix the view, re-verify. NOT reverted: "
-            "the absorption IS verified, it just did not pass."
+            "%d no-op leg(s) confirmed. The verdicts are journaled data -- "
+            "read them in receipts/verify/, then adjudicate: `--revert --seq "
+            "N` this run, correct the answers in the (untouched) staging dir, "
+            "and re-run `--run` so the correction lands validated and "
+            "re-verified. Never hand-edit the written views. NOT reverted "
+            "here: the absorption IS verified, it just did not pass."
             % (confirmed, checked, noop_confirmed, noop_checked))
         # v3.0-84: name the failure CLASS per leg. "confirmed but stamp
         # refused" (e.g. no derivation region on a legacy view) is a different
@@ -1489,12 +1517,126 @@ def execute_reverify(root, seq, staging, auth_path, engine=None, probe=None,
     if confirmed != checked or vres.get("confirmed", 0) != vres.get("checked", 0):
         out("REVERIFY NON-CONFIRM: the legs completed with real verdicts, but "
             "%d of %d absorption leg(s) confirmed. The verdicts are journaled "
-            "data -- read receipts/verify/, fix the view, re-verify. Not "
-            "reverted." % (confirmed, checked))
+            "data -- read receipts/verify/, then adjudicate with `--revert "
+            "--seq %d` and re-absorb corrected answers via `--run`. Not "
+            "reverted here." % (confirmed, checked, seq))
         return EXIT_FAIL
     out("REVERIFY CLEAN: every leg completed and confirmed; run seq %d now has "
         "a terminal verify disposition (new verify record at seq %s)."
         % (seq, vres.get("seq")))
+    return EXIT_OK
+
+
+# --------------------------------------------------------------- revert mode
+def _find_run_commit(repo, seq):
+    """The commit that ADDED receipts/journal/<seq>.json -- the run commit.
+    (--diff-filter=A: the journal is append-only, so the record file is added
+    exactly once; a later revert RESTORES it but never re-adds it.)"""
+    rel = "receipts/journal/%d.json" % seq
+    rc, out, _e = _git(repo, "log", "--diff-filter=A", "--format=%H", "--", rel)
+    if rc != 0 or not out.strip():
+        return None
+    return out.split()[-1]
+
+
+def execute_revert(root, seq, reason=None, out=print):
+    """Operator adjudication of a run that must not stand: revert its run
+    commit through the SAME machinery the auto-revert path uses
+    (revert_run_commit: `git revert -n`, journal record restored, revert
+    journaled, one stage-only commit). Two states qualify:
+
+      * a run whose verify legs COMPLETED with non-confirm verdicts
+        (rejected/revised) -- the atomicity rule leaves that run committed and
+        the branch unmergeable "until adjudicated"; THIS is the shipped
+        adjudication. The correction then rides a fresh --run over corrected
+        answers (the staging dir is untouched), so it lands validated,
+        journaled, and re-verified -- never as a hand-edit of written views.
+      * a run with NO terminal verify disposition (crashed run, or a pre-fix
+        record whose legs never completed) -- this mechanizes reconcile advice
+        option (b), which used to end "by hand".
+
+    It REFUSES a fully-confirmed run: there is nothing to adjudicate, and a
+    confirmed absorption that later proves wrong is corrected by a new raw
+    event through a new run, not by rewriting history's disposition.
+
+    Added 2026-08-03 (v3.0-local-5, second finding): without this mode the
+    only exits from an all-rejected run were a manual revert or corrections
+    committed outside the engine -- the first live all-rejected run took the
+    second exit and shipped 14 corrected-but-unverified views."""
+    repo = os.path.abspath(root)
+    if not os.path.isdir(repo) or not _is_git_repo(repo):
+        out("REFUSED: --root %s is not a git repository." % root)
+        return EXIT_FAIL
+    if not _worktree_clean(repo):
+        out("REFUSED: the worktree is not clean. The revert must land as its "
+            "own stage-only commit; commit or stash your changes first. "
+            "Nothing was reverted.")
+        return EXIT_FAIL
+
+    recs = load_journal(repo)
+    rec = recs.get(seq)
+    if rec is None:
+        out("REFUSED: no journal record at seq %d." % seq)
+        return EXIT_FAIL
+    if str(rec.get("run_type", "")).lower() != "compile":
+        out("REFUSED: journal seq %d is a %r record, not a compile run."
+            % (seq, rec.get("run_type")))
+        return EXIT_FAIL
+    for r in recs.values():
+        dr = r.get("driver_revert")
+        if isinstance(dr, dict) and dr.get("reverts_seq") == seq \
+                and dr.get("status") == "reverted":
+            out("REFUSED: run seq %d is already reverted (journal has a "
+                "'reverted' driver-revert record for it). Re-absorb the "
+                "corrected answers with --run." % seq)
+            return EXIT_FAIL
+
+    # Verify disposition: which of the two qualifying states is this -- or is
+    # it a fully-confirmed run, which is refused?
+    vrecs = [r for r in recs.values() if r.get("verifies_seq") == seq]
+    disposition = "unverified (no verify record covers this run)"
+    if vrecs:
+        newest = max(vrecs, key=lambda r: r.get("seq", 0))
+        legs = verify_record_legs(repo, newest)
+        if legs["incomplete"]:
+            disposition = ("unverified (%d verify leg(s) never completed)"
+                           % len(legs["incomplete"]))
+        else:
+            nonconfirm = [l for l in legs["legs"]
+                          if not (l["label"].startswith("confirm")
+                                  or l["label"].startswith(
+                                      "substrate-gated(confirm"))]
+            if not nonconfirm:
+                out("REFUSED: run seq %d is fully confirmed -- every verify "
+                    "leg completed and confirmed, so there is nothing to "
+                    "adjudicate. A confirmed absorption that later proves "
+                    "wrong is corrected by a NEW raw event through a new run, "
+                    "never by reverting a confirmed disposition." % seq)
+                return EXIT_FAIL
+            disposition = ("non-confirm verify verdict(s): %s"
+                           % ", ".join(sorted({l["label"]
+                                               for l in nonconfirm})))
+
+    run_sha = _find_run_commit(repo, seq)
+    if not run_sha:
+        out("REFUSED: could not locate the commit that added "
+            "receipts/journal/%d.json -- the run commit is not on this "
+            "branch's history. Nothing was reverted." % seq)
+        return EXIT_FAIL
+
+    reason = reason or ("operator adjudication via --revert: %s -- corrected "
+                        "re-absorb to follow" % disposition)
+    out("REVERT: run seq %d (%s) -- %s" % (seq, run_sha[:12], disposition))
+    ok, detail = revert_run_commit(repo, run_sha, seq, reason, out=out)
+    if not ok:
+        out("REVERT FAILED: %s" % detail)
+        out("If the revert conflicted, the failure is journaled as "
+            "'revert-failed' (non-terminal): reconciliation blocks every "
+            "later run until the conflict is resolved by hand.")
+        return EXIT_FAIL
+    out("REVERT CLEAN: %s. The staging dir (if kept) is untouched -- correct "
+        "the answers there and re-run --run so the correction lands "
+        "validated, journaled, and verified." % detail)
     return EXIT_OK
 
 
@@ -1784,7 +1926,8 @@ def self_test():                                            # noqa: C901
                          "--authorization", "a", "--sections"])
     case("valid --run argv parses (mode/root/staging/authorization/sections)",
          parsed == {"mode": "run", "root": "r", "staging": "s",
-                    "authorization": "a", "seq": None, "sections": True},
+                    "authorization": "a", "seq": None, "reason": None,
+                    "sections": True},
          parsed)
     case("--self-test parses as its own mode",
          parse_args(["--self-test"])["mode"] == "self-test")
@@ -2360,6 +2503,77 @@ def self_test():                                            # noqa: C901
     finally:
         shutil.rmtree(repo_n2, ignore_errors=True)
 
+    # ---------- N3. --revert: operator adjudication of a non-confirm verdict
+    # (v3.0-local-5 second finding: the skill said "fix the view text and
+    # re-run the verify leg" but no CLI mode performed it -- the first live
+    # all-rejected run ended with hand-edited, unverified views. --revert is
+    # the shipped adjudication: revert the run, correct the STAGED answers,
+    # re-run --run.)
+    repo_p = make_repo("cdrv-revert-")
+    try:
+        st = make_staging(repo_p)
+        good = make_grant(repo_p)
+        _git(repo_p, "add", "-A")
+        _git(repo_p, "commit", "-qm", "fixtures")
+        before_p = open(os.path.join(repo_p, "wiki", "a.md"),
+                        encoding="utf-8").read()
+        cseq_p = plant_seq103(repo_p, "rejected")
+        case("a completed 'rejected' verdict is terminal (this is the state "
+             "--revert exists to adjudicate)",
+             reconcile_state(repo_p)["blocked"] is False)
+        case("--revert refuses an unknown seq",
+             execute_revert(repo_p, 9999, out=silent) == EXIT_FAIL)
+        case("--revert refuses a seq that is not a compile run",
+             execute_revert(repo_p, cseq_p + 1, out=silent) == EXIT_FAIL)
+        junk = os.path.join(repo_p, "dirty.txt")
+        with open(junk, "w", encoding="utf-8") as fh:
+            fh.write("uncommitted\n")
+        case("--revert refuses a dirty worktree (the revert must land alone)",
+             execute_revert(repo_p, cseq_p, out=silent) == EXIT_FAIL)
+        os.remove(junk)
+        rc = execute_revert(repo_p, cseq_p, out=silent)
+        recs_p = load_journal(repo_p)
+        case("--revert over a rejected run exits 0 and restores the view",
+             rc == EXIT_OK
+             and open(os.path.join(repo_p, "wiki", "a.md"),
+                      encoding="utf-8").read() == before_p)
+        case("--revert journals a 'reverted' driver-revert record, chain "
+             "intact",
+             any(isinstance(r.get("driver_revert"), dict)
+                 and r["driver_revert"].get("reverts_seq") == cseq_p
+                 and r["driver_revert"].get("status") == "reverted"
+                 for r in recs_p.values())
+             and _core().check_chain(repo_p) == len(recs_p))
+        case("--revert keeps the run's own journal record visible "
+             "(append-only survives the revert)",
+             os.path.isfile(os.path.join(repo_p, "receipts", "journal",
+                                         "%d.json" % cseq_p)))
+        case("--revert refuses an already-reverted run",
+             execute_revert(repo_p, cseq_p, out=silent) == EXIT_FAIL)
+        case("reconciliation stays clean after --revert",
+             reconcile_state(repo_p)["blocked"] is False)
+        rc = run_driver(repo_p, st, good, engine=FakeEngine(),
+                        sensors=quiet_sensors, out=silent)
+        case("the branch accepts the corrected re-absorb after --revert",
+             rc == EXIT_OK)
+    finally:
+        shutil.rmtree(repo_p, ignore_errors=True)
+
+    repo_q = make_repo("cdrv-revert-confirmed-")
+    try:
+        make_staging(repo_q)
+        make_grant(repo_q)
+        _git(repo_q, "add", "-A")
+        _git(repo_q, "commit", "-qm", "fixtures")
+        cseq_q = plant_seq103(repo_q, "confirm")
+        rc = execute_revert(repo_q, cseq_q, out=silent)
+        case("--revert refuses a fully-confirmed run (nothing to adjudicate)",
+             rc == EXIT_FAIL
+             and not any(r.get("driver_revert")
+                         for r in load_journal(repo_q).values()))
+    finally:
+        shutil.rmtree(repo_q, ignore_errors=True)
+
     # ------------------------------------------------ O. --reverify argv
     try:
         parse_args(["--reverify", "--root", "."])
@@ -2383,6 +2597,28 @@ def self_test():                                            # noqa: C901
         case("--reverify cannot smuggle --no-verify either", False)
     except UsageError:
         case("--reverify cannot smuggle --no-verify either", True)
+
+    # ------------------------------------------------ O2. --revert argv
+    try:
+        parse_args(["--revert", "--root", "."])
+        case("--revert without --seq refuses", False)
+    except UsageError as e:
+        case("--revert without --seq refuses", "--seq" in str(e), str(e))
+    try:
+        parse_args(["--revert", "--root", ".", "--seq", "abc"])
+        case("--revert with a non-integer --seq refuses", False)
+    except UsageError as e:
+        case("--revert with a non-integer --seq refuses", "integer" in str(e))
+    p = parse_args(["--revert", "--root", "r", "--seq", "7",
+                    "--reason", "operator adjudication"])
+    case("--revert argv parses with an int seq and optional --reason",
+         p["mode"] == "revert" and p["seq"] == 7
+         and p["reason"] == "operator adjudication", p)
+    try:
+        parse_args(["--revert", "--root", ".", "--seq", "7", "--no-verify"])
+        case("--revert cannot smuggle --no-verify either", False)
+    except UsageError:
+        case("--revert cannot smuggle --no-verify either", True)
 
     # ------------------- P. codex resolution + bridge probe (backlog v3.0-68)
     NPM_TAIL = os.path.join(*_NPM_VENDOR_TAIL)
@@ -2597,6 +2833,8 @@ def self_test():                                            # noqa: C901
          "return execute_reverify(" in main_src)
     case("main() dispatches --reconcile to execute_reconcile",
          "return execute_reconcile(" in main_src)
+    case("main() dispatches --revert to execute_revert",
+         "return execute_revert(" in main_src)
 
     # ------------------------------------------------------- K. exit mapping
     case("main() with no arguments is inconclusive (exit 2)",
@@ -2628,6 +2866,9 @@ def main(argv):
     if opts["mode"] == "reverify":
         return execute_reverify(opts["root"], opts["seq"], opts["staging"],
                                 opts["authorization"])
+    if opts["mode"] == "revert":
+        return execute_revert(opts["root"], opts["seq"],
+                              reason=opts["reason"])
     print(USAGE)
     return EXIT_INCONCLUSIVE
 

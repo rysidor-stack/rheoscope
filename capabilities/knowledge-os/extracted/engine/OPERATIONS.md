@@ -106,8 +106,9 @@ A substrate-different model (the fork defaults to `gpt-5.6-sol` via the bridge; 
 on model-id difference, migration/design-gate work on vendor difference — spec §5) receives the
 full event + the current view body and answers whether the absorption is faithful. **Verdicts
 are data, not instructions** — a `revised`/`rejected` verdict is the honesty layer catching a real
-defect (omission, fabrication, stale contradiction, over-certainty); fix the view and re-verify,
-never argue with or route around it. Read the FULL verdict, not just the top-level field: a
+defect (omission, fabrication, stale contradiction, over-certainty); adjudicate it through the
+correction cycle (`--revert` → corrected answers → fresh `--run`; §7a below), never argue with or
+route around it. Read the FULL verdict, not just the top-level field: a
 `substrate-gated` outer verdict can still carry a substantive nested `bridge_verdict` (a real
 `rejected` with reasoning) that every top-level tally otherwise misses (v3.0-23) — check both.
 
@@ -118,14 +119,21 @@ accumulated span (prior events + the new one) in ONE verify run so the verdict g
 claim. On the fork this closed three "parked" view-spans, one in a single joint leg — and measured
 cheaper per-event than solo verify (~0.6 legs/event on a 10-event joint span vs. ~1–2 solo).
 
-**Corrections from verify verdicts.** A `revised` or `rejected` verdict that demands a content
-correction is closed out in the **same** absorb/verify cycle — it is never routed as a new raw
-event. Fix the view directly, re-run the cross-vendor verify leg over the corrected text, and let
-the verify artifact (+ the run journal) record that the correction happened and why. This is a
-faithfulness fix: the triggering event already established the fact, the view just failed to
-render it faithfully, and the verdict caught that. **New information** — a fact the triggering
-event never established — is a different case entirely: that goes through the normal pipeline as
-its own raw event (step 1), never folded into a correction.
+**Corrections from verify verdicts (§7a — reworked 2026-08-03).** A `revised` or `rejected`
+verdict that demands a content correction is closed out in the **same** compile session — it is
+never routed as a new raw event. The mechanism is the driver's **correction cycle**, not a direct
+edit (the old wording, "fix the view directly, re-run the verify leg," named an operation no
+driver mode performs — a completed verdict is a terminal disposition, so `--reverify` rightly
+declines it, and the first live all-rejected run ended with hand-edited, unverified views):
+`compile-driver.py --revert --seq N` reverts the run commit (journal record restored, revert
+journaled — the rejection stays on the record), the answers are corrected **in the staging dir**
+under the same per-view isolation that authored them, and a fresh `--run` re-absorbs them — so the
+correction re-rides the full validate/absorb/verify road and its confirming verdict is a fresh
+verify record, never an overwrite. This is a faithfulness fix: the triggering event already
+established the fact, the view just failed to render it faithfully, and the verdict caught that.
+**New information** — a fact the triggering event never established — is a different case
+entirely: that goes through the normal pipeline as its own raw event (step 1), never folded into
+a correction.
 
 ### 8. Census green check
 
@@ -154,6 +162,11 @@ single entry point:
 ```
 py deploy/compile-driver.py --run --root . --staging <dir> \
    --authorization deploy/evidence/operator-<...>.md [--sections]
+py deploy/compile-driver.py --reverify --root . --seq N --staging <dir> \
+   --authorization <path>                               # transport failed; absorption stands
+py deploy/compile-driver.py --revert --root . --seq N [--reason TEXT]
+                                        # adjudicate a non-confirm verdict, or complete a
+                                        # crashed run's revert; correction re-rides --run (§7a)
 py deploy/compile-driver.py --reconcile --root .        # maintenance: is a run unterminated?
 py deploy/compile-driver.py --self-test
 Exit: 0 clean | 1 validation/gate failure | 2 inconclusive | 3 lock held
@@ -163,7 +176,8 @@ What it guarantees, and why it exists rather than a per-session script: `--autho
 REQUIRED and validated **before anything is written** (a missing, out-of-class, revoked, or
 non-covering artifact refuses with nothing written and nothing committed); **there is no
 `--no-verify` flag** — every live absorption rides a verify leg (standing invariant 4); a verify
-leg that completes with a non-confirm verdict is journaled data (exit 1, no revert), while a
+leg that completes with a non-confirm verdict is journaled data (exit 1, no auto-revert — the
+operator adjudicates it with `--revert` and the correction re-rides `--run`, §7a), while a
 verify leg that does NOT complete auto-reverts the run commit, journals the revert, and preserves
 the staging dir; and startup reconciliation refuses new work while the newest run record lacks a
 terminal verify disposition (the crash-window case). Read that file's module docstring for the

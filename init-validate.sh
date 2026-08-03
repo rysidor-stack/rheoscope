@@ -141,7 +141,9 @@ done
 
 # 7. Core skills MUST exist post-init (always wired, independent of capability toggles).
 #    core/skills/ is consumed at wiring time, so it must NOT remain either.
-for s in flight-plan handoff-author handoff-receive handoff-close log-backlog cross-check cross-check-loop preflight doctor orient conformance sweep standing-loop; do
+#    This list mirrors the shipped core/skills/ set (init wires every entry unconditionally);
+#    v3.0-78 collapsed handoff-author + handoff-receive into the single /handoff skill.
+for s in flight-plan handoff handoff-close log-backlog cross-check cross-check-loop preflight doctor orient reason conformance sweep standing-loop; do
     [[ -f "$SCRIPT_ROOT/.claude/skills/$s/SKILL.md" ]] || add_fail "Core skill missing: .claude/skills/$s/SKILL.md"
 done
 # bridge is the transport library the cross-check skills call into -- it has no SKILL.md

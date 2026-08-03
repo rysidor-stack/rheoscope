@@ -151,7 +151,9 @@ foreach ($d in $requiredDirs) {
 
 # 7. Core skills MUST exist post-init (always wired, independent of capability toggles).
 #    core/skills/ is consumed at wiring time, so it must NOT remain either.
-$coreSkills = @('flight-plan', 'handoff-author', 'handoff-receive', 'handoff-close', 'log-backlog', 'cross-check', 'cross-check-loop', 'preflight', 'doctor', 'orient', 'conformance', 'sweep', 'standing-loop')
+#    This list mirrors the shipped core/skills/ set (init wires every entry unconditionally);
+#    v3.0-78 collapsed handoff-author + handoff-receive into the single /handoff skill.
+$coreSkills = @('flight-plan', 'handoff', 'handoff-close', 'log-backlog', 'cross-check', 'cross-check-loop', 'preflight', 'doctor', 'orient', 'reason', 'conformance', 'sweep', 'standing-loop')
 foreach ($s in $coreSkills) {
     $skillFile = Join-Path $scriptRoot ".claude/skills/$s/SKILL.md"
     if (-not (Test-Path $skillFile)) {

@@ -28,6 +28,8 @@ This skill assumes the engine layer of `knowledge-os` is extracted in this proje
 
 Read `CLAUDE.md` at the project root, then `docs/wiki-schema.md`. Those files govern everything. Do not proceed without reading them.
 
+**Clone-sync guard (added 2026-08-03).** The journal's append-only, hash-linked guarantees hold *per clone* — nothing in the engine detects two clones compiling divergent histories. If the project has a git remote: `git fetch`, then compare. **Behind or diverged → stop** and tell the operator to reconcile before any compile runs; compiling on a stale clone forks the knowledge base, and the fork is exactly the kind of silent state the whole engine exists to prevent. Ahead (local commits not yet pushed) → proceed, but say so in the receipt's `notes:` and in your closing summary, so unpushed engine history is a named state, never a discovered one. No remote → skip this guard.
+
 ## Step 1 — Scan for Unprocessed Raw Files
 
 Read every file in `raw/`. For each one, extract its YAML frontmatter (`source`, `date`, `tags`, `summary`, `compile`).
@@ -69,6 +71,10 @@ If `project.yaml.wiki_domains` is empty (operator has not yet declared domains),
 
 **UNROUTED events from the census** get exactly this triage — it is the same judgment call as the unmatched-tags rule above, just arriving from the census bucket rather than from your own scan. Triage each as one of: (a) the vocabulary needs extending (`deploy/entities.yaml` — operator-gated, append-only); (b) `compile: false`, if the file is archival/process rather than knowledge; (c) parked — a small genuinely-unrouted residue is honest. Log a `routing` REVIEW.md entry whenever the call is ambiguous.
 
+**Routing is the highest-leverage judgment in this pipeline — treat it as one.** The plan silently sets everything downstream: routing an event to a view *obliges* that view to carry every load-bearing claim of the event (per-view totality, Step 2.5's doctrine), sets what each author may see, and sets what one rejection costs. Fanning a wide source (a facts sheet, a synthesis document) into many views multiplies the totality obligation by the fan-out — the dominant failure mode of the first large live run (2026-08-03: a 250-line source routed to six views produced six "incomplete view" rejections). For a wide source, either route it narrowly to the views that will genuinely carry its full load this run, or stage the fan-out across runs through `pending_cascade` (Step 2.5's completion rule) — never route all targets at once because the tags match.
+
+**Batch cap — plan at most 5 views per run** (added 2026-08-03; the circuit breaker at 15 remains the outer blast-radius bound). A backlog that wants more views than 5 flows through `pending_cascade` into the next run, exactly like a partially-fanned wide source. Three short runs that each verify cleanly beat one long run that fails wholesale: a verify rejection over 14 views costs the whole evening; over 5 it costs minutes. When a backlog has accumulated, prefer running /compile several times over raising the cap.
+
 ### The plan file
 
 Write the routing decision out as `plan.json` in a scratch staging dir (`.batch-run/<tag>/`, throwaway, never committed):
@@ -90,7 +96,7 @@ Three constraints the engine enforces mechanically — get them right here rathe
 
 ## Step 2.5 — Author the Absorb Answers (the judgment kernel)
 
-This is where your judgment lands. For **each plan item**, author one answer JSON — `<staging>/answers/NN-<slug>.json`, the filename taken from the dispatch manifest you generate in Step 3:
+This is where your judgment lands. For **each plan item**, author one answer JSON — `<staging>/answers/NN-<slug>.json`, the filename taken from the dispatch manifest you generate in Step 3. **Each answer is authored in per-view isolation — Step 3's fan-out is the mechanism, and the isolation is mandatory, not a speed option** (2026-08-03: authoring all views from one corpus-wide context caused the dominant rejection class of the first large live run — facts bleeding into views whose routed sources don't establish them; an author that has never seen the other views' sources cannot leak them):
 
 ```json
 {"new_text": "<full replacement view text>" or null,
@@ -116,7 +122,14 @@ The same merge judgments as before still apply — don't duplicate existing cont
 
 ## Step 3 — Stage, Attest, and Drive the Engine
 
-**Fan out the reads, write serially.** Read the pipeline's raw files and their target articles in parallel (parallel Read calls or subagents) while authoring Step 2.5's answers; the engine does the writing, from this single session, one run. Read a target article in full before authoring its `new_text`, and read nothing that isn't a pipeline raw file, a routing target, or a named cascade destination. The single-writer rule constrains *writes* to this session — reads can and should be parallel.
+**Fan out the authoring in per-view isolation; write serially.** (Reworked 2026-08-03 — the old wording, "parallel Read calls or subagents," treated the two as equivalent. They are not: parallel Reads still land the whole corpus in one authoring context, and that is precisely what leaked cross-view facts in the first large live run. The isolation is worth more than the speed; the speed comes free with it.)
+
+- **One authoring subagent per plan item.** After 3a's `emit_packets` generates the work packets, spawn one subagent per packet, in parallel. Each subagent receives **only**: its packet, the full text of its routed event file(s), the full current text of its target view, and Step 2.5's answer format + absorb doctrine. It returns the answer JSON for that one view.
+- **A subagent must never receive** the other views, the other events, the census, or any summary of "what this run is doing" — an author that has never seen the rest of the corpus is structurally incapable of the cross-view leak the verifier rejects. Do not "helpfully" add context beyond the packet.
+- **You (the orchestrator) stay the single writer**: you write the returned answers to `<staging>/answers/`, you run the self-check (3a), you stamp, you drive. Subagents author content for the staging seam; they never touch `wiki/`, the staging dir, or git.
+- **If subagents are unavailable in this session** (tool restrictions), degrade to serial authoring with the same discipline: author one view at a time, and before each, re-read only that view's routed events and current text — never author from memory of the corpus sweep. Name the degradation in the receipt's `notes:`; it is the leak-prone mode.
+
+Read a target article in full before (or as part of) authoring its `new_text`, and read nothing that isn't a pipeline raw file, a routing target, or a named cascade destination.
 
 ### 3a. Stage + attest
 
@@ -150,6 +163,14 @@ cb.stamp_dispatch(".batch-run/<tag>/dispatch-manifest.json",
 
 `emit_packets` names each answer file (`answers/NN-<slug>.json`, `NN` = plan item order, slug derived from the view path) — read the manifest it writes and use those exact filenames. **Stamp LAST**, after every answer file exists: the stamp commits to the manifest's contents, and re-running `emit_packets` after stamping invalidates it.
 
+**Pre-dispatch self-check (added 2026-08-03) — run it on every answer BEFORE stamping.** The cross-vendor verify legs are slow and paid; do not spend them discovering defects a local pass catches. For each answer, check against **only that view's routed events** (the same isolation the author had):
+
+1. **Traceability:** every sentence the diff adds is established by that view's routed events — not by another event in the run, not by corpus knowledge. A fact you can't point to a routed-event line for gets cut.
+2. **Totality:** every load-bearing claim of each routed event is represented or implied in the `new_text`. If honoring this would balloon the view, the routing was too wide — go back to Step 2 and narrow it via `pending_cascade` rather than shipping a partial absorption.
+3. **Internal consistency:** the `new_text` contradicts neither itself nor a claim it leaves standing (the reconcile-what-it-supersedes rule); counts, numberings, and quoted figures match the event verbatim.
+
+A failed check goes back to that view's author (or authoring pass) with the specific defect named. This mirrors what the external verifier checks; it does not replace the verify legs — it keeps them from being the first reader.
+
 ### 3b. Drive
 
 ```
@@ -175,7 +196,12 @@ Read the exit code, and act on it — never re-run blind:
 On exit 1, the summary names which case it was:
 
 - **A pre-write refusal** (authorization, staging, plan precedence, reconciliation) — nothing was written. Fix exactly the named thing and re-run. **Never loosen a gate**: a refusal is the system working.
-- **A non-confirm verify verdict** (`revised` / `rejected`) — the absorption happened and IS verified; the verdict is journaled data, not an instruction to argue with. Read the FULL verdict in `receipts/verify/` (a `substrate-gated` outer verdict can still carry a real nested `bridge_verdict` — check both), fix the view text in this same cycle, and re-run the verify leg over the corrected text. A verdict-driven correction is never routed as a new raw event; genuinely new information is.
+- **A non-confirm verify verdict** (`revised` / `rejected`) — the absorption happened and IS verified; the verdict is journaled data, not an instruction to argue with. Read the FULL verdict in `receipts/verify/` (a `substrate-gated` outer verdict can still carry a real nested `bridge_verdict` — check both), then run the **correction cycle** (corrected 2026-08-03 — the old instruction, "fix the view text and re-run the verify leg," named an operation no driver mode performs; the first live all-rejected run ended with hand-edited, unverified views because of it):
+  1. **Adjudicate:** `py deploy/compile-driver.py --revert --root . --seq <N>` — reverts the run commit through the engine (journal record restored, revert journaled, nothing hidden). Run this **before** any Step 4–11 projection edits touch the same files, so the revert applies cleanly.
+  2. **Correct the answers in the staging dir** — the `--revert` left it untouched. Fix exactly the defects the verdicts name, in the answer JSONs, under the same per-view isolation as the original authoring (hand each verdict to that view's author with only its routed events).
+  3. **Re-absorb:** re-run 3a's staging script (fresh `emit_packets` + re-stamp — the old stamp died with the edit) and then `--run` again. The correction lands validated, journaled, and re-verified — the full road, same as any absorption.
+
+  **Never hand-edit the written views to apply a verdict correction** — that routes around the engine and ends "corrected but unverified," the exact state the invariant forbids. A verdict-driven correction is never routed as a new raw event; genuinely new information is.
 - **An auto-reverted run** (the verify leg did not complete — bridge error, timeout, refusal mid-run) — the run commit was reverted, the revert is journaled, and the staging dir is untouched. Diagnose the transport failure, then re-run the same staging dir.
 - **Startup reconciliation refused** — a prior run on this branch has no terminal verify disposition (a crashed run). Reconcile it first (`py deploy/compile-driver.py --reconcile --root .` explains which seq); no new run is accepted until you do.
 
@@ -290,12 +316,13 @@ Local commit only — push is operator-driven and out of scope for /compile.
 
 ## Circuit Breaker
 
-If this compile run would modify more than **15 substantive articles**, stop after 15. "Substantive" counts content and cascade-target articles only — the regenerated projections (INDEX, HEALTH, SESSION-BRIEFING, changelog) do **not** count against the limit. At the limit, write a `compile` REVIEW.md entry naming what remains and record the unreached cross-reference targets in the receipt's `pending_cascade`; the next `/compile` run picks them up (Step 1 re-entry). This is a blast-radius control, not a context signal — while under the limit, finish the run.
+The plan-time batch cap (Step 2, 5 views/run) is the normal bound; this breaker is the outer one, and it also covers Steps 4–5's cascade targets, which the plan cap does not. If this compile run would modify more than **15 substantive articles**, stop after 15. "Substantive" counts content and cascade-target articles only — the regenerated projections (INDEX, HEALTH, SESSION-BRIEFING, changelog) do **not** count against the limit. At the limit, write a `compile` REVIEW.md entry naming what remains and record the unreached cross-reference targets in the receipt's `pending_cascade`; the next `/compile` run picks them up (Step 1 re-entry). This is a blast-radius control, not a context signal — while under the limit, finish the run.
 
 ## Rules
 
 - Never hand-write a `wiki/` article body to route around the engine. Article bodies land through Step 2.5's answers and the driver, so that every absorption is validated, journaled, and cross-vendor verified. Steps 4–11's frontmatter and projection edits are the documented exception (as is the engine-absent degradation mode above, which must always be named in its receipt).
 - Never loosen a gate. A `DispatchRefused`, a plan-precedence refusal, a validation error, a non-confirm verdict — each names exactly what is wrong. Fix the named thing.
+- Never hand-edit a written view to apply a verify verdict's correction. The correction cycle is `--revert` → fix the staged answers → re-run `--run` (Step 3b exit-1). Hand-edits end committed-but-unverified — the state invariant 4 exists to make impossible.
 - Never edit files in `raw/`. They are append-only.
 - Never delete articles. If one becomes obsolete, add a `## Deprecated` section and a REVIEW.md entry.
 - Never run /audit, /discover, or /preflight. Those are separate orchestrators.

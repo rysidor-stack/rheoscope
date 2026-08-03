@@ -1,7 +1,7 @@
 {
   "//": "Instantiated to .claude/settings.local.json by init (consent-prompted, see INIT.md 6b).",
   "//allow": "Pre-authorized work. Rationale: deploy/check-autonomy-disposition.py rule 3 -- an action that is REVERSIBLE and DETERMINISTICALLY VERIFIABLE is AUTONOMOUS, no human gate. Every entry below is repo-scoped and git-reversible, and the PreToolUse hooks (not the permission prompt) are the actual security boundary: block-dangerous-bash.sh still mediates every Bash/PowerShell call and block-env-writes.sh every Edit/Write, allowlisted or not. Shipping a one-Read allowlist instead made every sensor, compile, and edit interrupt the operator forever, which is anti-automation and trains rubber-stamping (backlog v3.0-76).",
-  "//deny": "Kept gated deliberately, by class rather than by taste: egress (git push), history-destroying local ops (hard reset, clean), the credential broker (credential-class per deploy/safe-allowlist.yaml F-1), and .env writes. Absence from `allow` is itself a gate -- there is no catch-all, and there must never be one.",
+  "//deny": "Kept gated deliberately, by class rather than by taste -- and ONLY for the unrecoverable or secret-touching: history-destroying local ops (hard reset, clean -- these destroy uncommitted work, the one thing git cannot bring back), the credential broker (credential-class per deploy/safe-allowlist.yaml F-1), .env writes, and external-service connectors. git push is deliberately NOT denied (operator ruling 2026-08-02, backlog v3.0-90): a push to the project's own remote is reversible and carries no decision content, so gating it is manufactured manual work. Unattended/standing-loop instances re-affirm their egress posture at the arming review (the v3.0-70 row) -- that is the guard for autonomous runs, not a blanket deny that taxes every attended session. Absence from `allow` is itself a gate -- there is no catch-all, and there must never be one.",
   "permissions": {
     "allow": [
       "Read({{project_root_path}}/**)",
@@ -26,10 +26,8 @@
       "mcp__claude_ai_Google_Calendar__*",
       "mcp__claude_ai_Intuit_QuickBooks__*",
       "mcp__claude_ai_Context7__*",
-      "Bash(git push *)",
       "Bash(git reset --hard *)",
       "Bash(git clean *)",
-      "PowerShell(git push *)",
       "PowerShell(git reset --hard *)",
       "PowerShell(git clean *)",
       "Bash(*credential-store*)",

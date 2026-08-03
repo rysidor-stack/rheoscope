@@ -100,6 +100,17 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.18 → v3.0.19 (git push un-denied)
+
+One file, one decision. The shipped permission baseline no longer denies `git push`
+(operator ruling, backlog v3.0-90 — deny is for the unrecoverable or secret only).
+Existing instances: `.claude/settings.local.json` is untracked and per-machine, so no
+pull delivers this — delete the two lines `"Bash(git push *)",` and
+`"PowerShell(git push *)",` from the `deny` list on each machine where you want
+frictionless pushes. Instances running an ARMED standing loop should make that choice
+deliberately at the arming review (push will run with no prompt at all once removed,
+because `git *` is allowlisted). Everything else in the deny list stays.
+
 ## v3.0.17 → v3.0.18 (bare-harness scrub + multi-corpus + backfill route)
 
 Fully additive; no skill retirements, no init-script changes. Adoption:

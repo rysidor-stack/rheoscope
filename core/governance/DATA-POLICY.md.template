@@ -37,7 +37,7 @@ Screenshots and recordings used as verification evidence are masked **when captu
 - Dates of birth
 - Financial identifiers shown in the UI (e.g. card last-4 and expiry, account numbers) — masked in stored evidence even when they legitimately appear on screen
 - Balances and amounts tied to an identifiable customer
-- Visible auth secrets (tokens, API keys, passwords)
+- Visible auth secrets (tokens, API keys, passwords) — masking governs their *appearance* in artifacts; their *storage* is governed by `core/security/CREDENTIALS.md` (vault-only, via the credential broker — never a plaintext file)
 - Customer-entered free-text fields (notes, comments — they can contain anything)
 
 **Not masked:** opaque entity IDs (the approved reference form), layout and chrome, and data that is synthetic by construction. Evidence captured against fully synthetic test data may skip masking, but the artifact must record that its data source was synthetic.

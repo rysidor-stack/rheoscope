@@ -2,6 +2,13 @@
 
 This directory holds PreToolUse hooks that block named risks before they reach the filesystem or network.
 
+**This perimeter is deliberately negative — it says what must not happen.** The positive
+convention (where credentials DO live: the OS-vault credential broker, operator-typed,
+delivered by name through operator-pinned bindings) is `core/security/CREDENTIALS.md`.
+Read it before designing any credential storage; deriving a storage plan from these
+hooks' prohibitions alone produced a wrong-but-compliant plaintext plan in a live
+session (2026-08-03), which is why that file exists.
+
 ## Matcher scope — read this before assuming coverage
 
 A hook only mediates the **tools its `matcher` names**. Claude Code exposes separate `Bash`

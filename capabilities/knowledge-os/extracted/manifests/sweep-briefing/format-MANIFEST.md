@@ -5,39 +5,39 @@ version: "1.0"
 status: CERTIFIED
 source_artifacts:
   - path: .claude/skills/sweep/SKILL.md
-    sha256: 898f965fe6067579f166c605e1f781879e2ffc96051cc6ec4501de3e5481945b
+    sha256: d7fc81967597122fe8c4794bdaece21daab1882d13b414ec8c0ba447a2d70e78
   - path: manifests/sweep-briefing/source/exemplar-1.md
-    sha256: b3e551b93f699d5c682f3076d4b825827cada4e331b6e3f7f5053477b99fbddc
+    sha256: 7bc6f7c180da8a08f9f6782393cb617e512af2f2f4d65893bf216da9568b392f
   - path: manifests/sweep-briefing/source/exemplar-2.md
-    sha256: 5110d4fca671062ef407b4073eba211d50a5e3f24da2285381f99fddf485dea7
+    sha256: fb6f831dbc72f3acc52338b8f66d9a7e1b9170e2d3cffd9b4dbdb74406092e4a
   - path: manifests/sweep-briefing/source/defect-sections-present.md
-    sha256: 10e3c5f21e2f7fb4c029a0edfa6f2a4785c6ce345f523f1245fc3cb1e267d6b8
+    sha256: 06af054474ce7e80ecaef672d641bf927366522f36800ba7d106fb015b6e6df2
   - path: manifests/sweep-briefing/source/defect-sections-order.md
-    sha256: 24922675706d690e3db0e6eccae5054f761b00e6ce14d156f26805365ab3b399
+    sha256: 436ebd635e5fc91c9eadf5fc58058b585c181a0bea9d72c1b98331c8694a8197
   - path: manifests/sweep-briefing/source/defect-all-clear-one-sentence.md
-    sha256: f430d2dcfcdde1890734525d8b2bd942e59af60e81bf5aef4d48ae2cce4591e6
+    sha256: 4ef8305a94a2800c5f2a80488d6ad0e36bd72b8fef16a547e9e6e03b2ef3870c
   - path: manifests/sweep-briefing/source/defect-attention-numbered.md
-    sha256: 80373fe1ecb729def5cbd86eb359924cf7562b16f3cbc0c95ee257a0b70d7960
+    sha256: 7b958c410dd54581a18a08de8aa44dbec67757f59f151e683b6aa99dece65d0b
   - path: manifests/sweep-briefing/source/defect-attention-three-sentences.md
-    sha256: 44832341f0a056d7efd1b8bacee57e5ab78877938c3c22bb430a7e24ed770ec5
+    sha256: 05b8d2e72d1663a786c46d4eb5446102da552782a0c5c7d5726ce4a77ef1c43a
   - path: manifests/sweep-briefing/source/defect-attention-no-inline-path.md
-    sha256: 3ddfdb2de1a20e7dc303700b14c5c44dec2738307725584570655feeec4b17cf
+    sha256: e9126d951b04d5d00db69cc2ff3bc40c35fe8bb910168bf9288b919f2c5b603f
   - path: manifests/sweep-briefing/source/defect-attention-details-tail-form.md
-    sha256: 00258cca4510de8175021b0ad4044dc22bf52fb540db8181ba78d032e2d4baa2
+    sha256: 040583e40fd7315d90c40811bf915d3b464b9190790c09db3601ee1247272164
   - path: manifests/sweep-briefing/source/defect-watching-dashed-list.md
-    sha256: 9ef72f25266b33c85e07445e69400befa788538588c6c640dbf0164158f282d5
+    sha256: 4fe9b4b05f372ad107617ff219cc9ec25e7032039197ea0ac6f56b31d131d336
   - path: manifests/sweep-briefing/source/defect-no-raw-output-leakage.md
-    sha256: 24e42c1f0cbef64ca94188fb911653084d5bfb1f12a8d578878e102bd0d07fdd
+    sha256: 1f49e2077ca67f6c96da12bb3c7b5cadbf23f8da68fd273d88062e295a40362c
   - path: manifests/sweep-briefing/source/defect-unclassifiable-in-attention.md
-    sha256: 64ee8867ff47604ccc9a5808a02ab33a9f3e9a5de7f94b9bb4b21e5e7581f0be
+    sha256: dfe582687f9ff00d952bb4c1ff297a8b37adea16c6b9fd50f5e257670439fa43
   - path: manifests/sweep-briefing/source/defect-no-placeholder-tokens.md
-    sha256: a52ada7d1c833eb31c3f63b40a6f621588e564b701a7184984aef62dc8b52844
+    sha256: aa1f69ec9d5f8d9edd205134a380e0087f6d71bdce591344f0fa7b5ebf2019e9
   - path: manifests/sweep-briefing/source/defect-no-script-names-in-prose.md
-    sha256: 43d18bb1e4c7bf6503953362a21764c264ee745603df5877d4c3b3bd85b62bfb
+    sha256: d5b85d79be4e99f6e653f16519558efc5441f5a214036336d6f48d90b0944383
   - path: manifests/sweep-briefing/source/defect-no-preamble-before-all-clear.md
-    sha256: b1daccc461cf681f04424c0e56f138c8a0ccb506b7cb077e325ef212d4c86f47
+    sha256: 0ed5e7a2afe46cac182a46f1d9c4a50d345bff9623b656772cec22a0ddc55341
   - path: manifests/sweep-briefing/source/SEED-README.md
-    sha256: 6717d81a6aa5a0647ac50fc641ae7119adc7bde318d9a58cd072807c7a2941f3
+    sha256: db20511efb4eebbb239d74948c474d76a586bcd5aa7c9a7a54fb5a5896bd2856
 extracted: 2026-07-23
 toolchain: source-read
 confidence: source-crosschecked
@@ -92,7 +92,7 @@ bare") — declared above.
 | `sections-order` | The three sections appear in the fixed order | Run `python deploy/check-briefing-format.py --file <artifact>`; row `sections-order` in its report | Among whichever of the three headings are present, their first-occurrence order in the document is All clear, then Needs your attention, then Watching — never reordered | — | - | validator-output | EXACT |
 | `all-clear-one-sentence` | All-clear is exactly one sentence | Run `python deploy/check-briefing-format.py --file <artifact>`; row `all-clear-one-sentence` in its report | The All-clear section's body (the text following its heading, up to the next section) is exactly one sentence ending in terminal punctuation; counts are permitted inside it, a second sentence is not | — | - | validator-output | EXACT |
 | `attention-numbered` | Needs-your-attention items are numbered sequentially | Run `python deploy/check-briefing-format.py --file <artifact>`; row `attention-numbered` in its report | Needs-your-attention items are introduced by a sequential arabic numeral marker (`1.`, `2.`, `3.`, ...) starting at 1 with no gaps, repeats, or reordering; an empty section (0 items) trivially satisfies this | — | - | validator-output | EXACT |
-| `attention-three-sentences` | Each attention item's prose is exactly three sentences | Run `python deploy/check-briefing-format.py --file <artifact>`; row `attention-three-sentences` in its report | Each Needs-your-attention item's prose (its numbered text, excluding any trailing `(details: ...)`-shaped tail) is exactly three sentences: what's wrong, what happens if ignored, and what the fix is | — | - | validator-output | EXACT |
+| `attention-three-sentences` | Each attention item's prose is two to four sentences | Run `python deploy/check-briefing-format.py --file <artifact>`; row `attention-three-sentences` in its report | Each Needs-your-attention item's prose (its numbered text, excluding any trailing `(details: ...)`-shaped tail) is two to four sentences (amended 2026-08-05, A2 — the old exactly-three rule forced padding on naturally-two-sentence items); the three required ROLES — what's wrong, what happens if ignored, what the fix is — are judged by RUBRIC row `attention-sentence-roles`, never by this count. Row id kept for fixture and smoke-set continuity | — | - | validator-output | EXACT |
 | `attention-no-inline-path` | No attention item's sentence carries an inline path | Run `python deploy/check-briefing-format.py --file <artifact>`; row `attention-no-inline-path` in its report | No Needs-your-attention item's sentence prose (excluding a trailing tail) contains a file-path-shaped token — a backtick-quoted span, a slash-containing path, or a bare filename carrying a `.md`/`.yaml`/`.yml`/`.json`/`.jsonl`/`.log`/`.txt` extension | — | - | validator-output | EXACT |
 | `attention-details-tail-form` | A path reference lives only in a well-formed details tail | Run `python deploy/check-briefing-format.py --file <artifact>`; row `attention-details-tail-form` in its report | When a Needs-your-attention item carries a trailing parenthetical, it is exactly one `(details: <reference>)` span at the very end of the item — the literal word `details:` followed by non-empty content; any other keyword, or an unparenthesized reference, is a violation | — | - | validator-output | EXACT |
 | `watching-dashed-list` | Watching entries are a dashed list | Run `python deploy/check-briefing-format.py --file <artifact>`; row `watching-dashed-list` in its report | Every non-blank line of the Watching section's body is a dash-prefixed list item (`- ` at the start of the line, followed by content); Watching items are never numbered | — | - | validator-output | EXACT |
@@ -101,9 +101,9 @@ bare") — declared above.
 | `no-placeholder-tokens` | No placeholder/skeleton filler ships in a real briefing | Run `python deploy/check-briefing-format.py --file <artifact>`; row `no-placeholder-tokens` in its report | The briefing contains no placeholder/skeleton filler — no literal `TODO`, `TBD`, `XXX`, an angle-bracket `<...>` placeholder, or `lorem ipsum` — SKILL.md: "a real briefing names real things, never placeholders like these" | — | - | validator-output | EXACT |
 | `no-script-names-in-prose` | Script filenames never appear in readable prose | Run `python deploy/check-briefing-format.py --file <artifact>`; row `no-script-names-in-prose` in its report | The briefing's prose — every sentence outside a trailing `(details: ...)`-style tail — never names a `.py` script filename directly; a script filename is exactly the kind of check-name jargon SKILL.md excludes from the readable sentence, and belongs (if anywhere) only inside a details tail | — | - | validator-output | EXACT |
 | `no-preamble-before-all-clear` | Nothing precedes the All-clear heading | Run `python deploy/check-briefing-format.py --file <artifact>`; row `no-preamble-before-all-clear` in its report | Nothing but whitespace may precede the `**All clear:**` heading — no title line, no preamble; the briefing starts at All clear, because downstream parsers (e.g. `deploy/gen-desk.py`) section-parse this artifact from its top | — | - | validator-output | EXACT |
-| `plain-english-business-terms` | All-clear and attention prose read as plain English, in business terms | Independent-grader session (never the authoring session) reads the full briefing against this row's criteria; per-criterion reasoning in the grading receipt, never a bare scalar (manifest-format.md §4) | Every sentence in All-clear and Needs-your-attention describes findings the way a non-technical operator would hear them — impact and action in plain language — with no script/tool filenames or internal-schema vocabulary (e.g. "check-frontmatter.py", "frontmatter", "sha256", "derivation block") outside a details tail — plain check-CATEGORY names ("environment", "structural sensors", "manifest structure", "conformance smoke", "workspace hygiene", "the deadline register") are sanctioned vocabulary, per the skill's own skeleton; a reader who has never opened this repo's code understands what's wrong and what to do without asking what a term means. Grade PASS/FAIL per sentence-group (All-clear; each attention item), naming the specific jargon term or opaque phrase for any FAIL | — | - | independent-grader-review | RUBRIC |
-| `all-clear-names-checks` | All-clear names what was actually checked, not just "fine" | Independent-grader session reads the artifact against this row's criteria; per-criterion reasoning in the grading receipt | The All-clear sentence names, in substance, which categories of check ran (e.g. environment, structural sensors, manifest structure, conformance smoke, deadline register) — not merely "everything is fine" with no content; a bare count with zero category content is a FAIL. Name the missing content for any FAIL | — | - | independent-grader-review | RUBRIC |
-| `attention-sentence-roles` | Each attention item's three sentences map to their required roles | Independent-grader session reads the artifact against this row's criteria; per-criterion reasoning in the grading receipt | Independently of the three-sentence COUNT (validator row `attention-three-sentences`), grade whether sentence 1 states what's wrong in business terms, sentence 2 states the consequence of ignoring it, and sentence 3 states the fix and whether the system can self-apply it next session with a yes — SKILL.md's "The briefing" text verbatim. A three-sentence item whose sentences do not map to these roles is a FAIL for that item, named specifically | — | - | independent-grader-review | RUBRIC |
+| `plain-english-business-terms` | All-clear and attention prose read as plain English, in business terms | Independent-grader session (never the authoring session) reads the full briefing against this row's criteria; per-criterion reasoning in the grading receipt, never a bare scalar (manifest-format.md §4) | Every sentence in All-clear and Needs-your-attention describes findings the way a non-technical operator would hear them — impact and action in plain language — with no script/tool filenames or internal-schema vocabulary (e.g. "check-frontmatter.py", "frontmatter", "sha256", "derivation block") outside a details tail — plain check-CATEGORY names ("environment", "structural checks", "spec-file health", "report spot-check", "workspace hygiene", "the deadline register") are sanctioned vocabulary, per the skill's own skeleton (amended 2026-08-05, A2: the former sanctioned terms "structural sensors" / "manifest structure" / "conformance smoke" were themselves repo-jargon a stranger cannot parse; renamed in skill, skeleton, and seed alike); a reader who has never opened this repo's code understands what's wrong and what to do without asking what a term means. Additionally (A2, adopting 2026-07-23 grader CANDIDATE (a)): a sentence-group that conveys no finding-specific content — boilerplate that would fit any project on any day — is a FAIL even when jargon-free; vacuity does not pass. Grade PASS/FAIL per sentence-group (All-clear; each attention item), naming the specific jargon term, opaque phrase, or vacuous filler for any FAIL | — | - | independent-grader-review | RUBRIC |
+| `all-clear-names-checks` | All-clear names what was actually checked, not just "fine" | Independent-grader session reads the artifact against this row's criteria; per-criterion reasoning in the grading receipt | The All-clear sentence names, in substance, which categories of check ran (e.g. environment, structural checks, spec-file health, report spot-check, deadline register) — not merely "everything is fine" with no content; a bare count with zero category content is a FAIL. Name the missing content for any FAIL | — | - | independent-grader-review | RUBRIC |
+| `attention-sentence-roles` | Each attention item's three sentences map to their required roles | Independent-grader session reads the artifact against this row's criteria; per-criterion reasoning in the grading receipt | Independently of the sentence COUNT (validator row `attention-three-sentences`, a 2-4 range since A2), grade whether the item's sentences TOGETHER state: what's wrong in business terms, the consequence of ignoring it, and the fix plus whether the system can self-apply it next session with a yes — SKILL.md's "The briefing" text. One sentence may carry two roles (A2: role coverage, not positional mapping). An item missing any of the three roles is a FAIL for that item, named specifically | — | - | independent-grader-review | RUBRIC |
 | `watching-tone-distinguishes-planned` | Watching entries read as declared/expected, not as live problems | Independent-grader session reads the artifact against this row's criteria; per-criterion reasoning in the grading receipt | Each Watching entry's wording lets the operator tell "planned work I don't need to act on" apart from "a problem" at a glance — SKILL.md: "This is how the operator learns the difference between planned work and a problem." An entry that reads as alarming, or is ambiguous about its own expectedness, is a FAIL for that entry, named specifically | — | - | independent-grader-review | RUBRIC |
 | `all-clear-defers-findings` | All-clear names what was checked and the healthy scope only, never a finding's substance | Independent-grader session reads the artifact against this row's criteria; per-criterion reasoning in the grading receipt | The All-clear sentence names what was checked and the healthy scope only — an "all clean except the items below"-style deferral is fine — but it never RESTATES a finding's substance: counts of drift findings, days-remaining, or failure specifics belong to Needs-your-attention/Watching, not All-clear. Grade PASS/FAIL, naming any smuggled finding | — | - | independent-grader-review | RUBRIC |
 
@@ -139,7 +139,27 @@ bare") — declared above.
   fixture (reordered to Watching-before-Needs-your-attention while keeping All-clear first,
   so it still violates exactly `sections-order` and not the new row too — single-defect
   isolation preserved); its `source_artifacts` pin above is re-hashed to
-  `24922675706d690e3db0e6eccae5054f761b00e6ce14d156f26805365ab3b399`. Status stays CERTIFIED
+  `436ebd635e5fc91c9eadf5fc58058b585c181a0bea9d72c1b98331c8694a8197`. Status stays CERTIFIED
   — the amendment rides the certification per §8; the twin-build pilot receipt records the
   re-replay.
+
+- **A2** | date 2026-08-05 | rows: 2 amended (`attention-three-sentences`, VALIDATOR — count
+  becomes a 2-4 range; `plain-english-business-terms`, RUBRIC — three sanctioned category
+  terms renamed to plain replacements + the 2026-07-23 CANDIDATE (a) informativeness floor
+  ADOPTED), plus consequential wording in `all-clear-names-checks` (example categories) and
+  `attention-sentence-roles` (role COVERAGE, not positional mapping) | rows: 18 unchanged
+  (13 VALIDATOR + 5 RUBRIC) | provenance: the 2026-08-05 plain-language sweep
+  (`audits/2026-08-05-plain-language-sweep.md` findings C8, C15): the exactly-three rule
+  forced padding on naturally-two-sentence items, and three sanctioned vocabulary terms
+  ("structural sensors", "manifest structure", "conformance smoke") were repo-jargon inside
+  the very row that promises plain English. Both fixes land BEFORE this contract is promoted
+  repo-universal by `core/governance/CLAUDE.md` § Reporting to the operator (v3.0.25) — fix
+  the ruler, then measure with it. Implementing the range required re-authoring the pinned
+  `defect-attention-three-sentences.md` fixture (its old defect item had two sentences, legal
+  under the range; the new one has five — single-defect isolation preserved) and renaming the
+  category vocabulary across the seed (every touched pin re-hashed above; validator
+  self-test 17/17 including two new hermetic `--prose-scan` cases). The `--prose-scan` mode
+  itself (any-layout leakage rows applied to SESSION-BRIEFING.md / DECISIONS-PENDING.md,
+  wired as /sweep step 16) is validator capability, not a row change — row count unchanged.
+  Status stays CERTIFIED per §8; certified_by unchanged.
 

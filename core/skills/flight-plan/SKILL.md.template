@@ -102,7 +102,7 @@ Scan `raw/` and cross-reference against all wiki article `sources:` frontmatter.
 
 ## Step 5.4 — Harvest a Fresh Sweep Briefing (every mode; runs BEFORE the sensor steps)
 
-If `SWEEP-BRIEFING.md` exists at the project root and is less than 24 hours old (file modification time), read it and fold its three sections (All clear / Needs your attention / Watching) into this briefing's health picture verbatim-in-substance — then **skip Steps 5.5–5.10 entirely**: the sweep already ran every one of those checks, plus more, and re-running them wastes the session's opening minutes. State in the briefing that health came from the sweep and when it ran. If the file is absent or stale (older than 24h), run Steps 5.5–5.10 as written below. If the briefing is stale/absent AND `.claude/nightly-sweep.cmd` exists (a schedule is armed), the automation itself may be failing — surface "Your nightly sweep may be broken — check `.claude/sweep-schedule.log`" as a Needs-attention item in this briefing. Only when NO wrapper exists, note that a nightly sweep schedule would make this instant (`.claude/skills/sweep/SKILL.md` § Scheduling). Read-only, best-effort: an unreadable briefing file = stale, never an error. Also read `DECISIONS-PENDING.md` if present — its items open the briefing as the WAITING ON YOU section, before anything else.
+If a `/sweep` ran **earlier in this same session** (its results are in the session's own context — no file needed), OR `SWEEP-BRIEFING.md` exists at the project root and is less than 24 hours old (file modification time), fold the sweep's three sections (All clear / Needs your attention / Watching) into this briefing's health picture — then **skip Steps 5.5–5.10 entirely**: the sweep already ran every one of those checks, plus more, and re-running them wastes the session's opening minutes. (Same-session acceptance added v3.0.25 — a manual /sweep writes no briefing file by design, so the old file-mtime-only key made the mandated open sequence run the whole sensor battery twice.) Re-run only a sensor whose subject tree this session has since written to. State in the briefing that health came from the sweep and when it ran. If the file is absent or stale (older than 24h), run Steps 5.5–5.10 as written below. If the briefing is stale/absent AND `.claude/nightly-sweep.cmd` exists (a schedule is armed), the automation itself may be failing — surface "Your nightly sweep may be broken — check `.claude/sweep-schedule.log`" as a Needs-attention item in this briefing. Only when NO wrapper exists, note that a nightly sweep schedule would make this instant (`.claude/skills/sweep/SKILL.md` § Scheduling). Read-only, best-effort: an unreadable briefing file = stale, never an error. Also read `DECISIONS-PENDING.md` if present — its items open the briefing as the WAITING ON YOU section, before anything else.
 
 ## Step 5.5 — Observe the Execution Corpora (knowledge-os + corpus binding only)
 
@@ -138,7 +138,7 @@ py core/governance/check-reference-integrity.py <doc1> <doc2> ...
 
 Interpret the exit code:
 - **`0` (PASS):** the committed governing docs reference only files present in the committed tree. Note "references OK" in the briefing.
-- **`1` (violations):** the script lists each violation — `UNCOMMITTED` (untracked → `git add` + commit), `DELETION-UNCOMMITTED` (locally deleted → restore or fix the link), or `DANGLING` (correct the link) — each with a fix hint. Surface **every** violation under **Attention Needed**, carrying the script's status label, the path, and its fix hint **verbatim**.
+- **`1` (violations):** the script lists each violation — `UNCOMMITTED` (untracked → `git add` + commit), `DELETION-UNCOMMITTED` (locally deleted → restore or fix the link), or `DANGLING` (correct the link) — each with a fix hint. Surface **every** violation under **Attention Needed**, translated per `core/governance/CLAUDE.md` § Reporting to the operator (v3.0.25 — the old rule said "verbatim," which pasted raw status labels at the operator): what broke in plain words, what stays broken if ignored, and whether a session can fix it on a yes; the script's exact line rides the item's `(details: ...)` tail — moved, never dropped.
 - **`2` (inconclusive):** a doc could not be read from HEAD (e.g. not committed yet) or git was unavailable — note "reference check inconclusive" and continue.
 
 **If Python, git, or the script is unavailable** (the script is missing, no interpreter runs, or invocation errors), report **"reference check unavailable"** and continue. This step must **never** fail the briefing — it is best-effort, exactly like the corpus read in Step 5.5. Python is an accepted soft dependency here.
@@ -156,7 +156,7 @@ py deploy/check-frontmatter.py
 ```
 
 Interpret the exit code:
-- **`0`:** clean, or findings in degrade mode. If it printed `[WARN]`/`[INFO]` lines, surface each `[SEV] path: reason` under **Attention Needed** verbatim — the fix is a **human edit** (restore the table/frontmatter from git history), never an auto-edit. If it printed nothing actionable, note "frontmatter/body corruption: clean" under **Wiki Health**.
+- **`0`:** clean, or findings in degrade mode. If it printed `[WARN]`/`[INFO]` lines, surface each finding under **Attention Needed**, translated per § Reporting to the operator: what got mangled in plain words (a table row came loose; a file's header lost its structure), what stays unreadable until it's fixed, and the offer — a session can restore it from git history and show the diff on a yes. The raw `[SEV] path: reason` line rides the `(details: ...)` tail. **Never edited without a recorded yes** (v3.0.25 — formerly "never an auto-edit, the fix is a human edit": same gate, restated as consent; the machine performing a consented restore was never the risk the rule guarded, guessing at corrupted content was). If it printed nothing actionable, note "frontmatter/body corruption: clean" under **Wiki Health**.
 - **`1` (a `REFUSE`):** a derivation-block `schema_version` skew — surface it loudly under **Attention Needed** (a reader could mis-trust the block until it's reconciled).
 
 **If Python or the script is unavailable** (missing, no interpreter runs, or it errors), report "corruption check unavailable" and continue. This step must **never** fail the briefing — best-effort, exactly like Steps 5.5 and 5.6. (A project that wants corruption to hard-fail runs `py deploy/check-frontmatter.py --strict` as a pre-commit / CI gate, outside the briefing.)
@@ -175,7 +175,7 @@ py deploy/check-derivation.py --gate
 
 Interpret the exit code:
 - **`0`:** no audit-pending T1 views. Note "derivation audit: clean" under **Wiki Health**.
-- **`2`:** the script lists each audit-pending T1 view. Surface **every** one under **Attention Needed**, verbatim, with the instruction: **do not build on these views** until they're audited.
+- **`2`:** the script lists each audit-pending T1 view. Surface **every** one under **Attention Needed**, per § Reporting to the operator: which article is waiting on its provenance check, in plain words, and the consequence — **nothing may build on it until it's audited**; the script's own line rides the `(details: ...)` tail.
 
 **If the script does not exist, or Python is unavailable**, report "derivation audit unavailable" and continue. This step must **never** fail the briefing — best-effort, exactly like Steps 5.5, 5.6, and 5.7.
 
@@ -193,7 +193,7 @@ py deploy/check-manifest.py
 
 Interpret the exit code:
 - **`0`:** no findings. Note "behavioral manifests: clean" under **Wiki Health**.
-- **non-zero:** the script lists each finding (frontmatter, vocabulary, row-count, or MANIFEST-INDEX coherence). Surface **every** finding under **Attention Needed** as a defect to schedule — a FAIL here is reported, never blocking; the briefing still completes.
+- **non-zero:** the script lists each finding (frontmatter, vocabulary, row-count, or MANIFEST-INDEX coherence). Surface **every** finding under **Attention Needed** as a defect to schedule, translated per § Reporting to the operator (a spec file's bookkeeping no longer matches its contents; nothing breaks today, but the spec can't be trusted until it's reconciled) with the script's line in the `(details: ...)` tail — reported, never blocking; the briefing still completes.
 
 **Absent `manifests/`** is a **NOTE, not a finding** — a freshly instantiated or not-yet-extracted project carries no `manifests/` tree by design (`core/methodology/manifest-format.md` § 2). Note "manifests/ absent (no extraction yet)" under **Wiki Health**.
 
@@ -214,20 +214,23 @@ py deploy/check-knowledge-debt.py --check
 Interpret the exit code:
 - **`0` with no WARNs:** note "knowledge debt: clean" under **Wiki Health**.
 - **`0` with WARNs:** carry the summary line ("archive: … ; review: …") into **Wiki Health**; when the oldest stale REVIEW entry exceeds 30 days, surface it under **Attention Needed** — aging debt that never escalates is the exact failure mode this step exists to end.
-- **`1`:** surface every `[FAIL]` line under **Attention Needed** (a new archive with no named home, a `canonical:` target that doesn't exist, or a new REVIEW entry written without a parseable stale-after date) — reported, never blocking; the briefing still completes.
+- **`1`:** surface every `[FAIL]` under **Attention Needed**, translated per § Reporting to the operator: what it means (a note was archived without saying where its content now lives; a review entry has no expiry date, so it can never go stale), what stays broken (the note's content is unfindable from the wiki), and the offer (a session can draft the one-line fix on a yes) — the raw `[FAIL]` line in the `(details: ...)` tail. Reported, never blocking; the briefing still completes.
 
 **If the script does not exist, or Python is unavailable**, report "knowledge-debt check unavailable" and continue. This step must **never** fail the briefing — best-effort, exactly like Steps 5.5–5.9.
 
 ## Step 6 — Generate Briefing
 
-Output the briefing in this format (omit **Wiki Health** and **Coverage Gaps** when knowledge-os is absent — see Step 0.6):
+Output the briefing in this format (omit **Wiki Health** and **Coverage Gaps** when knowledge-os is absent — see Step 0.6). Two author notes that never print (v3.0.25 — they used to sit inside the fence and got copied into every rendered briefing): the reference-integrity status line in the header shows in BOTH modes, because Step 5.6 runs in build-only too; and when no flight plans exist, render "No active flight plans" instead of an empty table. Every Attention item follows `core/governance/CLAUDE.md` § Reporting to the operator — plain sentences, consequence stated, raw sensor lines only in `(details: ...)` tails.
 
 ```markdown
 # Flight-Plan Briefing — [DATE]
 
-_Mode: [knowledge-os | build-only]. Reference integrity: [OK | N violation(s) — see Attention Needed | inconclusive | unavailable]._
+_Mode: [knowledge-os | build-only]. Reference integrity: [OK | N violation(s) — see below | inconclusive | unavailable]._
 
-(The reference-integrity status line shows in BOTH modes — it is not part of the knowledge-os-only Wiki Health block, because Step 5.6 runs in build-only too.)
+## Waiting on You
+- [Every DECISIONS-PENDING item (Step 5.4) and hold point awaiting operator review, FIRST,
+  each as: the decision in plain words — what happens if you decide nothing by <date>]
+- If none: "No decisions are waiting on you."
 
 ## What Changed (since last briefing)
 - [Delta summary from compile receipts — what was added, updated, confidence changes]
@@ -244,20 +247,25 @@ _Mode: [knowledge-os | build-only]. Reference integrity: [OK | N violation(s) �
 |-------------|-------|--------|---------|-------------|
 | [one row per plan in wiki/flight-plans/, extracted per Step 4.5] | | | | |
 
-(If no flight plans exist: output "No active flight plans" instead of an empty table.)
-
 ## Attention Needed
-- [Blocking REVIEW.md items — list if any]
-- [Stale REVIEW.md items — list if any]
-- [Overdue orchestrators — list if any]
-- [Unprocessed raw files — list if any]
-- [Malformed flight plans — list if any]
-- [Reference-integrity violations — from Step 5.6; list each with its status label + path + fix hint verbatim]
-- [Knowledge-debt findings — from Step 5.10; `[FAIL]` lines and 30d+ stale-REVIEW ages verbatim]
-- [Audit-pending T1 views — from Step 5.8; list each verbatim, with "do not build on these views" until audited]
-- [Corpus drift — if the execution corpus is ahead of the wiki, name the gap and recommend /compile]
-- [Active hold points awaiting operator review]
-- If nothing: "All clear."
+[Three fixed buckets, in this order; every item carries its consequence-of-inaction. Findings
+from Steps 5.5–5.10 land in the bucket their fix belongs to, not in a per-sensor list.]
+
+**Decisions only you can make:**
+- [Blocking/stale REVIEW items, contested hold points — each: what's being asked, and what
+  happens if you do nothing]
+
+**Fixes a session can do on your yes:**
+- [Mechanical repairs from the sensor steps — the loose table row, the unnamed archive home,
+  the stale dashboard line — each: what broke, what stays broken, "say yes and it's fixed
+  next session" (details: raw sensor line)]
+
+**Watching — no action needed:**
+- [Corpus drift pending the next /compile, routines behind schedule ("Overdue orchestrators"
+  renamed v3.0.25: "routines that haven't run on schedule"), structural signals awaiting an
+  upstream fix]
+
+- If all three buckets are empty: "All clear."
 
 ## Coverage Gaps (top 3)
 - [Biggest gaps from HEALTH.md and INDEX known-gaps sections]
@@ -268,7 +276,7 @@ _Mode: [knowledge-os | build-only]. Reference integrity: [OK | N violation(s) �
 
 ## Step 6a — Regenerate SESSION-BRIEFING.md (knowledge-os only)
 
-Using the same inputs already read in Steps 1–5 (receipts, HEALTH.md, REVIEW.md, cadence compliance, unprocessed raw scan) plus the flight-plans scan from Step 4.5, **the corpus observation from Step 5.5, the reference-integrity status from Step 5.6, the derivation-audit status from Step 5.8, and the knowledge-debt status from Step 5.10**, regenerate `SESSION-BRIEFING.md` at the repo root with current state. Follow the SESSION-BRIEFING.md schema in `docs/wiki-schema.md` § 10. If Step 5.5 found corpus drift, carry the **alert** into SESSION-BRIEFING (alert, not reconciliation — reconciling is `/compile`'s job). If Step 5.6 found reference-integrity violations, carry them in too (the script's status label + path + fix hint, verbatim) — detection only; the reconcile is a human `git commit`. If Step 5.8 found audit-pending T1 views, carry those in too, verbatim — detection only; the audit itself is a separate human/operator action.
+Using the same inputs already read in Steps 1–5 (receipts, HEALTH.md, REVIEW.md, cadence compliance, unprocessed raw scan) plus the flight-plans scan from Step 4.5, **the corpus observation from Step 5.5, the reference-integrity status from Step 5.6, the derivation-audit status from Step 5.8, and the knowledge-debt status from Step 5.10**, regenerate `SESSION-BRIEFING.md` at the repo root with current state. Follow the SESSION-BRIEFING.md schema in `docs/wiki-schema.md` § 10. If Step 5.5 found corpus drift, carry the **alert** into SESSION-BRIEFING (alert, not reconciliation — reconciling is `/compile`'s job). If Steps 5.6/5.8/5.10 found violations, carry them in too — in the same translated, contract-formatted shape Steps 5.6–5.10 now specify (plain sentence + consequence + `(details: ...)` tail; SESSION-BRIEFING is an operator file, and /sweep's prose scan mechanically flags raw sensor lines in it) — detection only; the fix is a consented session action or a human commit, never this step's write.
 
 This is `/flight-plan`'s single write exception — the briefing file overwrite is intentional. Do not preserve old content; the file is regenerated from scratch every run.
 

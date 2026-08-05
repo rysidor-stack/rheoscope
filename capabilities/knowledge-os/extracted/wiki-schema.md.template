@@ -395,6 +395,15 @@ Single-file onboarding for any new session — the fastest path to context. Rege
 **Last compiled:** YYYY-MM-DD
 **Governing documents:** CLAUDE.md (governance), core/methodology/ (methodology kernel), this wiki's INDEX
 
+## Waiting on You
+
+At most 3 bullets, sourced from blocking/deferred REVIEW entries and open hold points: each
+states the decision in plain words, its deadline or go-stale date, and what happens when
+that date passes with no answer. "Nothing is waiting on you." when empty. This section
+leads because it is the one thing the briefing's reader may actually owe (v3.0.25); prose
+per core/governance/CLAUDE.md § Reporting to the operator — no raw sensor lines, paths in
+(details:) tails.
+
 ## Architectural Context
 
 3-4 paragraph summary of the project's architectural thesis. What is being built, the strategic frame, the load-bearing constraints. Not the full thesis — just enough that a cold session understands the frame. Link to the full thesis article for depth.
@@ -424,7 +433,7 @@ Bullet list of the governance rules that sessions most commonly need.
 | Wiki Schema | docs/wiki-schema.md | This file |
 | REVIEW.md | wiki/REVIEW.md | Open issues and action items |
 | HEALTH.md | wiki/HEALTH.md | Wiki coverage and staleness stats |
-| Handoffs Index | handoffs/INDEX.md | Substrate-separation inquiries |
+| Handoffs Index | (this project's handoff envelope, e.g. handoffs/INDEX.md) | Second-opinion decision reviews |
 ```
 
 **This is a derived projection — regenerated from scratch, never appended to.** Its sources (wiki state, receipts, HEALTH/REVIEW) stay single-writer-owned; if the projection ever disagrees with its sources, **the sources win.**

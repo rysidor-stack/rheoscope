@@ -184,7 +184,7 @@ Open the active flight plan. Mark the decision as locked with:
 
 Do NOT rewrite plan structure or move sections. If the plan tracks phases and this decision completes a phase, mark the phase complete inline.
 
-**If no flight plan exists yet:** this step is a no-op. State that explicitly in your closeout summary so the operator knows the step was skipped intentionally.
+**If no flight plan exists yet:** this step is a no-op. State that explicitly in your closeout summary so the operator knows the step was skipped intentionally. (The closeout summary itself follows the close-out report contract in `/handoff` Step 5 point 5 — locked / not-authorized / still-waiting, plain words per `core/governance/CLAUDE.md` § Reporting to the operator, mechanics in details tails.)
 
 ## HALT path (alternative to locking)
 

@@ -1,4 +1,4 @@
-**All clear:** 5 of 7 checks ran clean — environment, structural sensors, manifest structure, conformance smoke, and workspace hygiene all healthy.
+**All clear:** 5 of 7 checks ran clean — environment, structural checks, spec-file health, report spot-check, and workspace hygiene all healthy.
 
 **Needs your attention:**
 1. The overnight scheduled run did not finish last night. Until someone reruns it, tonight's metrics history will show a one-day gap, though nothing else in the project is affected. Restarting the scheduled task fixes this — the system can retry it automatically next session with a yes.

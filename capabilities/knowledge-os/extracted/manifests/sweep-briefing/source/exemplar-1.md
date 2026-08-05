@@ -1,8 +1,8 @@
-**All clear:** 6 checks ran clean — environment, structural sensors, manifest structure, conformance smoke, workspace hygiene, and the deadline register all healthy.
+**All clear:** 6 checks ran clean — environment, structural checks, spec-file health, report spot-check, workspace hygiene, and the deadline register all healthy.
 
 **Needs your attention:**
 (none)
 
 **Watching:**
-- Two behavioral-manifest rows are red because a feature amendment is open on the ordering surface — expected, not a problem.
-- The conformance smoke set has not been named for the decision-inbox surface yet, so its smoke tier does not run there — expected until that surface reaches certification.
+- Two spec checks are red because a feature amendment is open on the ordering surface — expected, not a problem.
+- The report spot-check set has not been named for the decision-inbox surface yet, so its smoke tier does not run there — expected until that surface reaches certification.

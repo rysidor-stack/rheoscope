@@ -90,6 +90,15 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     verbatim (the finding text names the row, the file, and the authorizing decision-ref).
     SKIP (register not adopted, or PyYAML absent) flows to Watching as "routing unwatched".
 
+16. **Operator-file prose scan** (v3.0.25) — `python deploy/check-briefing-format.py
+    --prose-scan <file>` over each operator-read projection present at the root:
+    `SESSION-BRIEFING.md`, `DECISIONS-PENDING.md`, plus `SWEEP-BRIEFING.md` when a prior
+    scheduled run left one. This mechanically enforces the reporting contract's floor
+    (`core/governance/CLAUDE.md` § Reporting to the operator) on files this sweep does not
+    itself author: raw sensor codes (`[PASS]`/`[FAIL]`/`[WARN]` lines), script filenames in
+    prose, and placeholder tokens are findings — a session wrote engineer output into an
+    operator file, and the fix is a rewrite of that file by the session that owns it.
+
 This ordering follows the engine's own loop doctrine (`docs/engine/OPERATIONS.md` § "The
 loop"): readiness before content, structural sensors before behavioral ones, deterministic
 checks before anything judgment-based — cheapest, most-foundational signal first, so a reader
@@ -107,17 +116,23 @@ sentence. Plain English, three sections, in this order:
 
 **All clear:** one sentence naming what was checked and that it's healthy. Counts are fine
 ("6 checks ran clean"), and so are plain check-CATEGORY names ("environment", "workspace
-hygiene", "the deadline register" — the vocabulary the skeleton below uses); what's not fine
-is script/tool filenames and internal-schema vocabulary ("check-frontmatter.py",
-"frontmatter", "sha256"). (Clarified 2026-07-23: the first certification pass of this
-briefing's behavioral manifest caught the earlier wording — "jargon and check names are not
-[fine]" — contradicting the skeleton's own category-name usage; category names were always
-the intent.)
+hygiene", "the deadline register", "structural checks", "spec-file health", "report
+spot-check" — the vocabulary the skeleton below uses); what's not fine is script/tool
+filenames and internal-schema vocabulary ("check-frontmatter.py", "frontmatter", "sha256").
+(Clarified 2026-07-23: the first certification pass of this briefing's behavioral manifest
+caught the earlier wording — "jargon and check names are not [fine]" — contradicting the
+skeleton's own category-name usage; category names were always the intent. Renamed
+2026-08-05, manifest amendment A2: the plain-language sweep found three of the old sanctioned
+categories — "structural sensors", "manifest structure", "conformance smoke" — were
+themselves repo-jargon a stranger can't parse; the sanctioned list now carries their plain
+replacements above.)
 
-**Needs your attention:** numbered items. Each item is exactly three sentences — what's wrong,
-in business terms; what happens if it's ignored; what the fix is, and whether the system can do
-it itself next session with a yes. No file paths in the sentence itself — paths go in a small
-"(details: path)" tail at the end of the item.
+**Needs your attention:** numbered items. Each item is two to four sentences that together
+state: what's wrong, in business terms; what happens if it's ignored; and what the fix is,
+plus whether the system can do it itself next session with a yes. (Amended 2026-08-05, A2:
+the old exactly-three rule forced padding on naturally-two-sentence items — the three ROLES
+are required, the count is a range.) No file paths in the sentence itself — paths go in a
+small "(details: path)" tail at the end of the item.
 
 **Watching:** declared/expected reds — rows that are red by design because a feature amendment
 is open, a capability was never enabled, or a smoke set hasn't been named yet. This is how the
@@ -129,8 +144,8 @@ is itself a Needs-your-attention item. Never drop it silently, and never guess a
 A skeleton, for shape only (a real briefing names real things, never placeholders like these):
 
 ```markdown
-**All clear:** 6 checks ran clean — environment, census, structural sensors, manifest
-structure, conformance smoke, and roadmap-vs-evidence all healthy.
+**All clear:** 6 checks ran clean — environment, census, structural checks, spec-file
+health, report spot-check, and roadmap-vs-evidence all healthy.
 
 **Needs your attention:**
 1. The environment check found a missing tool the cross-vendor second-opinion feature needs.
@@ -139,7 +154,7 @@ structure, conformance smoke, and roadmap-vs-evidence all healthy.
    (details: `codex-auth` in the doctor report)
 
 **Watching:**
-- Two behavioral-manifest rows are red because a feature change is deliberately in progress —
+- Two spec checks are red because a feature change is deliberately in progress —
   expected, not a problem.
 ```
 
@@ -184,8 +199,10 @@ separate concern, governed by the reversible-cutover runbook, and is explicitly 
   deliberate, separately-invoked act at freezes and certification.
 - **Not a substitute for the flight-plan briefing.** `/flight-plan` is about YOUR work in
   flight — deltas, blockers, next actions. /sweep is about the SYSTEM's health. When a sweep
-  briefing is fresh, `/flight-plan`'s sensor steps may simply point at it instead of re-running
-  every check.
+  ran earlier in the SAME session, or a sweep briefing file is fresh (<24h), `/flight-plan`'s
+  sensor steps MUST point at those results instead of re-running every check (v3.0.25 — the
+  double battery was the largest fixed time cost of every session open); it re-runs only a
+  sensor whose subject tree this session has since written to.
 
 ## Where it sits
 

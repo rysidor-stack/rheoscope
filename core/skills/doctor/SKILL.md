@@ -47,8 +47,13 @@ temporary directory, never the project tree.
 ## How to interpret results
 
 Every line is `[PASS|FAIL|WARN|SKIP] <check-name>: <detail>`, followed by a one-line summary.
-Every FAIL and WARN carries an actionable `FIX:` instruction inline — relay it to the
-operator **verbatim**; don't paraphrase or summarize it away. A SKIP means the check's
+Every FAIL and WARN carries an actionable `FIX:` instruction inline. **Relay every FAIL and
+WARN to the operator without dropping or softening any** — but translated, per
+`core/governance/CLAUDE.md` § Reporting to the operator: lead with what it means for them and
+what stays broken if ignored, then quote the exact `FIX:` line as the how (the quote is the
+mechanism; the translation is the message). Never omit a finding, never soften its status —
+the old rule here said "verbatim, don't paraphrase" to stop sessions laundering failures
+away; the ban was always on OMISSION, not on translation (clarified v3.0.25). A SKIP means the check's
 subject is absent by design (e.g. no `deploy/` because the `knowledge-os` capability was
 never enabled for this project) — it is not a problem.
 

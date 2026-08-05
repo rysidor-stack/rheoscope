@@ -7,5 +7,5 @@
    (details: `deploy/deadline-register.yaml`)
 
 **Watching:**
-- Three behavioral-manifest rows are red because a feature change is deliberately in progress on the ordering surface — expected, not a problem.
+- Three spec checks are red because a feature change is deliberately in progress on the ordering surface — expected, not a problem.
 - The mirror-parity check has no template path configured for this project yet, so it is skipped — expected until that gets set up.

@@ -191,9 +191,13 @@ convergence question: **did this round surface a NEW load-bearing finding?**
   (step 7). The loop tried and couldn't converge — that's the handoff signal, per non-negotiable #4.
 
 ### 6 — Conclude (converged)
-Report: the final claim ledger (each claim's verdict + uncertainty), the rounds run, and the
-evidence provenance/SHAs as the audit trail. Record the result where your session already records things
-(a `raw/` file, a dispatch `results.md`, a receipt) per the existing rules, citing the verdict JSONs.
+Report to the operator in plain terms (per `core/governance/CLAUDE.md` § Reporting to the
+operator): what was tested, what held, what got corrected, and what stays unresolved — with
+the consequence of each unresolved item. The full claim ledger, rounds, and evidence
+provenance/SHAs are the audit trail and land in the RECORD, not the chat summary: record the
+result where your session already records things (a `raw/` file, a dispatch `results.md`, a
+receipt) per the existing rules, citing the verdict JSONs (v3.0.25 — SHAs used to be
+mandated into the chat report; they move to the record, nothing is dropped).
 **Verification is not approval** — locking and human sign-off remain separate steps (non-negotiable #5).
 This skill adds no new store of its own.
 

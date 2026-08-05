@@ -116,8 +116,8 @@ directive — read it, weigh it, fold it in.
 | `confirmed` + `confident` | Independent substrate agrees on the evidence | Proceed with the claim. Still not approval; still run the executable test if one applies. |
 | `confirmed` + `needs-operational-data` | Reasoning agrees but something must be observed | **Conditional** — go run that test/observation before calling it done. |
 | `revised` | Verifier accepts the gist but corrects a part | Incorporate the correction; re-examine; re-run cross-check on the corrected claim if load-bearing. |
-| `rejected` | Evidence does not establish the claim | **HALT.** Surface the verifier's reason + citations to the operator. Do not proceed. |
-| any + `reasonable-disagreement` | Genuine judgment divergence, not a factual error | Surface to the operator; consider a full handoff. Don't silently override **or** capitulate. |
+| `rejected` | Evidence does not establish the claim | **HALT.** Tell the operator in plain words what the second opinion found wrong and what you propose to do about it, EMBEDDING the verifier's reason sentence verbatim (per `core/governance/CLAUDE.md` § Reporting to the operator — translation wraps the quote, never replaces it); the verdict JSON path rides a details tail. Do not proceed. |
+| any + `reasonable-disagreement` | Genuine judgment divergence, not a factual error | Surface to the operator as a choice in plain words — both readings, what each would mean, verifier's phrasing quoted; consider a full handoff. Don't silently override **or** capitulate. |
 | `VERIFY FAILED` / unparseable | Tool/verifier broken | **HALT** (non-negotiable #3). Report it; do not emit "looks fine." |
 
 If the result is load-bearing, record it where your session already records things (a `raw/`

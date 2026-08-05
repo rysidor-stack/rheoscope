@@ -138,7 +138,9 @@ with the `informed_by` back-link), `confidence-audit.md`, meta → `locked` (+ `
 this session's identity), INDEX → Archive, flight-plan mark if one exists. Then register the
 raw (`python deploy/register-intake.py --root .` where the project has the registration
 chain) and run `python deploy/check-loop-state.py`. No operator yes beyond the deliberation
-they were part of.
+they were part of. Close with the same close-out report the T1 branch specifies (Step 5
+point 5, "The close-out report") — locked / not-authorized / still-waiting, plain words,
+mechanics in details tails.
 
 ### T1 — headless close leg (the firewall, enforced by dispatch mechanics)
 
@@ -168,9 +170,15 @@ leg:
    - `halt` non-empty → HALT path per the close protocol: write `HALT.md` from the
      deliberation, meta `status: halted` (clear `close:`), INDEX row, no raw file. Surface
      to the operator as information.
-   - Otherwise surface the leg's `deliberation` and `convergence_verdict` **verbatim** in
-     this conversation and ask the ONE question: **"Lock it?"** This is the operator's
-     single touch — it is the decision itself.
+   - Otherwise: FIRST a plain preamble per `core/governance/CLAUDE.md` § Reporting to the
+     operator (v3.0.25) — *"This locks <the decision, one plain sentence>. Yes commits you to
+     <what it binds and what it does NOT authorize, one sentence>. No sends it back for
+     another challenge round — nothing is lost either way. The independent closer's full
+     reasoning follows."* Translate the convergence verdict in one line ("the two rounds
+     agree; the second added confidence, not new problems"). THEN surface the leg's
+     `deliberation` and `convergence_verdict` **verbatim** — the verbatim record IS the
+     firewall and never gets summarized away — and ask the ONE question: **"Lock it?"**
+     This is the operator's single touch — it is the decision itself.
 5. **On yes**, apply the leg's artifacts VERBATIM (you are a typist; the close substrate
    authored them): write `decision_raw` to the packet-named raw path, `confidence_audit`
    to `<folder>/confidence-audit.md`, meta → `status: locked`, `locked` date,
@@ -179,6 +187,16 @@ leg:
    leg's outcome word. Flight-plan mark if one exists. Register the raw and run
    `check-loop-state.py` as above. The three-substrate record now reads: author (this
    session's family) ≠ answer leg ≠ close leg substrate — all mechanically recorded.
+
+   **The close-out report** (v3.0.25, both tiers; per § Reporting to the operator — this
+   list is what a lock report must COVER, the rules live there): (1) what is now locked, in
+   plain words, and what it binds going forward; (2) what it does NOT authorize — the scope
+   line, stated as plainly as the lock itself; (3) anything still waiting on the operator,
+   each with the consequence of leaving it, or "nothing needs you." The lock mechanics
+   (typist rule, F17 copy, INDEX move, registration) are executor work and appear in the
+   report ONLY via a details tail; a sensor run appears only if it needs the operator, in
+   plain words ("a routine record-check couldn't finish; logged — your decision is
+   unaffected"), never as pasted output.
 6. **On no**: the operator is contesting the deliberation — that is the `--round N`
    escalation signal. Offer it; meta stays `answered` (no `close:` marker — this is an
    operator decline, not a leg failure; record it in the session record).

@@ -5,12 +5,21 @@ Replays the VALIDATOR rows of `manifests/sweep-briefing/format-MANIFEST.md` agai
 briefing artifact (a rendered `/sweep` briefing -- typically SWEEP-BRIEFING.md, or any text
 matching its shape). The contract this validator implements is `.claude/skills/sweep/SKILL.md`
 section "The briefing" (and the unclassifiable-output rule immediately under it): three
-sections, in order, with exact headings; a one-sentence All-clear; numbered,
-exactly-three-sentence Needs-your-attention items with no inline file paths and a well-formed
-trailing "(details: ...)" tail; a dashed Watching list; no raw tool-output leakage, no
-placeholder tokens, no script filenames in prose; any unclassifiable-output marker must
-surface inside Needs-your-attention, never silently elsewhere; and nothing but whitespace
-precedes the "**All clear:**" heading -- no title line, no preamble.
+sections, in order, with exact headings; a one-sentence All-clear; numbered
+Needs-your-attention items of two to four sentences (amended 2026-08-05: the old
+exactly-three rule forced padding on naturally-two-sentence items; the three ROLES -- what's
+wrong / consequence / fix -- are judged by the manifest's RUBRIC row, the count here is a
+range) with no inline file paths and a well-formed trailing "(details: ...)" tail; a dashed
+Watching list; no raw tool-output leakage, no placeholder tokens, no script filenames in
+prose; any unclassifiable-output marker must surface inside Needs-your-attention, never
+silently elsewhere; and nothing but whitespace precedes the "**All clear:**" heading -- no
+title line, no preamble.
+
+A second mode, --prose-scan PATH (added v3.0.25), applies only the any-layout rows -- raw
+tool-output leakage, script filenames in prose, placeholder tokens -- to ANY operator-read
+file (SESSION-BRIEFING.md, DECISIONS-PENDING.md), independent of the three-section briefing
+shape. /sweep wires it so raw sensor codes in operator files are a mechanical finding, not a
+style hope.
 
 Checks map 1:1 to `format-MANIFEST.md` VALIDATOR row IDs (the ROW_CHECKS table below is the
 authoritative list); each row's mechanical assertion is implemented as one function. RUBRIC
@@ -27,6 +36,7 @@ a crash. Stdlib-only; no runtime dependency.
 
 Usage:
   check-briefing-format.py --file PATH [--json] [--strict]
+  check-briefing-format.py --prose-scan PATH [--json] [--strict]
   check-briefing-format.py --self-test
 Exit codes: 0 = completed report (degrade; findings are data) | 1 = --strict with >=1 row
   FAIL, or a --self-test failure.
@@ -239,6 +249,11 @@ def check_attention_numbered(text):
 
 
 def check_attention_three_sentences(text):
+    """Amended 2026-08-05 (manifest amendment A2): the count is a RANGE, 2..4 -- the old
+    exactly-3 rule forced padding on naturally-two-sentence items. Whether the sentences
+    cover their three required ROLES (what's wrong / consequence of ignoring / fix +
+    self-applicability) stays a RUBRIC judgment (row attention-sentence-roles), not a count.
+    Row id kept for fixture and smoke-set continuity."""
     items = attention_items(text)
     if items is None:
         return True, "section absent (see sections-present)"
@@ -248,11 +263,11 @@ def check_attention_three_sentences(text):
     for n, itext in items:
         prose, _tail = strip_tail(itext)
         c = count_sentences(prose)
-        if c != 3:
+        if not (2 <= c <= 4):
             bad.append("#%s has %d" % (n, c))
     if bad:
-        return False, "item(s) not exactly 3 sentences: %s" % "; ".join(bad)
-    return True, "%d attention item(s), each exactly 3 sentences" % len(items)
+        return False, "item(s) outside the 2-4 sentence range: %s" % "; ".join(bad)
+    return True, "%d attention item(s), each 2-4 sentences" % len(items)
 
 
 def check_attention_no_inline_path(text):
@@ -364,6 +379,27 @@ ROW_CHECKS = OrderedDict([
 ])
 
 
+# Rows that hold for ANY operator-read file, independent of the three-section briefing
+# layout (v3.0.25): raw sensor/tool output, script filenames in prose, and placeholder
+# tokens do not belong in any surface a human reads, whatever its shape. /sweep applies
+# these to SESSION-BRIEFING.md and DECISIONS-PENDING.md via --prose-scan.
+PROSE_SCAN_ROWS = ("no-raw-output-leakage", "no-script-names-in-prose",
+                   "no-placeholder-tokens")
+
+
+def run_rows_on_text(text, row_ids):
+    rows = []
+    for rid in row_ids:
+        fn = ROW_CHECKS[rid]
+        try:
+            ok, reason = fn(text)
+        except Exception as e:  # noqa: BLE001 -- a validator crash is a FAIL, never an exit
+            ok, reason = False, "validator crashed on this row: %s" % e
+        rows.append({"id": rid, "pass": ok, "reason": reason})
+    n_pass = sum(1 for r in rows if r["pass"])
+    return rows, n_pass
+
+
 # --------------------------------------------------------------------------- report assembly
 
 def run_file(path):
@@ -372,16 +408,22 @@ def run_file(path):
                 "note": "no such file -- nothing to check (degrade)"}
     with open(path, "r", encoding="utf-8-sig") as fh:
         text = fh.read()
-    rows = []
-    for rid, fn in ROW_CHECKS.items():
-        try:
-            ok, reason = fn(text)
-        except Exception as e:  # noqa: BLE001 -- a validator crash is a FAIL, never an exit
-            ok, reason = False, "validator crashed on this row: %s" % e
-        rows.append({"id": rid, "pass": ok, "reason": reason})
-    n_pass = sum(1 for r in rows if r["pass"])
+    rows, n_pass = run_rows_on_text(text, list(ROW_CHECKS))
     return {
         "file": path, "present": True, "rows": rows,
+        "counts": {"total": len(rows), "pass": n_pass, "fail": len(rows) - n_pass},
+    }
+
+
+def run_prose_scan(path):
+    if not os.path.isfile(path):
+        return {"file": path, "present": False, "mode": "prose-scan",
+                "note": "no such file -- nothing to check (degrade)"}
+    with open(path, "r", encoding="utf-8-sig") as fh:
+        text = fh.read()
+    rows, n_pass = run_rows_on_text(text, list(PROSE_SCAN_ROWS))
+    return {
+        "file": path, "present": True, "mode": "prose-scan", "rows": rows,
         "counts": {"total": len(rows), "pass": n_pass, "fail": len(rows) - n_pass},
     }
 
@@ -455,6 +497,27 @@ def self_test():
                                  % (by_id.get(rid), others))
         case("%s: fails exactly row '%s', passes the rest" % (fname, rid), ok, detail)
 
+    # Hermetic prose-scan cases (v3.0.25) -- no seed needed; these prove the any-layout
+    # rows fire on a non-briefing-shaped operator file and stay quiet on clean prose.
+    clean_prose = (
+        "## Waiting on you\n\n"
+        "- A roadmap decision is open, and if nothing happens by Friday the phase stays "
+        "blocked. (details: wiki/REVIEW.md)\n")
+    leaky_prose = (
+        "## Attention\n\n"
+        "- [WARN] check-frontmatter.py reported TABLE-NOSEP at L106 -- rejoin the row.\n")
+    rows, n_pass = run_rows_on_text(clean_prose, list(PROSE_SCAN_ROWS))
+    case("prose-scan: clean operator prose passes all %d row(s)" % len(rows),
+         n_pass == len(rows),
+         "failing rows: %s" % [r["id"] for r in rows if not r["pass"]])
+    rows, _ = run_rows_on_text(leaky_prose, list(PROSE_SCAN_ROWS))
+    by_id = {r["id"]: r["pass"] for r in rows}
+    case("prose-scan: raw [WARN] + script filename both caught, placeholders quiet",
+         (by_id.get("no-raw-output-leakage") is False
+          and by_id.get("no-script-names-in-prose") is False
+          and by_id.get("no-placeholder-tokens") is True),
+         "row results: %s" % by_id)
+
     print("check-briefing-format self-test: %s (%d/%d)"
           % ("PASS" if not failed else "FAIL", total - failed, total))
     return 0 if not failed else 1
@@ -470,12 +533,19 @@ def main(argv):
     as_json = "--json" in args
     strict = "--strict" in args
     file_path = None
+    prose_path = None
     if "--file" in args:
         i = args.index("--file")
         if i + 1 < len(args):
             file_path = args[i + 1]
+    if "--prose-scan" in args:
+        i = args.index("--prose-scan")
+        if i + 1 < len(args):
+            prose_path = args[i + 1]
 
-    if file_path is None:
+    if prose_path is not None:
+        report = run_prose_scan(prose_path)
+    elif file_path is None:
         report = {"file": None, "present": False,
                   "note": "no --file given -- nothing to check (degrade)"}
     else:

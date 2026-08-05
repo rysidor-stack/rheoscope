@@ -100,6 +100,37 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.24 → v3.0.25 (the report contract — plain language to the operator)
+
+Every instance takes items 1–3; knowledge-os instances also take item 4. After adopting,
+your sessions' reports change voice, not content: everything technical still lands in
+receipts and `(details: ...)` tails — chat just stops carrying it.
+
+1. **Adopt the contract's single home:** re-render `CLAUDE.md` § Session discipline from the
+   new `core/governance/CLAUDE.md.template` — it adds § **Reporting to the operator** (the
+   one home of the reporting rules; every skill cites it) and one corollary sentence on the
+   silence rule (stops must be phrased so a non-engineer can answer). Adopt this even if you
+   adopt nothing else in the release.
+2. **Re-copy the re-voiced core skills** (hand-substitute `{{...}}` where the file is a
+   `.template`): `.claude/skills/sweep/SKILL.md` (renamed check categories, 2–4 sentence
+   items, new step 16 prose scan, flight-plan MUST-reuse rule), `.claude/skills/flight-plan/SKILL.md`
+   (same-session sweep dedupe; translated sensor findings; the briefing's new leading
+   **Waiting on You** section and three-bucket Attention Needed), `.claude/skills/doctor/SKILL.md`
+   (translate-then-quote relay rule), `.claude/skills/handoff/SKILL.md` + `.claude/skills/handoff-close/SKILL.md`
+   (plain Lock-it preamble + the close-out report), `.claude/skills/cross-check/SKILL.md` +
+   `.claude/skills/cross-check-loop/SKILL.md` (plain-words verdict reporting, quoted reasons,
+   SHAs to the record).
+3. **Re-copy the amended validator + seed:** `deploy/check-briefing-format.py` (run
+   `python deploy/check-briefing-format.py --self-test`, expect **17/17**) and, if your
+   instance carries `manifests/sweep-briefing/`, its `format-MANIFEST.md` + `source/` seed
+   (amendment A2 — re-pinned hashes ride along; your certification status is unaffected).
+4. **Knowledge-os instances:** re-copy `.claude/skills/compile/SKILL.md` (Step 1 is
+   frontmatter-only now; the driver summary block goes to the receipt, and the new Step 12
+   is the operator report — expect your next compile to close with a readable summary
+   instead of seq/commit lines), `docs/engine/OPERATIONS.md` (§7 escalation-message
+   pointer), and `docs/wiki-schema.md` (§10: SESSION-BRIEFING's leading Waiting-on-You
+   section; regenerate SESSION-BRIEFING.md at the next /flight-plan run to pick it up).
+
 ## v3.0.23 → v3.0.24 (citation sweep + single-homing + the silence rule)
 
 Every instance takes items 1–3; knowledge-os instances also take item 4.

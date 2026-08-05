@@ -120,7 +120,11 @@ dispositions exist: (a) correct through the correction cycle (§7a), or (b) if t
 believes the verdict itself is wrong, **stop** — leave the run in its exit-1 state and put the
 full verdict plus the contrary evidence in front of the operator. The operator is the only
 party who may set a verdict aside, and that ruling is recorded (decision + reason, in the
-run's receipt or an ADR) before any re-run. There is no third disposition.
+run's receipt or an ADR) before any re-run. There is no third disposition. The escalation
+message itself is spec'd in the compile skill's exit-1 section and follows
+`core/governance/CLAUDE.md` § Reporting to the operator (v3.0.25): plain words, the
+verifier's reason sentence quoted verbatim inside them, the full record via a details tail —
+a paraphrase alone is never the basis for the operator's ruling.
 
 **Co-absorption / joint citation for multi-event spans.** Absorption-verify grades **per run**. If
 a view accumulates content from several events across separate compile runs without an

@@ -39,7 +39,8 @@ question, /orient says so explicitly instead of guessing plausibly.
 
 3. **Read the source.** Do not answer from the routing step alone — open the file, find the
    actual passage, and answer with a `file:line` (or `file § heading`) citation the operator
-   can go verify themselves.
+   can go verify themselves. Answer in the operator's own words — a smart non-engineer must
+   understand it on one reading; the citation is for checking, never required reading.
 
 4. **If no installed artifact answers it, say so explicitly.** Do not fill the gap from general
    knowledge about templates, methodologies, or memory engines in general — that is exactly the
@@ -64,7 +65,7 @@ rows resolve to their `capabilities/knowledge-os/extracted/...` source instead �
 | The staged walkthrough / first-week sequence / trouble table | `core/onboarding/TOUR.md` |
 | The interactive system map | `core/onboarding/SYSTEM-MAP.html` |
 | Memory-engine contract and mechanics | `docs/engine/memory-engine-v3-spec.md`, `docs/engine/OPERATIONS.md`, `docs/engine/memory-engine-v3-test-plan.md`, `docs/engine/memory-engine-v3-tool-grant-tcb-spec.md` |
-| Whether a specific sensor works, and how to run it | `deploy/<sensor>.py --help` and `--self-test` (every sensor is self-test-first) |
+| Whether a specific sensor works | This session runs its self-test and reports pass/fail in plain words (mechanics: `deploy/<sensor>.py --help` and `--self-test` — every sensor is self-test-first) |
 | The wiki/raw/receipt structural contract | `docs/wiki-schema.md` |
 | Why a capability exists, what it needs, known lessons | `docs/recipes/<capability>/*.RECIPE.md` (deferred recipes; docs-only capabilities carry the full `RECIPE.md` too) |
 | Session contract, core directories, session discipline | `core/governance/CLAUDE.md` |

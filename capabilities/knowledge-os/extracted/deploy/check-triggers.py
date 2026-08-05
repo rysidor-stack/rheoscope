@@ -4,7 +4,8 @@
 The harness's fourth trigger type: DECLARED CONDITIONS. Skills otherwise fire on operator
 memory, session reflexes, or the clock; deploy/trigger-register.yaml is the file that
 declares "it is time to run X" as a machine-evaluable condition, and this sensor is the
-thing that evaluates it. Design: harness-v3.0/specs/trigger-register-spec-2026-07-28.md
+thing that evaluates it. (Design history: a dev-repo spec, 2026-07-28, not shipped --
+this docstring and the register .example are the live contract.)
 (five-pass /reason run, 2026-07-28).
 
 Doctrine (the spec's pass-2 kills, binding):

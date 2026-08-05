@@ -33,7 +33,7 @@ Two debt classes, one sensor, zero writes:
   The sensor REPORTS, never flips flags and never edits REVIEW.md. Corpus
   adjudication is operator-gated by design (v3.0-51's guardrail).
 
-Exit codes (house convention, deploy/README.md): 0 clean-or-warn / 1 FAIL(s) /
+Exit codes (the deploy sensor family's shared convention): 0 clean-or-warn / 1 FAIL(s) /
 2 inconclusive (unreadable tree). Absent raw/ AND wiki/REVIEW.md -> "not
 applicable" note, exit 0 (build-only projects and pre-kickoff trees are not
 debtors).
@@ -171,8 +171,14 @@ def scan_archive(root):
             warns.append("%s: compile:false, no canonical: field, and no parseable date "
                          "(frontmatter or filename) -- cannot date-gate; annotate it" % rel)
         elif fdate >= CUT_DATE:
-            fails.append("%s: compile:false dated %s (>= cut %s) with no canonical: field -- "
-                         "new archives must name their home" % (rel, fdate, CUT_DATE))
+            # v3.0.27 (plain-language sweep V2): say what it means and what it costs --
+            # the schema-speak form sat unactioned for a week on a live instance because
+            # nothing in it said what ignoring it would do. Mechanics in the bracket tail.
+            fails.append("%s was archived without saying where its content now lives -- "
+                         "until the one-line pointer is added, whatever that note contains "
+                         "is unfindable from the wiki; a session can draft it on a yes "
+                         "[compile:false dated %s >= cut %s, canonical: absent]"
+                         % (rel, fdate, CUT_DATE))
         else:
             stats["legacy"] += 1
             warns.append("%s: legacy compile:false (%s, pre-cut) with no canonical: field -- "

@@ -48,7 +48,7 @@ Checks (harness-v3.0/specs/template-self-truth-and-onboarding-brief-2026-07-10.m
                       contains/normalized comparison). Absent manifest or PyYAML -> SKIP
                       ("version drift unwatched"), never FAIL; unreachable probe or drifted
                       version -> WARN naming both versions and the verified date (session-C
-                      build decision D5, harness-v3.0/specs/session-c-build-decisions-2026-07-23.md).
+                      build decision D5 -- dev-repo design record, stated in full here).
   12. sensor-reachability  every deploy/*.py reachable from an executable surface or listed
                       in deploy/dormant-register.yaml (backlog v3.0-80).
   13. skill-adapters  deploy/gen-skill-adapters.py --check, when wired (backlog v3.0-79).
@@ -67,6 +67,7 @@ Exit codes: 0 = all PASS/SKIP (WARNs alone still exit 0) | 1 = self-test failure
 """
 
 import argparse
+import datetime as _dt
 import json
 import re
 import shlex
@@ -278,6 +279,32 @@ def check_python_sensors(ctx):
                         "for this project).")]
     py_files = sorted(deploy_dir.glob("*.py"))
     out_results = []
+    # v3.0.27 (plain-language sweep S5): --fast-selftests runs a deterministic,
+    # date-keyed ROTATION instead of the full battery -- the every-session-open /sweep
+    # invocation was re-proving all 63 embedded fixtures against files that had not
+    # changed, at up to 60s each. The rotation is stated loudly (below), never silent:
+    # every sensor still runs at least once per 7 calendar days, a full battery is one
+    # `--full` flag away, and init-end + manual doctor runs stay FULL by default --
+    # what a PASS attests is printed, never quietly narrowed.
+    rotation_note = None
+
+    def _advertises_selftest(path):
+        try:
+            return "--self-test" in path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return True   # unreadable: keep it in scope so the main loop FAILs it loudly
+
+    selftest_files = [f for f in py_files if _advertises_selftest(f)]
+    run_set = set(selftest_files)
+    if ctx.get("fast_selftests") and len(selftest_files) > 7:
+        day = _dt.date.today().toordinal()
+        cycle = 7
+        run_set = {f for i, f in enumerate(selftest_files) if i % cycle == day % cycle}
+        rotation_note = (
+            "fast mode: ran %d of %d self-test(s) today (date-keyed rotation -- every "
+            "sensor runs at least once a week; run without --fast-selftests for the "
+            "full battery, which init and manual checkups always use)"
+            % (len(run_set), len(selftest_files)))
     for f in py_files:
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
@@ -291,6 +318,8 @@ def check_python_sensors(ctx):
             continue
         if "--self-test" not in text:
             continue  # doesn't advertise a self-test; not this check's business
+        if f not in run_set:
+            continue  # fast-mode rotation: not this file's day (stated in the note below)
         # Most sensors' self-tests finish in well under 60s. A few engine drills are
         # legitimately heavier (e.g. drill-replay-bench.py's generator+replay bench can
         # run 30-90s) -- give those a longer budget instead of raising the default for
@@ -314,6 +343,8 @@ def check_python_sensors(ctx):
         return [Result("SKIP", "python-sensors",
                         "deploy/ present but no *.py advertises --self-test "
                         "(%d file(s) scanned)." % len(py_files))]
+    if rotation_note:
+        out_results.insert(0, Result("PASS", "python-sensors", rotation_note))
     return out_results
 
 def _matcher_tokens_for_script(hooks_cfg, script_name):
@@ -886,8 +917,8 @@ def _safe(fn, name, *args):
                        "check crashed: %s: %s. FIX: this is a doctor.py bug -- report it; "
                        "the environment state for this check is unknown." % (type(e).__name__, e))
 
-def run_all(root):
-    ctx = {"root": root, "python": sys.executable}
+def run_all(root, fast_selftests=False):
+    ctx = {"root": root, "python": sys.executable, "fast_selftests": fast_selftests}
     results = []
 
     def add(r):
@@ -1430,6 +1461,13 @@ def main(argv=None):
                          help="Project root to check (default: current working directory).")
     parser.add_argument("--self-test", action="store_true",
                          help="Run embedded self-test fixtures and exit.")
+    parser.add_argument("--fast-selftests", action="store_true",
+                         help="Sensor self-tests run as a date-keyed rotation instead of "
+                              "the full battery (for the every-session /sweep call; init "
+                              "and manual checkups should stay full).")
+    parser.add_argument("--verbose", action="store_true",
+                         help="Print every check line, including all-PASS family members "
+                              "(default collapses homogeneous PASS runs to one line).")
     args = parser.parse_args(argv)
 
     if args.self_test:
@@ -1437,10 +1475,52 @@ def main(argv=None):
 
     root = Path(args.root).resolve() if args.root else Path.cwd().resolve()
     print("doctor: checking %s" % root)
-    results = run_all(root)
-    for r in results:
-        print(r.line())
+    results = run_all(root, fast_selftests=args.fast_selftests)
+
+    # v3.0.27 (plain-language sweep V3): the report used to be a flat scroll -- on an
+    # instance, one FAIL sat mid-stream among 63 identical "[PASS] python-sensors:X"
+    # lines, and the report ended in counts nobody acts on. Default view: homogeneous
+    # all-PASS families collapse to one line (--verbose expands); every non-PASS line
+    # always prints in full; and the report ends with what needs a human. Nothing is
+    # dropped -- detail moves behind --verbose, findings never do.
+    if args.verbose:
+        for r in results:
+            print(r.line())
+    else:
+        fams = {}
+        for r in results:
+            if ":" in r.name and r.status == "PASS":
+                fams.setdefault(r.name.split(":", 1)[0], []).append(r)
+        collapsible = {fam for fam, members in fams.items() if len(members) > 1}
+        done = set()
+        for r in results:
+            fam = r.name.split(":", 1)[0] if ":" in r.name else None
+            if r.status == "PASS" and fam in collapsible:
+                if fam not in done:
+                    print("[PASS] %s: %d member check(s) all passed (--verbose lists "
+                          "them)" % (fam, len(fams[fam])))
+                    done.add(fam)
+                continue
+            print(r.line())
     print(_summary_line(results))
+
+    fails = [r for r in results if r.status == "FAIL"]
+    warns = [r for r in results if r.status == "WARN"]
+    def _first_clause(detail):
+        return detail.split(". ", 1)[0][:160]
+    if fails:
+        print("NEEDS YOU (%d):" % len(fails))
+        for r in fails:
+            print("  - %s -- %s (full line above)" % (r.name, _first_clause(r.detail)))
+    if warns:
+        print("WORTH KNOWING (%d):" % len(warns))
+        for r in warns:
+            print("  - %s -- %s (full line above)" % (r.name, _first_clause(r.detail)))
+    if fails or warns:
+        print("If you do nothing: the project keeps working; the items above stay "
+              "broken or switched off until someone acts on their FIX lines.")
+    else:
+        print("Nothing needs you.")
     return _exit_code(results)
 
 if __name__ == "__main__":

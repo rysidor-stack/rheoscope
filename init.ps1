@@ -656,10 +656,12 @@ if (Test-Path $hooksDst) {
     # end up with no security hooks wired, with only this INFO line as the tell. Warn
     # LOUDLY when the existing file doesn't already reference the hooks this step would
     # have wired; never modify the file automatically -- consent-flow behavior below is
-    # otherwise unchanged.
+    # otherwise unchanged. (Provenance -- the silent-shadowing defect and its confirmation
+    # by stranger-test RUN 2, Finding 4 -- lives in this comment; the operator-facing
+    # warning below stays plain.)
     $existingSettingsContent = [System.IO.File]::ReadAllText($hooksDst)
     if ($existingSettingsContent -notmatch 'block-dangerous-bash' -or $existingSettingsContent -notmatch 'block-env-writes') {
-        Write-Warning "$hooksDst already exists and does NOT reference the security hooks (block-dangerous-bash.sh / block-env-writes.sh). If you intended -Hooks (or the default interactive Yes) to wire them, that consent has been silently shadowed by this pre-existing file -- confirmed by stranger-test RUN 2, Finding 4. Merge core/security/settings.local.json.example into it by hand, or remove the file and re-run init, if it isn't a deliberate prior configuration. This file is left untouched by init either way."
+        Write-Warning "your security protections were NOT switched on -- a settings file already exists without them. If you didn't set that file up on purpose: delete .claude/settings.local.json and run init again, or ask a Claude session to merge the protections in (from core/security/settings.local.json.example). If it's yours on purpose, ignore this."
     }
     Info "settings.local.json already exists -- left untouched; hooks example at core/security/settings.local.json.example"
 } elseif (-not (Test-Path $hooksSrc)) {

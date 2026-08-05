@@ -7,7 +7,7 @@ source_artifacts:
   - path: docs/wiki-schema.md
     sha256: d3d76d217c727eb8c00f987e833c7457329518e8e5a7010c9d6219a66f53a623
   - path: deploy/check-frontmatter.py
-    sha256: 92f9dcdf7b7c53ba06af27d404746c9e4b1ffa91a5303e561c4d0701ca837227
+    sha256: 56367ffa90d0cb6b9384f30f891db0f4dac7f7aa76000e50b7588d4f60e8886b
 extracted: 2026-07-23
 toolchain: source-read
 confidence: source-crosschecked
@@ -20,7 +20,7 @@ schema_extensions: []
 
 Format-layer behavioral contract for a `/compile` run's receipt
 (`receipts/<YYYY-MM-DDTHHMMSS>-compile.md`) — surface 3 of the v3.0-44 harness-surfaces
-dogfood (`harness-v3.0/specs/session-d-design-brief-2026-07-23.md` Part 1). Per that
+dogfood (session-D design brief Part 1 -- a dev-repo design record, not shipped). Per that
 brief this surface is "partially machine-checked already": the rows below mostly
 transcribe an existing de-facto contract rather than inventing one. Every row carries
 `DRAFT` (the row-lifecycle carrier, manifest-format.md §5); this manifest sits at
@@ -53,8 +53,8 @@ particular instance already diverges from the canonical shape on two fields).
 | `cr-cross-links-changed-shape` | `cross_links_changed`, when present, is a list of `{from, to, operation}` mappings | Parse each `cross_links_changed:` list entry | `OPEN — missing: same coexistence gap as cr-scope-tags-shape — docs/wiki-schema.md §7 fixes `{from, to, operation}` with `operation` in `{added, removed}`, but receipts/2026-07-23T163000-compile.md instead carries free-text strings like `"wiki/systems/auth-stack.md + wiki/systems/scheduler.md (added)"`` | — | DRAFT | source-read | EXACT |
 | `cr-boolean-fields` | `meaningful_change`/`circuit_breaker_hit` are bare YAML booleans | Parse the two keys' raw scalar values | When present, each value is the bare token `true` or `false` — never a quoted string, never `yes`/`no`/`1`/`0` | — | DRAFT | source-read | EXACT |
 | `cr-review-compacted-shape` | `review_compacted`, when present, is a `{count, entries}` mapping | Parse the `review_compacted:` block | `count` is a non-negative integer; `entries` is a list of strings (terminal REVIEW.md entry titles, e.g. `"<title> (APPLIED)"`); the field is absent or `{count: 0, entries: []}`-equivalent exactly when nothing was swept this run (docs/wiki-schema.md §7) | — | DRAFT | source-read | EXACT |
-| `cr-pending-cascade-machine-read` | `pending_cascade`, when non-empty, is read as authoritative re-entry work by the next `/compile` run | Parse `pending_cascade:` entries as `{raw_file, targets_remaining}` mappings, then check the NEXT compile receipt's `raw_inputs`/`notes` for evidence the file re-entered the pipeline | Each `raw_file` re-enters processing on the next `/compile` run even though it may already appear in some article's `sources:` list — this is authoritative carry-over, not a heuristic hint (`.claude/skills/compile/SKILL.md` line 28: "Re-entry from the last receipt"; docs/wiki-schema.md §7) | — | DRAFT | source-read | EXACT |
-| `cr-notes-unresolved-term-marker` | `notes` carries the literal `[unresolved-term: <term>]` marker for terms outside CONTEXT.md | Scan `notes:` for the marker token | When compilation encountered a load-bearing term not in CONTEXT.md, `notes` contains `[unresolved-term: <term>]` verbatim — a future `/grill` (`/preflight`) session resolves it into CONTEXT.md (docs/wiki-schema.md §7 line ~501; `.claude/skills/compile/SKILL.md` line 143) | — | DRAFT | source-read | EXACT |
+| `cr-pending-cascade-machine-read` | `pending_cascade`, when non-empty, is read as authoritative re-entry work by the next `/compile` run | Parse `pending_cascade:` entries as `{raw_file, targets_remaining}` mappings, then check the NEXT compile receipt's `raw_inputs`/`notes` for evidence the file re-entered the pipeline | Each `raw_file` re-enters processing on the next `/compile` run even though it may already appear in some article's `sources:` list — this is authoritative carry-over, not a heuristic hint (`.claude/skills/compile/SKILL.md` Step 1 "Re-entry from the last receipt"; docs/wiki-schema.md §7 -- section names, not line numbers: the old "line 28" had already drifted) | — | DRAFT | source-read | EXACT |
+| `cr-notes-unresolved-term-marker` | `notes` carries the literal `[unresolved-term: <term>]` marker for terms outside CONTEXT.md | Scan `notes:` for the marker token | When compilation encountered a load-bearing term not in CONTEXT.md, `notes` contains `[unresolved-term: <term>]` verbatim — a future `/grill` (`/preflight`) session resolves it into CONTEXT.md (docs/wiki-schema.md §7; `.claude/skills/compile/SKILL.md` Step 8 -- section names, not line numbers) | — | DRAFT | source-read | EXACT |
 | `cr-envelope-lenient-unknown-keys` | A key outside the RECEIPT_KEYS envelope is tolerated, not flagged | Add a frontmatter key not in the union of `RECEIPT_KEYS["required"]` and `RECEIPT_KEYS["optional"]` and run `deploy/check-frontmatter.py` | The receipt class is `lenient: True` (`deploy/check-frontmatter.py` `RECEIPT_KEYS`) — an unrecognized top-level key produces no WARN/FAIL from that sensor, since per-type receipt schemas vary and only the shared envelope (`type`, `timestamp`) is common across every orchestrator (docs/wiki-schema.md §7 "Shared envelope") | — | DRAFT | source-read | EXACT |
 
 ## Amendments

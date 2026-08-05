@@ -14,9 +14,11 @@ session executes this protocol inline. If a T1 close leg dies, the handoff parks
 `status: answered, close: pending` and is auto-retried by the next `/handoff` invocation or
 the nightly standing-loop tick — **there is no manual fallback** (operator ruling
 2026-07-31: no manual work). The steps below are written to the executor, whichever of
-those it is. If you have not yet read the project's canonical handoff protocol
+those it is. If you have not yet read the project's canonical handoff protocol this
+session, read its named §§ on meta shape and the closing sequence
 (`handoffs/METHODOLOGY.md`, or `core/handoffs/HANDOFF-CLOSING.md` where that file is the
-project's canon), read it before executing.
+project's canon) before executing — not the whole document; open another § only when a
+step below sends you to it.
 
 ## Step 1: Substrate check (the firewall's mechanical home — this step does not move)
 
@@ -50,6 +52,9 @@ handoff envelope for folders with `status: answered`:
 - Zero → tell operator and stop
 
 ## Step 3: Read everything
+
+In-pass T2/T3 lock: the packet and files this pass itself authored are already in context —
+re-open only files this pass did not author.
 
 In order:
 1. `meta.yaml` — provenance, tier, round count, prior outcomes, substrates used

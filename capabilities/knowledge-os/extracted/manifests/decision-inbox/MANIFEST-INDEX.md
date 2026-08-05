@@ -1,6 +1,6 @@
 # decision-inbox — MANIFEST-INDEX
 
-Surface 2 of the v3.0-44 harness-surfaces dogfood (session-d-design-brief-2026-07-23.md
+Surface 2 of the v3.0-44 harness-surfaces dogfood (the session-D design brief (dev-repo record, not shipped)
 Part 1). Per the round-1 vocabulary fold: this surface's **file** status is EXTRACTED
 while every **row** carries the DRAFT flag — the enum and the lifecycle carrier are
 distinct and never conflated (manifest-format.md §5 vs §7).

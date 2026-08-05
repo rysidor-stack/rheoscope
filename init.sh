@@ -628,9 +628,11 @@ if [[ -e "$HOOKS_DST" ]]; then
     # end up with no security hooks wired, with only the info line below as the tell.
     # Warn LOUDLY when the existing file doesn't already reference the hooks this step
     # would have wired; never modify the file automatically — consent-flow behavior
-    # below is otherwise unchanged.
+    # below is otherwise unchanged. (Provenance — the silent-shadowing defect and its
+    # confirmation by stranger-test RUN 2, Finding 4 — lives in this comment; the
+    # operator-facing warning below stays plain.)
     if ! grep -q 'block-dangerous-bash' "$HOOKS_DST" 2>/dev/null || ! grep -q 'block-env-writes' "$HOOKS_DST" 2>/dev/null; then
-        echo "WARNING: $HOOKS_DST already exists and does NOT reference the security hooks (block-dangerous-bash.sh / block-env-writes.sh). If you intended --hooks (or the default interactive Yes) to wire them, that consent has been silently shadowed by this pre-existing file — confirmed by stranger-test RUN 2, Finding 4. Merge core/security/settings.local.json.example into it by hand, or remove the file and re-run init, if it isn't a deliberate prior configuration. This file is left untouched by init either way." >&2
+        echo "WARNING: your security protections were NOT switched on — a settings file already exists without them. If you didn't set that file up on purpose: delete .claude/settings.local.json and run init again, or ask a Claude session to merge the protections in (from core/security/settings.local.json.example). If it's yours on purpose, ignore this." >&2
     fi
     info "settings.local.json already exists — left untouched; hooks example at core/security/settings.local.json.example"
 elif [[ ! -e "$HOOKS_SRC" ]]; then

@@ -1192,9 +1192,18 @@ def run(root, report_json=False, strict=False):
     if code == 0:
         print("RESULT: PASS -- %d event(s) classified, %d known hole(s), 0 new, %d warning(s)"
               % (report["ledger_events"], len(report["journal_holes"]), len(report["warnings"])))
+        # v3.0.27 (plain-language sweep V6): one translation line for humans -- the class
+        # table above is session-facing vocabulary, and "census clean (18 CONSUMED)" was
+        # flowing verbatim into operator reports. When quoting the census to the operator,
+        # quote THIS line; the classes stay above, unchanged, for the machines.
+        print("In plain terms: all %d notes are accounted for -- nothing lost, nothing "
+              "double-counted." % report["ledger_events"])
     else:
         print("RESULT: FAIL -- %d new hole(s), %d conservation problem(s)"
               % (len(report["new_holes"]), len(report["problems"])))
+        print("In plain terms: the bookkeeping does not add up -- %d note(s) cannot be "
+              "accounted for; nothing should compile until this is explained."
+              % (len(report["new_holes"]) + len(report["problems"])))
     return code
 
 

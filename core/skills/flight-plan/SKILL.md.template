@@ -15,9 +15,11 @@ description: Generate a delta-first session briefing — what changed, what's he
 
 You are the /flight-plan orchestrator for {{project_name}}. Your job is to produce a concise, delta-first briefing that gets a cold session up to speed in under 60 seconds. You may also be invoked with a flight-plan slug as an argument (e.g., `/flight-plan {{project_slug}}-phase-0`), in which case you produce a targeted read of that flight plan's Layer 1 Dashboard instead of the global briefing.
 
-## Step 0 — Load Schema
+## Step 0 — Argument Check, then Load Schema
 
-Read `core/governance/CLAUDE.md` at the project root. That file governs everything. If `docs/wiki-schema.md` exists (knowledge-os enabled), also read it for wiki conventions.
+**Check the invocation FIRST (v3.0.27 — reordered):** if `/flight-plan` was invoked with an argument, go straight to Step 0.5's drill-down mode and SKIP the schema read below — a targeted verbatim excerpt needs no schema, and the old order paid the two largest governing-doc reads to echo one dashboard.
+
+Otherwise: read `core/governance/CLAUDE.md` at the project root — unless this session already read it at open (the session ritual makes it the first action; if it's in context, verify presence and move on, don't re-read). That file governs everything. If `docs/wiki-schema.md` exists (knowledge-os enabled), also read it for wiki conventions (same already-read rule).
 
 ## Step 0.5 — Argument Handling (drill-down mode)
 
@@ -44,7 +46,7 @@ State which mode you're in at the top of the briefing so a cold reader knows whe
 
 ## Step 1 — Read Recent Compile Receipts (knowledge-os only)
 
-Read all files in `receipts/`. Sort by timestamp (newest first). Focus on receipts since the last /flight-plan receipt (or all receipts if this is the first run).
+List `receipts/` by filename — the names are timestamps, so the listing IS the sort. Read only the files newer than the most recent `*-flight-plan.md` receipt; on a first run, read the newest 10 and say so in the briefing (v3.0.27 — the old "read all files in receipts/" grew linearly with project age and re-read the archive every session open; the receipts a briefing needs are the ones since the last briefing).
 
 For each compile receipt, extract:
 - What raw files were processed
@@ -278,7 +280,7 @@ from Steps 5.5–5.10 land in the bucket their fix belongs to, not in a per-sens
 
 Using the same inputs already read in Steps 1–5 (receipts, HEALTH.md, REVIEW.md, cadence compliance, unprocessed raw scan) plus the flight-plans scan from Step 4.5, **the corpus observation from Step 5.5, the reference-integrity status from Step 5.6, the derivation-audit status from Step 5.8, and the knowledge-debt status from Step 5.10**, regenerate `SESSION-BRIEFING.md` at the repo root with current state. Follow the SESSION-BRIEFING.md schema in `docs/wiki-schema.md` § 10. If Step 5.5 found corpus drift, carry the **alert** into SESSION-BRIEFING (alert, not reconciliation — reconciling is `/compile`'s job). If Steps 5.6/5.8/5.10 found violations, carry them in too — in the same translated, contract-formatted shape Steps 5.6–5.10 now specify (plain sentence + consequence + `(details: ...)` tail; SESSION-BRIEFING is an operator file, and /sweep's prose scan mechanically flags raw sensor lines in it) — detection only; the fix is a consented session action or a human commit, never this step's write.
 
-This is `/flight-plan`'s single write exception — the briefing file overwrite is intentional. Do not preserve old content; the file is regenerated from scratch every run.
+This is `/flight-plan`'s single write exception — the briefing file overwrite is intentional. Do not preserve old content; the file is regenerated from scratch every run. One efficiency rule (v3.0.27): if the regenerated content is byte-identical to the existing file, skip the write — same freshness guarantee (you still derived it from sources), no commit churn on a no-delta morning.
 
 ## Step 7 — Write Receipt
 

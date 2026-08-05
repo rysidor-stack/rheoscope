@@ -20,7 +20,7 @@ If any of these is not true, do not open the kickoff session. Resolve first.
 
 ## Kickoff interview
 
-Open a fresh chat with your agent of choice. Paste the contents of `core/governance/CLAUDE.md` and `core/governance/PROJECT-COMPASS.md` first so the session has orientation (non-Claude agents: the root `AGENTS.md` pointer lists the same reading order). Before or while you get going, offer the operator the tour: "Want the tour first? `core/onboarding/TOUR.md` is a staged walkthrough of the harness; `core/onboarding/SYSTEM-MAP.html` is an interactive map (double-click to open); ad-hoc questions any time — ask `/orient`." Then walk these ten steps in order. For each, record the answer in a session log at `raw/YYYY-MM-DD-session-project-init.md` (create `raw/` if absent).
+Open a fresh chat with your agent of choice. Tell the session to read `core/governance/CLAUDE.md` and `core/governance/PROJECT-COMPASS.md` first so it has orientation (paste their contents only if your chat tool can't read files; non-Claude agents: the root `AGENTS.md` pointer lists the same reading order). Before or while you get going, offer the operator the tour: "Want the tour first? `core/onboarding/TOUR.md` is a staged walkthrough of the harness; `core/onboarding/SYSTEM-MAP.html` is an interactive map (double-click to open); ad-hoc questions any time — ask `/orient`." Then walk these ten steps in order. For each, record the answer in a session log at `raw/YYYY-MM-DD-session-project-init.md` (create `raw/` if absent).
 
 **Write the session log's frontmatter first.** `docs/wiki-schema.md` § 2 requires every `raw/` file to open with a YAML frontmatter block, and the kickoff log is a *process record* (its knowledge is canonical in `docs/governance/` + `docs/adr/` + `roadmap/`), not knowledge intake — so mark it `compile: false`. Without this, the first `/compile` run can't route the file, archives nothing, and logs a blocking REVIEW. Open the log with exactly this block before recording any answers:
 
@@ -96,7 +96,7 @@ Reject candidates that fail any leg and show them in the reject pile. Populate `
 
 > "Are there hard-to-reverse decisions already made that future sessions need to know about?"
 
-For each that passes Pocock's three criteria — **hard to reverse**, **surprising without context**, **real trade-off** — create `docs/adr/<YYYY-MM-DD>-<n>-<slug>.md`. The `<n>` is an **unpadded** sequential decision number (1, 2, 3…, not 001), scoped **per day**: scan `docs/adr/` for existing files carrying today's date and increment `<n>` by one (start at 1 if none). This is the harness's operative ADR-numbering convention — see `core/skills/preflight/ADR-FORMAT.md` § Numbering (also the convention `/preflight`-authored ADRs follow). Reject candidates that don't meet all three criteria; they're not ADRs, they're just facts.
+For each that passes Pocock's three criteria — **hard to reverse**, **surprising without context**, **real trade-off** — create `docs/adr/<YYYY-MM-DD>-<n>-<slug>.md`. The `<n>` is an **unpadded** sequential decision number (1, 2, 3…, not 001), scoped **per day**: scan `docs/adr/` for existing files carrying today's date and increment `<n>` by one (start at 1 if none). This is the harness's operative ADR-numbering convention — see `.claude/skills/preflight/ADR-FORMAT.md` § Numbering (also the convention `/preflight`-authored ADRs follow). Reject candidates that don't meet all three criteria; they're not ADRs, they're just facts.
 
 ### 2j. Totality read-back
 

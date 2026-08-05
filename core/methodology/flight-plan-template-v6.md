@@ -106,7 +106,7 @@ Type key: **Q** = question (need answer), **R** = risk (could go wrong), **A** =
 | CC Verifier | `verification-architecture.md` + `specs/verification/[increment].md` | When authoring verification tests |
 | CC Builder | `execution-engine.md` (principles section) + `specs/build/[increment].md` | When dispatched by Controller |
 | CC Runner | Test suite paths + deployed build | When dispatched by Controller |
-| Code Quality Reviewer | `code-conventions.md` + diff under review | When dispatched by Controller |
+| Code Quality Reviewer | `code-conventions.md` (created during the first build) + diff under review | When dispatched by Controller |
 
 ### Dependencies
 
@@ -155,7 +155,7 @@ Next: [what the next session should do]
 When reaching a phase transition, run these four checks in order. Zero items on any check is valid — don't manufacture concerns.
 
 **A — Depth Check**
-Surface specific items that are undercooked. Point to the item by name, state why it's risky, recommend 3-pass or 5-pass. Operator decides which to run.
+Surface specific items that are undercooked. Point to the item by name, state why it's risky, and recommend either a quick re-look (3-pass) or a full teardown-and-rebuild of the item (5-pass) — the operator says which they want, or "neither".
 
 **B — Connection Surfacing**
 Surface connections between items that weren't explicitly designed for. Each connection must reference two or more specific items. Totality pass reasons about the project as a whole.
@@ -167,7 +167,7 @@ Review verification status for every increment in the phase:
 - T4 increments pass on builder self-test + passing regression gate.
 - Review runtime monitors if any are deployed. Any active alerts are blockers.
 
-**D — RTDT Cut**
+**D — RTDT Cut** (RTDT — Read the Damn Thermometer: if nothing needs it, it goes)
 Surface anything overbuilt, unnecessary, or solvable with something simpler. State what the project loses without it, and whether that loss matters for the success definition.
 
 **Gate rule:** Phase advances when the AI and the operator both agree the phase is done. No checklist theater. The judgment is: "would a cold session starting from this file have everything it needs to do the next phase's work?"
@@ -239,7 +239,7 @@ The file should never exceed ~300 lines of active content. If it does, something
 ```
 project-root/
 ├── [project]-flight-plan.md              # This file
-├── methodology/                           # Universal — same across projects
+├── core/methodology/                      # Universal — same across projects
 │   ├── execution-engine.md
 │   └── verification-architecture.md
 ├── specs/

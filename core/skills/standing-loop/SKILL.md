@@ -41,8 +41,11 @@ reports "not armed" and exits without writing anything — not even a report art
 
 1. **The rollback rehearsal receipt exists** — a file matching
    `deploy/evidence/rollback-rehearsal-receipt-*.md`, recording a rehearsal THIS instance
-   actually ran. No receipt, no run. The rehearsal, conducted on a **scratch clone of this
-   project** (never the live tree), is three rounds:
+   actually ran. No receipt, no run. You never type any of this: the session runs the
+   three-round fire-drill on a throwaway copy and files the evidence; your job is to see the
+   receipt exists and names THIS project. The rehearsal, conducted on a **scratch clone of this
+   project** (never the live tree), is three rounds (this is the receipt-content spec — what
+   the session runs and what its receipt must record):
    - **Round 1 — clean abort:** create a `standing-loop/compile-<date>` branch, commit junk on
      it, delete it (`git branch -D`); verify the baseline is byte-identical
      (`git status --porcelain` empty, `git rev-parse HEAD` unchanged).
@@ -78,18 +81,27 @@ reports "not armed" and exits without writing anything — not even a report art
    one-time condition on the *first* run only; once satisfied and recorded, later ticks don't
    re-check it.
 
-Note: signature-gating this artifact (a pinned operator signing key, verified on the introducing
-commit) is the named hardening R-1's design review established for promotion gates of this
-shape — the same TOCTOU-resistant, verified-blob-binding pattern. Adopt it here once R-1 lands;
-until then, "committed and predates the run" is the control this gate relies on.
+This loop ships switched off. Your part is one decision: arm it (the acts above, which the
+session executes on your yes), or record a dated "not yet" — either answer is fine, and the
+session does the recording. The decision comes back to you on a schedule, so "off" never
+quietly becomes "forgotten."
 
-**Staged-unarmed, not indefinitely-unarmed (backlog v3.0-70).** Unarmed-by-default is this
-skill's *shipping* state, never its resting state. An instance either arms it by the acts above
-or records a dated decision not to run it — a trigger-register row (`standing-loop-arming-review`,
-seeded in `trigger-register.yaml.example`) keeps that decision dated instead of drifting, and
-once armed becomes the re-affirmation cadence. Contrast the R-1 signing gate, whose
-unarmed-by-default is the same shipping invariant with the same per-instance graduation duty
-(`r1-arming-review`).
+<!-- Maintainer note (mechanism behind the paragraph above — kept for the record; operators
+need not read this):
+- Signature-gating the authorization artifact (a pinned operator signing key, verified on the
+  introducing commit) is the named hardening R-1's design review established for promotion
+  gates of this shape — the same TOCTOU-resistant, verified-blob-binding pattern. Adopt it
+  here once R-1 lands; until then, "committed and predates the run" is the control this gate
+  relies on.
+- Staged-unarmed, not indefinitely-unarmed (backlog v3.0-70): unarmed-by-default is this
+  skill's *shipping* state, never its resting state. The dated "not yet" lives as a
+  trigger-register row (`standing-loop-arming-review`, seeded in
+  `trigger-register.yaml.example`), which keeps the decision dated instead of drifting and,
+  once armed, becomes the re-affirmation cadence. Contrast the R-1 signing gate, whose
+  unarmed-by-default is the same shipping invariant with the same per-instance graduation
+  duty (`r1-arming-review`).
+-->
+
 
 ## The run, in order
 
@@ -188,9 +200,12 @@ Arming this loop SUPERSEDES the sweep-only schedule — the loop runs `/sweep` i
 disable the "Rheoscope Nightly Sweep" task when this one activates (two schedules = double spend
 and briefing races).
 
-Stated plainly because it matters: creating that schedule, and committing the operator
-authorization artifact from the activation gate, are BOTH operator actions. This skill ships
-ready to run; it is armed only by those two acts, never by installing it.
+Stated plainly because it matters: both steps — creating that schedule, and committing the
+operator authorization artifact from the activation gate — happen only on your yes, and the
+SESSION executes them. For the schedule, the session builds the `.cmd` wrapper and the Task
+Scheduler entry and shows you both before enabling anything; for the authorization artifact,
+the session mints and commits it per activation-gate item 2. This skill ships ready to run;
+it is armed only by those two consents, never by installing it.
 
 ## What this is NOT
 

@@ -28,7 +28,7 @@ with the dispatch manifest or result manifest (see those entries). Doctrine:
 **Bridge** — the shared transport library (`verify-cli.js` + two contained verifier servers +
 `repo-grounding.js`) that `/cross-check`, `/cross-check-loop`, and the memory engine's VERIFY leg
 all call to reach a substrate-different model. No slash command of its own. See
-`core/skills/bridge/README.md`.
+`core/skills/bridge/README.md` (post-init path: `.claude/skills/bridge/README.md`).
 
 **Capability vs. core skill** — **core** ships unconditionally, no toggle; a **capability** is
 opt-in via `project.yaml.capabilities` and can be entirely absent from a project that never
@@ -49,8 +49,8 @@ loop".
 **Conformance sweep** — `/conformance`: replaying behavioral-manifest rows against the live
 build; smoke tier on cadence, full tier at freezes/certification; receipts
 `<surface>-conformance-bless-rN`; red rows classify as declared vs undeclared nonconformance via
-the amendment log. See `core/skills/conformance/SKILL.md` and
-`core/methodology/manifest-format.md` § 12.
+the amendment log. See `core/skills/conformance/SKILL.md` (post-init path:
+`.claude/skills/conformance/SKILL.md`) and `core/methodology/manifest-format.md` § 12.
 
 **Credential broker** — the three-script Windows-credential toolset (`credential-store.ps1`,
 `credential-use.ps1`, `credential-remove.ps1`) that keeps secrets in the OS-native Credential
@@ -75,8 +75,20 @@ activation gated on at least two additional live instances. See `deploy/desk-met
 `deploy/gen-desk.py`, and `deploy/empire-desk.py`.
 
 **Dispatch manifest** — `dispatch-manifest.json`, the memory engine's compile-pipeline transport
-artifact (F17-attested). Says what a packet carried, not what a surface must do. See
-`core/methodology/manifest-format.md` § 1.
+artifact (F17-attested — see the **F17 / attestation sidecar** entry). Says what a packet
+carried, not what a surface must do. See `core/methodology/manifest-format.md` § 1.
+
+**Envelope (handoffs)** — the folder where decision-review paperwork lives — `handoffs/` or
+`core/handoffs/`, depending on the project. Mechanism: each handoff occupies its own dated
+subfolder inside the envelope, holding the question packet, the answers, and the lock record;
+tools resolve which layout a project chose rather than assuming one. See
+`core/skills/handoff/SKILL.md.template` (post-init path: `.claude/skills/handoff/SKILL.md`).
+
+**F17 / attestation sidecar** — a small machine-written receipt saying which AI actually did a
+step; sessions copy identity from it instead of typing it. Mechanism: the sidecar file rides
+alongside the artifact it attests (e.g. the dispatch manifest), and identity fields such as
+`locked_by` are copied from it verbatim — never hand-asserted. "F17" is the frozen test plan's
+number for this control.
 
 **HOLD / PENDING / UNROUTED** — three distinct "waiting" states, easy to conflate. A **hold
 point** is a methodology gate firing at every phase transition (four checks, operator confirms
@@ -90,9 +102,10 @@ verbatim-quoted operator authorization artifact before it runs; standing memory 
 ahead" never satisfies it. See `docs/engine/OPERATIONS.md` § 5 "dispatch-check — the
 HUMAN-GATE".
 
-**Journal** — the chained run journal (`receipts/journal/`), `prev_record_hash`-linked, recording
-what each compile/verify run absorbed as set membership, so a broken or tampered chain is
-refused rather than silently trusted. See
+**Journal** — the engine's tamper-evident logbook: every compile/verify run writes one numbered
+entry recording what it absorbed, and each entry is chained to the one before it, so a broken
+or edited chain is refused rather than silently trusted. Mechanism: `receipts/journal/`,
+`prev_record_hash`-linked, absorption recorded as set membership. See
 `capabilities/knowledge-os/extracted/wiki-schema.md.template` § 17.4 (post-init path:
 `docs/wiki-schema.md`).
 
@@ -121,7 +134,8 @@ end-to-end (`/compile`, `/preflight`, `/flight-plan` — see `core/governance/CL
 § "Orchestrator inventory"; post-init path: `core/governance/CLAUDE.md`); a **subagent** is a role-scoped session dispatched for one bounded
 task (e.g. a Spec Reviewer, or a preflight evidence-sweep agent) that never spawns further
 agents itself. See `core/methodology/tier-definitions.md.template` § T3 (post-init path:
-`core/methodology/tier-definitions.md`) and `core/skills/preflight/SKILL.md` § "Evidence sweep".
+`core/methodology/tier-definitions.md`) and `core/skills/preflight/SKILL.md` § "Evidence sweep"
+(post-init path: `.claude/skills/preflight/SKILL.md`).
 
 **Origin (human / corpus / unknown)** — the mechanically-derived provenance every registered
 event carries: personnel-tagged → `human`; session/observation-authored → `corpus`; unparseable
@@ -132,14 +146,16 @@ automatically). Origin only rises across a view's lineage, never falls. See
 **Preflight trace** — the durable marks `/preflight` leaves on an interrogated artifact: a dated
 `preflighted YYYY-MM-DD` status stamp, inline `Preflight note:` annotations, and a closing report
 of claims verified, terms resolved, and open questions routed. See
-`core/skills/preflight/SKILL.md` § "Preflight trace — the durable marks".
+`core/skills/preflight/SKILL.md` § "Preflight trace — the durable marks" (post-init path:
+`.claude/skills/preflight/SKILL.md`).
 
-**R-1 (session-loop candidate pipeline)** — the harvest → stage → register → promote pipeline
+**R-1 (session-loop candidate pipeline)** — the machinery that lets something an AI session
+wrote become an official recorded input, but only after the operator personally signs off — and
+it ships switched off. Mechanism: the harvest → stage → register → promote pipeline
 (`candidates.py`, `harvest-candidates.py`, `register-candidates.py`, `check-candidates.py`,
-`promote-candidate.py`) that turns a session-authored span into a signing-gated,
-operator-authored registered event: promotion refuses without an `ARMED` artifact from a pinned
-SSH key, is single-use, and is TOCTOU-proofed. Ships **UNARMED** — `signing-config.yaml.example`
-carries no pinned fingerprint. Closes the gap the frozen test plan named R-1. See
+`promote-candidate.py`); promotion refuses without an `ARMED` artifact from a pinned SSH key,
+is single-use, and is TOCTOU-proofed. Ships **UNARMED** — `signing-config.yaml.example` carries
+no pinned fingerprint. Closes the gap the frozen test plan named R-1. See
 `docs/engine/OPERATIONS.md` § "Honest gaps" and `capabilities/knowledge-os/extracted/deploy/candidates.py`.
 
 **Raw event** — a frontmattered file under `raw/`, the unit of intake before anything downstream
@@ -169,6 +185,10 @@ propagate their full `RECIPE.md` to `docs/recipes/<name>/` too.
 touched, tests run, completion status). Says what a Builder did. See
 `core/methodology/manifest-format.md` § 1.
 
+**Seq N** — the running number of an engine run — "seq 3" just means the third recorded run.
+Mechanism: the journal (see the **Journal** entry) numbers its chained entries sequentially;
+receipts and reports cite that number as `seq N`.
+
 **Stage-only commit** — every compile/verify run commits per-path adds only, never a bare
 directory add, mechanically checked by `deploy/check-run-diff.py --sections`. See
 `docs/engine/OPERATIONS.md` § "Stage-only commit, worktree-per-shard discipline".
@@ -178,7 +198,7 @@ regenerates the decision inbox, and compiles pending raw content on a disposable
 `standing-loop/compile-YYYYMMDD` branch — never the default branch, never a merge. Armed only by
 a committed operator authorization artifact plus a passed rollback rehearsal receipt; absorption
 into truth still requires a human "yes" in an interactive session. See
-`core/skills/standing-loop/SKILL.md`.
+`core/skills/standing-loop/SKILL.md` (post-init path: `.claude/skills/standing-loop/SKILL.md`).
 
 **Substrate separation** — evaluator kept structurally distinct from the evaluated. For code,
 deterministic verification (tests) is the primary firewall and substrate separation is
@@ -188,7 +208,7 @@ defense-in-depth; for decisions with no executable test, substrate separation is
 **Sweep** — `/sweep`: the check-everything button. Runs every read-only health check (doctor,
 census, structural sensors, manifest structure, conformance smoke, and the read-only half of
 audit) in one pass and returns one plain-English briefing; never changes anything. See
-`core/skills/sweep/SKILL.md`.
+`core/skills/sweep/SKILL.md` (post-init path: `.claude/skills/sweep/SKILL.md`).
 
 **Three moves (change taxonomy)** — every post-ship change is exactly one of: definition
 amendment (rows change first — the amendment IS the feature), projection change (code changes,
@@ -202,6 +222,11 @@ tests, T3 spec review + code quality (no separate Verifier), T4 builder self-ver
 also sets the behavioral-manifest gate depth: T1/T2 CERTIFIED, T3 EXTRACTED, T4
 exempt-with-named-reason. See `core/methodology/tier-definitions.md.template` (post-init path:
 `core/methodology/tier-definitions.md`).
+
+**Typist rule** — when applying another session's finished work, copy it exactly — you are the
+typist, not an editor. Mechanism: applies wherever a deliverable authored elsewhere (a handoff
+answer, a subagent's build) is transcribed into the tree; any desired change goes back through
+the authoring loop for a new deliverable, never in silently during transcription.
 
 **Verify leg / cross-vendor** — one invocation of the cross-vendor honesty check: a
 substrate-different model reads the event and the current view and answers whether the

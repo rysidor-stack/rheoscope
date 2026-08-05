@@ -1,7 +1,7 @@
 # sweep-briefing — MANIFEST-INDEX
 
 Surface 1 of the v3.0-44 harness-surfaces dogfood
-(`harness-v3.0/specs/session-d-design-brief-2026-07-23.md` Part 1) — the FIRST surface, and
+(the session-D design brief (dev-repo record, not shipped) Part 1) — the FIRST surface, and
 the certification + twin-build-pilot target. Only this surface is required to reach CERTIFIED
 in session D.
 

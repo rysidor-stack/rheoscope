@@ -19,7 +19,7 @@ schema_extensions: []
 
 Format-layer behavioral contract for `DECISIONS-PENDING.md`, the derived projection
 `deploy/decision-inbox.py` regenerates. Session D, surface 2 of the harness-surfaces
-dogfood (`harness-v3.0/specs/session-d-design-brief-2026-07-23.md` Part 1). Every row
+dogfood (the session-D design brief (dev-repo record, not shipped) Part 1). Every row
 below is a **structural assertion a future `deploy/check-briefing-format.py`-style
 validator would implement** against a DECISIONS-PENDING.md instance — this manifest
 enumerates the contract honestly at EXTRACTED; no validator and no pinned fixture seed

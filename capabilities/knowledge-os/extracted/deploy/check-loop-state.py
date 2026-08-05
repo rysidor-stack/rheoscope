@@ -48,7 +48,7 @@ WHAT WAS PORTED VERBATIM IN SPIRIT
     handoffs imported as immutable evidence artifacts. Never wildcarded.
   - Exit-code / self-test / CLI conventions: 0 clean / 1 violation(s) /
     2 inconclusive, --self-test over deploy/test-fixtures/loop-state/,
-    --check for the live run (house convention, deploy/README.md).
+    --check for the live run (the deploy sensor family's shared convention).
 
 WHAT WAS TRIMMED (every trim named, per the build charge)
   1. ALL dispatches/ handling (DISPATCH_STATUS, DISPATCH_STAGE_STATUS,
@@ -95,7 +95,8 @@ FORK REALITY DISCOVERED DURING THE PORT (named, not silently patched)
   drift condition this sensor exists to tripwire.
 
 Schema sources (keep in sync -- extension, never loosening):
-  - handoff meta shape: handoffs/METHODOLOGY.md Sec meta.yaml shape (pruned)
+  - handoff meta shape: core/handoffs/HANDOFF-AUTHORING.md Sec meta.yaml (the
+    canonical 19-key home since v3.0.23; pruned here)
   - pre-protocol handoffs (folder date < 2026-05-27) keep their as-authored
     field shape -> field-schema checks are SKIPPED for them, but status +
     INDEX cross-checks ALWAYS run. Leniency never suppresses the drift check.
@@ -150,7 +151,7 @@ compile-core.py -- see _load() below):
       fork's receipts/verify/) must have a registration record with
       asserts_corpus_state == True -- a straight count cross-check; the 3
       known-hole receipts (deploy/known-holes.yaml) are registrable like any
-      other receipt (adjudication 4/backfill-registrations.py already
+      other receipt (adjudication 4; backfill-registrations.py already
       registers them with origin "unknown" -- a hole is never dropped from
       the ledger) and must be present in the registration map same as any
       other receipt.
@@ -172,7 +173,7 @@ compile-core.py -- see _load() below):
   code/findings regardless of whether the store exists -- only the
   extension's own three checks are gated on the store's presence.
 
-Exit codes (house convention, deploy/README.md Sec Sensors):
+Exit codes (the deploy sensor family's shared convention):
   0  PASS -- all checks (ported base + extension) pass
   1  FAIL -- one or more violations (each printed, two-space indented)
   2  INCONCLUSIVE -- could not run (PyYAML missing, INDEX unreadable,
@@ -1133,11 +1134,22 @@ def run_live(yaml, root=None):
     inconclusive.extend(ext_inconclusive)
 
     # ---- P6 extension (substrate-separation mechanical enforcement) ----
-    print(f"Substrate-separation checks: {len(substrate_warnings)} warning(s) "
-          f"(historical violations + unparseable identifiers; new-dated "
-          f"confirmed violations are folded into the FAIL list below).")
-    for w in substrate_warnings:
-        print(f"  WARN: {w}")
+    # v3.0.27 (plain-language sweep V5): this band is SETTLED HISTORY -- old handoffs
+    # whose records can't be re-verified and can't be fixed without editing history.
+    # Re-printing each one every run taught sessions to paste them at the operator as
+    # "notes" (live specimen 2026-08-05). Collapse to a count; --verbose lists them.
+    # New-dated confirmed violations were never here -- they are FAILs below, unchanged.
+    if substrate_warnings and "--verbose" not in sys.argv:
+        print(f"Substrate-separation checks: {len(substrate_warnings)} known historical "
+              f"warning(s) (old handoffs with records this sensor cannot re-verify -- "
+              f"unchanged, not news; run with --verbose to list them). New-dated "
+              f"confirmed violations appear in the FAIL list below.")
+    else:
+        print(f"Substrate-separation checks: {len(substrate_warnings)} warning(s) "
+              f"(historical violations + unparseable identifiers; new-dated "
+              f"confirmed violations are folded into the FAIL list below).")
+        for w in substrate_warnings:
+            print(f"  WARN: {w}")
 
     for note in inconclusive:
         if not note.startswith("registration store absent") and not note.startswith(

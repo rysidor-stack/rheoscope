@@ -9,8 +9,10 @@ You are running a full handoff: author → cross-vendor answer → lock, one ses
 The canonical protocol is `handoffs/METHODOLOGY.md` where the project has one (it governs
 folder shape, packet sections, meta shape, roles-in-writing, lock-raw naming); on projects
 without it, `core/handoffs/HANDOFF-*.md` apply. The handoff envelope is the project's
-`handoffs/` directory (`core/handoffs/` on projects that keep it there). Read the protocol
-this session before writing anything.
+`handoffs/` directory (`core/handoffs/` on projects that keep it there). Before writing
+anything, read the protocol's named §§ on meta shape and packet sections (plus folder shape
+and lock-raw naming when authoring a new folder) — not the whole documents; open another §
+only when a step below sends you to it.
 
 **What changed vs the old three-skill march (v3.0-78, 2026-07-31):** the operator no longer
 carries packets between vendors or approves each send — answer legs ride the contained

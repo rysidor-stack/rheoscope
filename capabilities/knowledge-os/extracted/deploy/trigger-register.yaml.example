@@ -6,7 +6,8 @@
 # Predicate vocabulary is CLOSED (six entries; see check-triggers.py's header). Free-text
 # conditions belong in deadline-register.yaml's Watching list, not here: deadlines = dates
 # a human owns; triggers = conditions a script owns. Retire rows (status: retired), never
-# delete them. Design: harness-v3.0/specs/trigger-register-spec-2026-07-28.md.
+# delete them. (Design history: a dev-repo spec, 2026-07-28, not shipped -- this file's
+# comments and check-triggers.py's docstring are the live contract.)
 rows:
   - id: audit-cadence
     condition: { predicate: days_since_receipt, type: audit, days: 14 }

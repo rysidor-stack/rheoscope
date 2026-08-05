@@ -258,6 +258,23 @@ SWEEP_ILLUSTRATIVE_TARGETS = {
     'views/view-stale-verified.md', 'disposition.py',
     'exports/checkout-2026-06-01.json', 'orders-web-SEED.json',
     'pricing-spec.md', 'legacy-pricing-engine.js',
+    # v3.0.27 (plain-language sweep V4) -- known-pattern leaks the operator triaged
+    # out of the first baseline by hand; the machine knows them now:
+    'Next.js',        # a technology name the extension regex mistook for a file
+    'chained.py',     # doctor.py self-test fixture string, not a citation
+    '0001-slug.md',   # ADR filename PATTERN illustration
+    '007.json',       # candidate-seq fixture pattern (drill docstring)
+    'x.py', 'spec-x.md',  # this sensor's own docstring placeholders
+}
+
+# Dev-repo-only CITERS (v3.0.27, V4): files that exist in the dev repo but never
+# ship in the template. A phantom target cited ONLY by these is dev-history
+# housekeeping, not an instance-facing defect -- grouped separately so the
+# burn-down list is self-prioritizing. (Sweep SOURCES under audits/ etc. are
+# already excluded wholesale above; these are the shipping-adjacent root files.)
+SWEEP_DEV_ONLY_CITERS = {
+    'BUILD-LOG.md', 'HARNESS-CHANGELOG.md', 'FLEET-LEDGER.md', 'MAINTENANCE.md',
+    'memory-tiers-feature-brief.md', 'harness-backlog.md',
 }
 SWEEP_EXCLUDE_SRC_PREFIXES = (
     'audits/', 'verifier-reviews/', 'harness-v2.0/', 'harness-v3.0/', 'adr/',
@@ -507,15 +524,41 @@ def run_sweep(root=None):
         by_target = {}
         for src, t in violations:
             by_target.setdefault(t, []).append(src)
-        for t in sorted(by_target):
-            srcs = by_target[t]
-            print('  DANGLING  %s  — cited by %d file(s): %s%s'
-                  % (t, len(srcs), ', '.join(srcs[:4]),
-                     ' ...' if len(srcs) > 4 else ''))
-        print()
-        print('RESULT: FAIL — %d dangling citation(s) across %d phantom target(s). '
-              'Each cited path exists in neither the template layout nor the '
-              'instance layout of this tree.' % (len(violations), len(by_target)))
+
+        # v3.0.27 (plain-language sweep V4): triage grouping. The flat alphabetical
+        # list handed the operator an hour of classification the machine already had
+        # the data for -- under half the rows lived in docs anyone ships. Same rows,
+        # same DANGLING line format (greppable, self-test-stable), grouped by who
+        # must fix them.
+        def _dev_only(src):
+            return src in SWEEP_DEV_ONLY_CITERS
+        shipped_targets = [t for t in sorted(by_target)
+                           if not all(_dev_only(s) for s in by_target[t])]
+        dev_targets = [t for t in sorted(by_target)
+                       if all(_dev_only(s) for s in by_target[t])]
+
+        def _print_group(targets):
+            for t in targets:
+                srcs = by_target[t]
+                print('  DANGLING  %s  — cited by %d file(s): %s%s'
+                      % (t, len(srcs), ', '.join(srcs[:4]),
+                         ' ...' if len(srcs) > 4 else ''))
+
+        if shipped_targets:
+            print('  — Shipped docs (fix first — these citations reach instances): '
+                  '%d target(s)' % len(shipped_targets))
+            _print_group(shipped_targets)
+            print()
+        if dev_targets:
+            print('  — Dev-repo-only citers (bulk-fix or waive — cited only by files '
+                  'that never ship): %d target(s)' % len(dev_targets))
+            _print_group(dev_targets)
+            print()
+        print('RESULT: FAIL — %d dangling citation(s) across %d phantom target(s) '
+              '(%d in shipped docs, %d dev-only). Each cited path exists in neither '
+              'the template layout nor the instance layout of this tree.'
+              % (len(violations), len(by_target),
+                 len(shipped_targets), len(dev_targets)))
         return 1
     print('RESULT: PASS — all %d checked citation(s) resolve in HEAD (either layout).'
           % n_checked)
@@ -609,15 +652,38 @@ def main():
         return run_sweep_self_test()
     if '--sweep' in argv:
         root = None
+        consumed = {'--sweep'}
         if '--root' in argv:
             i = argv.index('--root')
             if i + 1 >= len(argv):
                 print('usage: --root DIR')
                 return 2
             root = argv[i + 1]
-        return run_sweep(root=root)
+            consumed |= {'--root', root}
+        # v3.0.27 (plain-language sweep S4): doc arguments alongside --sweep run the
+        # combined mode -- one invocation, one process: the full-tree citation sweep,
+        # then the working-tree classes (UNCOMMITTED / DELETION-UNCOMMITTED) for the
+        # named governing docs, with the targeted phase's DANGLING class suppressed
+        # (the sweep just covered it). /sweep step 4 makes one call instead of two.
+        extra_docs = [a.replace('\\', '/') for a in argv if a not in consumed]
+        rc_sweep = run_sweep(root=root)
+        if not extra_docs:
+            return rc_sweep
+        print()
+        print('Governing docs — working-tree classes only (dangling citations were '
+              'covered by the sweep above):')
+        rc_t = run_targeted(extra_docs, skip_dangling=True)
+        if 1 in (rc_sweep, rc_t):
+            return 1
+        if 2 in (rc_sweep, rc_t):
+            return 2
+        return 0
 
-    docs = [d.replace('\\', '/') for d in argv] or list(DEFAULT_DOCS)
+    return run_targeted([d.replace('\\', '/') for d in argv] or list(DEFAULT_DOCS))
+
+
+def run_targeted(docs, skip_dangling=False):
+    global REPO_ROOT
 
     print('Reference integrity — markdown link targets in committed governing doc(s) vs HEAD')
 
@@ -673,6 +739,8 @@ def main():
                 continue
             n_checked += 1
             status = classify(rp, head_files, untracked, deleted)
+            if skip_dangling and status == 'DANGLING':
+                continue    # combined mode: the sweep phase already reported these
             if status != 'OK':
                 shown = rp if rp == rt else f'{rt} -> {rp}'
                 doc_v.append((doc, status, shown))

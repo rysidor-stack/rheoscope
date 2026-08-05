@@ -373,7 +373,14 @@ def check_body(text):
         elif is_pipe_row and not prev_was_pipe_row and not SEP_ROW_RE.match(stripped):
             nxt = _next_nonblank(lines, idx + 1)
             if nxt is not None and not SEP_ROW_RE.match(nxt.strip()):
-                yield (lineno, "TABLE-NOSEP", "table header row has no '|---|' separator below")
+                # v3.0.27 (plain-language sweep V1): quote the stranded row itself and say
+                # what it means -- "L106" alone made a non-coder open the file to even see
+                # WHICH content was stuck; the code stays as a bracketed tail tag.
+                frag = stripped[:60] + ("..." if len(stripped) > 60 else "")
+                yield (lineno, "TABLE-NOSEP",
+                       "a table row (\"%s\") has come loose from its table -- it will not "
+                       "read as a table until it is rejoined or restored from history "
+                       "[TABLE-NOSEP]" % frag)
         prev_was_pipe_row = is_pipe_row
 
 
@@ -434,13 +441,25 @@ def _check_flatten(fm_lines):
 
 
 def _check_keys(found, spec, path, label, out):
-    missing = spec["required"] - set(found)
-    for k in sorted(missing):
-        out.append(Finding("WARN", path, "%s missing required key: %s" % (label, k)))
+    """v3.0.27 (plain-language sweep V1): key findings AGGREGATE per file -- the old
+    one-Finding-per-key form turned one defect ("this file used the wrong template")
+    into a wall of near-identical lines (a live instance's four roadmap stubs produced
+    sixteen). One file, one sentence, every key named inside it."""
+    missing = sorted(spec["required"] - set(found))
     known = spec["required"] | spec["optional"]
-    if not spec.get("lenient"):
-        for k in sorted(set(found) - known):
-            out.append(Finding("WARN", path, "%s unknown key: %s" % (label, k)))
+    unknown = sorted(set(found) - known) if not spec.get("lenient") else []
+    if missing and unknown:
+        out.append(Finding("WARN", path,
+                           "%s is missing %d required key(s) (%s) and carries %d unknown "
+                           "one(s) (%s) -- it looks like the wrong template was used "
+                           "[KEYS]" % (label, len(missing), ", ".join(missing),
+                                       len(unknown), ", ".join(unknown))))
+    elif missing:
+        out.append(Finding("WARN", path, "%s missing required key(s): %s [KEYS]"
+                           % (label, ", ".join(missing))))
+    elif unknown:
+        out.append(Finding("WARN", path, "%s unknown key(s): %s [KEYS]"
+                           % (label, ", ".join(unknown))))
 
 
 def _check_enums(found, path, out):

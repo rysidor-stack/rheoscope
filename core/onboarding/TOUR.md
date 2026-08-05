@@ -5,6 +5,10 @@ not a narrative — keep it open as a reference and jump straight to the matchin
 something happens. Nothing here substitutes for the canonical doc it points at; every claim
 below cites one, and the citation is the authority, not this page.*
 
+*Paths here are as they exist in your project once setup has run. If you're reading inside the
+raw template instead, see `TEMPLATE-README.md`'s file-layout table for where each thing starts
+out; files that exist only in the raw template are marked "(template-only)".*
+
 *verified-against: 3.0 (2026-07-24)*
 
 ---
@@ -20,22 +24,20 @@ Four things it buys a project that runs for months rather than an afternoon:
 - **Compounding verified knowledge.** Raw facts land in `raw/`, get compiled into wiki articles,
   and — where the memory engine is enabled — every absorption is checked by a mechanical census
   that proves nothing was silently lost, and by a substrate-different model that checks the
-  absorption was faithful. See `capabilities/knowledge-os/RECIPE.md` § 1 (pre-init path — this
-  file does not survive instantiation; see Stage 2's artifact table) and
-  `docs/engine/OPERATIONS.md` (post-init path) for what "compounding" actually means mechanically,
-  not just narratively.
+  absorption was faithful. See `capabilities/knowledge-os/RECIPE.md` § 1 (template-only) and
+  `docs/engine/OPERATIONS.md` for what "compounding" actually means mechanically, not just
+  narratively.
 - **Decision firewalls.** Hard-to-reverse decisions don't get graded by the same session that
   made them. The handoff protocol routes them to a substrate-separated verifier before they lock
   — see `core/handoffs/README.md` and `core/governance/CLAUDE.md` § Session discipline →
-  Decision-lock substrate firewall (post-init path; pre-init at
-  `core/governance/CLAUDE.md.template`).
+  Decision-lock substrate firewall.
 - **Honest sensors.** `/doctor`, the conservation census, and the frontmatter/derivation sensors
   are built to fail loud with an actionable `FIX:` line, never to fail silently or bare. See
-  `core/skills/doctor/SKILL.md` § How to interpret results.
+  `.claude/skills/doctor/SKILL.md` § How to interpret results.
 - **Cross-vendor verification.** A same-vendor session grading its own work is a correlated
   failure risk; `/cross-check` and the memory engine's VERIFY leg call a genuinely different
-  model, on purpose. See `core/skills/cross-check/SKILL.md.template` and
-  `docs/engine/OPERATIONS.md` § 7 (post-init path).
+  model, on purpose. See `.claude/skills/cross-check/SKILL.md` and
+  `docs/engine/OPERATIONS.md` § 7.
 
 ### The failure modes this exists to prevent
 
@@ -51,8 +53,7 @@ Theme D).
 - **Unverified memory.** A wiki article can assert something a raw event never actually
   established — an omission, a fabrication, a stale contradiction left in place after the thing
   it described changed. Cross-vendor VERIFY exists because this happens and a same-substrate
-  read-back does not reliably catch it. Cite `docs/engine/OPERATIONS.md` (post-init path),
-  opening paragraph.
+  read-back does not reliably catch it. Cite `docs/engine/OPERATIONS.md`, opening paragraph.
 - **Homonym rot.** The same name drifting to mean two different things across a corpus until
   nobody can say which is authoritative. The harness carried exactly this — `/grill` vs.
   `/preflight` disagreeing across five-plus files — until the 2026-07-09/07-10 rename swept it.
@@ -60,7 +61,7 @@ Theme D).
 - **Component-gates-green-loop-open.** A checker can pass its own self-test while the thing it
   is supposed to validate was never actually wired in — a green gate proving only that the
   checker works, not that the checked thing does. Cite
-  `capabilities/knowledge-os/RECIPE.md` § 8, "The loop-closure-gate lesson" (pre-init path).
+  `capabilities/knowledge-os/RECIPE.md` § 8, "The loop-closure-gate lesson" (template-only).
 
 None of this is marketing. Every one of the four failure modes above is a class the harness
 caught happening to its own corpus, cited to the changelog entry or recipe line that recorded
@@ -79,7 +80,7 @@ glossary — unconditionally, in every instantiation. **Capabilities** are opt-i
 `kickoff-orchestration`, `operate-sentinel`, `decorrelated-review` — are docs-only and always
 propagate regardless of any toggle). See `ARCHITECTURE.md` § Overview and § Core (Zone 1) /
 § Capabilities (Zone 2) for the full model, and `capabilities/INDEX.md` for the toggle table
-(pre-init path — this catalog directory is deleted once init has consumed it).
+(template-only — deleted once init consumes it).
 
 ### The skills you'll actually type
 
@@ -90,50 +91,48 @@ own on top.
 
 | Skill | One sentence | Full doc |
 |---|---|---|
-| `/flight-plan` | Generates a delta-first session briefing — what changed, what's healthy, what needs attention; the cockpit for in-progress work. | `core/skills/flight-plan/SKILL.md.template` (pre-init) → `.claude/skills/flight-plan/SKILL.md` (post-init path) |
-| `/preflight` | Stress-tests a plan, spec, or governance doc against repo evidence and documented decisions before it ossifies, sharpening terminology into `CONTEXT.md` along the way. | `core/skills/preflight/SKILL.md` (ships as-is, no `.template`) |
-| `/compile` | Compiles raw intake files into wiki articles, updates cross-links, cascades to the roadmap, regenerates indexes and health. | `capabilities/knowledge-os/extracted/compile/SKILL.md.template` (pre-init) → `.claude/skills/compile/SKILL.md` (post-init path; `knowledge-os` only) |
-| `/audit` | Grades roadmap assumptions against wiki evidence and logs gaps/contradictions to `REVIEW.md`. | `capabilities/knowledge-os/extracted/audit/SKILL.md.template` (pre-init) → `.claude/skills/audit/SKILL.md` (post-init path; `knowledge-os` only) |
-| `/discover` | Shows what the corpus implies but nowhere states — five modes (relate/derive/gap/trace/introspect) — filing proof-carrying draft findings back into the normal intake pipeline. | `capabilities/knowledge-os/extracted/discover/SKILL.md` (pre-init) → `.claude/skills/discover/SKILL.md` (post-init path; `knowledge-os` only) |
-| `/doctor` | Runs the unified environment-readiness sensor — bridge wiring, node/codex/jq presence and auth, every knowledge-os sensor's `--self-test`, security-hook wiring, skill drift. | `core/skills/doctor/SKILL.md` (ships as-is) |
-| `/cross-check` | Gets a fast, substrate-different (cross-vendor) second opinion on a build-completion claim or a reversible decision. | `core/skills/cross-check/SKILL.md.template` (pre-init) → `.claude/skills/cross-check/SKILL.md` (post-init path) |
-| `/orient` | Answers grounded questions about *this project's harness* by reading the installed artifacts and citing them — never from model memory. | `core/skills/orient/SKILL.md` (pre-init) → `.claude/skills/orient/SKILL.md` (post-init path) |
+| `/flight-plan` | Generates a delta-first session briefing — what changed, what's healthy, what needs attention; the cockpit for in-progress work. | `.claude/skills/flight-plan/SKILL.md` |
+| `/preflight` | Stress-tests a plan, spec, or governance doc against repo evidence and documented decisions before it ossifies, sharpening terminology into `CONTEXT.md` along the way. | `.claude/skills/preflight/SKILL.md` |
+| `/compile` | Compiles raw intake files into wiki articles, updates cross-links, cascades to the roadmap, regenerates indexes and health. | `.claude/skills/compile/SKILL.md` (`knowledge-os` only) |
+| `/audit` | Grades roadmap assumptions against wiki evidence and logs gaps/contradictions to `REVIEW.md`. | `.claude/skills/audit/SKILL.md` (`knowledge-os` only) |
+| `/discover` | Shows what the corpus implies but nowhere states — five modes (relate/derive/gap/trace/introspect) — filing proof-carrying draft findings back into the normal intake pipeline. | `.claude/skills/discover/SKILL.md` (`knowledge-os` only) |
+| `/doctor` | Runs the unified environment-readiness sensor — bridge wiring, node/codex/jq presence and auth, every knowledge-os sensor's `--self-test`, security-hook wiring, skill drift. | `.claude/skills/doctor/SKILL.md` |
+| `/cross-check` | Gets a fast, substrate-different (cross-vendor) second opinion on a build-completion claim or a reversible decision. | `.claude/skills/cross-check/SKILL.md` |
+| `/orient` | Answers grounded questions about *this project's harness* by reading the installed artifacts and citing them — never from model memory. | `.claude/skills/orient/SKILL.md` |
 | Handoffs (`/handoff`) | The substrate-separation ritual for decisions that have no executable test — one pass: author, cross-vendor bridge answer leg, lock (T1 via a headless close leg + one operator yes). | `core/handoffs/README.md` |
-| `/log-backlog` | Appends a formatted entry to `harness-backlog.md` for any harness-template (not project-content) issue you hit. | `core/skills/log-backlog/SKILL.md.template` (pre-init) → `.claude/skills/log-backlog/SKILL.md` (post-init path) |
+| `/log-backlog` | Appends a formatted entry to `harness-backlog.md` for any harness-template (not project-content) issue you hit. | `.claude/skills/log-backlog/SKILL.md` |
 
 ### The memory engine, in five sentences
 
 1. Every raw fact is an append-only **ledger event**; every wiki article is a **lens** — a
    derived, rebuildable view over that ledger, never itself the source of truth
-   ("ledger-and-lens," `capabilities/knowledge-os/extracted/engine/memory-engine-v3-spec.md` § 2,
-   post-init path `docs/engine/memory-engine-v3-spec.md`).
+   ("ledger-and-lens," `docs/engine/memory-engine-v3-spec.md` § 2).
 2. Getting a new event from written to trustworthy runs one loop — **register** it onto the
    chain, **route** it to the views its tags/entities match, **compile** (absorb) it into those
    views, **verify** the absorption with a substrate-different model, then re-run the
-   **census** — per `docs/engine/OPERATIONS.md` § "The loop" (post-init path).
+   **census** — per `docs/engine/OPERATIONS.md` § "The loop".
 3. Compile (ABSORB) is autonomous; VERIFY is not — it fires only against a recorded, verbatim
    operator authorization, never standing memory of a prior go-ahead (the **HUMAN-GATE**,
-   `docs/engine/OPERATIONS.md` § 5, post-init path).
+   `docs/engine/OPERATIONS.md` § 5).
 4. The **census** sorts every registered event into exactly one of seven ordered classes and
    fails loud — `problems: []` / `new_holes: []` — the moment the accounting stops adding up
-   (`docs/engine/OPERATIONS.md` § "Census green check," post-init path).
+   (`docs/engine/OPERATIONS.md` § "Census green check").
 5. Census green means the wiki content in front of you has been mechanically proven non-lost and
    cross-vendor-confirmed faithful — not merely "compiled and hoped honest"
-   (`docs/engine/OPERATIONS.md` § "What green looks like," post-init path).
+   (`docs/engine/OPERATIONS.md` § "What green looks like").
 
 For the full system map, open `core/onboarding/SYSTEM-MAP.html`. For every term above defined in
 one place, see `core/onboarding/GLOSSARY.md`.
 
 ### The manifest layer, in four sentences
 
-Rheoscope is a trust compiler — provenance is what it compiles from; behavioral manifests are
-what it compiles against. A manifest turns a frozen design into rows a builder must discharge
-and a verifier can replay; no build fires until every layer it touches has one at the tier's
-depth. Post-ship, every change is one of three declared moves (amend / projection-change /
-restore), so undeclared drift is a defect by definition. The byline: provenance without
-manifests is documented ambiguity; manifests without provenance are unauditable assertion — the
-template ships both or it ships neither. See `core/methodology/manifest-driven-builds.md` and
-`core/methodology/manifest-format.md`.
+A manifest is the checklist of exact behaviors a build must demonstrate — rows a builder must
+discharge and a verifier can replay. Nothing ships until its checklist is checked: no build
+fires until every layer it touches has a manifest at the tier's required depth. Every later
+change says which row it changes — one of three declared moves (amend / projection-change /
+restore) — so undeclared drift is a defect by definition. Provenance says where every fact came
+from; manifests say what every build must do — the template ships both. See
+`core/methodology/manifest-driven-builds.md` and `core/methodology/manifest-format.md`.
 
 ---
 
@@ -158,7 +157,7 @@ the log's frontmatter carries `compile: false` (it's a process record, not knowl
 define each in Pocock format.
 **Green:** `CONTEXT.md` has at least the seed terms from 2h (checked in INIT.md's
 post-interview validation list).
-**Full doc:** `INIT.md` § 2h; format at `core/skills/preflight/CONTEXT-FORMAT.md`.
+**Full doc:** `INIT.md` § 2h; format at `.claude/skills/preflight/CONTEXT-FORMAT.md`.
 
 ### 3. `/preflight` the first roadmap artifact
 
@@ -167,7 +166,7 @@ created — it sweeps evidence first, interviews you only on what the repo can't
 sharpens `CONTEXT.md` inline as it goes.
 **Green:** the artifact is stamped `preflighted YYYY-MM-DD`, `CONTEXT.md` gained any resolved
 terms, and you have a closing report (claims verified, terms resolved, open questions routed).
-**Full doc:** `core/skills/preflight/SKILL.md` § Protocol and § Landing the results.
+**Full doc:** `.claude/skills/preflight/SKILL.md` § Protocol and § Landing the results.
 
 ### 4. `/flight-plan`
 
@@ -176,8 +175,8 @@ session runs the health check, preflights the phase article, then authors the fl
 it, all in one sitting.
 **Green:** Layer 1 Dashboard exists and reflects the phase's real current state; `/doctor`
 appears in the plan's cadence as an init-end-plus-on-demand step.
-**Full doc:** `core/skills/flight-plan/SKILL.md.template` (post-init:
-`.claude/skills/flight-plan/SKILL.md`); `core/methodology/flight-plan-template-v6.md`;
+**Full doc:** `.claude/skills/flight-plan/SKILL.md`;
+`core/methodology/flight-plan-template-v6.md`;
 `core/methodology/HOW-TO-USE-FLIGHT-PLAN.md`.
 
 ### 5. First raw event
@@ -186,8 +185,7 @@ appears in the plan's cadence as an init-end-plus-on-demand step.
 `tags`, `summary`, per the naming and frontmatter rules.
 **Green:** the file opens with a valid YAML frontmatter block and a `source:` tag from the
 declared valid set.
-**Full doc:** `docs/wiki-schema.md` § 2 "Raw Intake" (post-init path; pre-init source at
-`capabilities/knowledge-os/extracted/wiki-schema.md.template`).
+**Full doc:** `docs/wiki-schema.md` § 2 "Raw Intake".
 
 ### 6. First compile cycle
 
@@ -197,9 +195,9 @@ dispatch-check HUMAN-GATE → absorb via the compile backend → cross-vendor ve
 census.
 **Green:** the just-compiled event shows `CONSUMED` in the census, every other event's class is
 byte-for-byte unchanged, `problems: []`, `new_holes: []`.
-**Full doc:** `docs/engine/OPERATIONS.md` § "The loop" and § "What green looks like" (post-init
-path); `.claude/skills/compile/SKILL.md` (post-init path) for the content-layer half of the same
-cycle if the engine isn't yet in scope for this event.
+**Full doc:** `docs/engine/OPERATIONS.md` § "The loop" and § "What green looks like";
+`.claude/skills/compile/SKILL.md` for the content-layer half of the same cycle if the engine
+isn't yet in scope for this event.
 
 ### 7. First `/cross-check`
 
@@ -207,8 +205,7 @@ cycle if the engine isn't yet in scope for this event.
 `/cross-check` against it.
 **Green:** a verdict comes back and gets folded into your reasoning — a `revised`/`rejected`
 verdict is the honesty layer working, not a result to argue with or route around.
-**Full doc:** `core/skills/cross-check/SKILL.md.template` (post-init:
-`.claude/skills/cross-check/SKILL.md`).
+**Full doc:** `.claude/skills/cross-check/SKILL.md`.
 
 ### 8. Manifest awareness before the first build
 
@@ -254,5 +251,6 @@ Keep this open. Jump to the matching row; don't read it top to bottom.
 `capabilities/INDEX.md`, `capabilities/knowledge-os/RECIPE.md`,
 `capabilities/knowledge-os/extracted/engine/OPERATIONS.md`, `core/skills/doctor/SKILL.md`,
 `core/skills/preflight/SKILL.md`, `core/handoffs/README.md`, `core/security/hooks/README.md`,
-`HARNESS-CHANGELOG.md`. "Post-init path" marks anything that does not exist in a fresh template
-clone and is created only after `init.ps1`/`init.sh` runs.*
+`HARNESS-CHANGELOG.md`. Paths in the body are as they exist in an initialized project;
+"(template-only)" marks files that exist only in the raw template clone and do not survive
+`init.ps1`/`init.sh`.*

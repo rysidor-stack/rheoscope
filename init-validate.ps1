@@ -181,6 +181,7 @@ if (Test-Path $versionLeftover -PathType Leaf) {
 # Result
 if ($failures.Count -gt 0) {
     Write-Output "init-validate: FAIL ($($failures.Count) issue(s))"
+    Write-Output "Setup didn't finish cleanly. Easiest fix: paste this whole output into a Claude session opened in this folder and ask it to finish the setup, then run this check again."
     foreach ($f in $failures) { Write-Output "  - $f" }
     exit 1
 } else {

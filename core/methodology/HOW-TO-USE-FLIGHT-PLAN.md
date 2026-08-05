@@ -24,10 +24,10 @@ Operational guide for working with the per-project Flight Plan. Companion to `fl
 
 A hold point fires at every phase transition. Four checks run, in order:
 
-- **A — Depth Check.** What's undercooked? Name items, state why each is risky, recommend a deepening pass. Operator decides.
+- **A — Depth Check.** What's undercooked? Name items, state why each is risky, and recommend either a quick re-look (3-pass) or a full teardown-and-rebuild of the item (5-pass) — the operator says which they want, or "neither".
 - **B — Connection Surfacing.** What connections weren't designed for but matter? Each connection references two or more specific items.
 - **C — Verification Audit.** T1–T2 increments without passing verification runs are blockers. T3 increments without runner reports are flags. T4 increments pass on builder self-test + regression. Active runtime-monitor alerts are blockers.
-- **D — RTDT Cut.** What's overbuilt? State what the project loses if cut, and whether the loss matters for the success definition.
+- **D — RTDT Cut** (RTDT — Read the Damn Thermometer: if nothing needs it, it goes). What's overbuilt? State what the project loses if cut, and whether the loss matters for the success definition.
 
 The phase advances when AI and operator both agree the phase is done. No checklist theater. The judgment is: "would a cold session starting from this flight plan have everything it needs to do the next phase's work?"
 
@@ -61,6 +61,6 @@ If you find yourself updating Layer 3 every session, that's a sign Layer 3 conta
 
 ## Cross-references
 
-- `execution-engine.md` — what CC sessions actually do during build
-- `verification-architecture.md` — how verification specs are authored
-- `tier-definitions.md` — T1–T4 reference, with customizable per-project examples
+- `core/methodology/execution-engine.md` — what CC sessions actually do during build
+- `core/methodology/verification-architecture.md` — how verification specs are authored
+- `core/methodology/tier-definitions.md` — T1–T4 reference, with customizable per-project examples

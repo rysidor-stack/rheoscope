@@ -157,6 +157,7 @@ done
 
 if [[ ${#FAILURES[@]} -gt 0 ]]; then
     echo "init-validate: FAIL (${#FAILURES[@]} issue(s))"
+    echo "Setup didn't finish cleanly. Easiest fix: paste this whole output into a Claude session opened in this folder and ask it to finish the setup, then run this check again."
     for f in "${FAILURES[@]}"; do
         echo "  - $f"
     done

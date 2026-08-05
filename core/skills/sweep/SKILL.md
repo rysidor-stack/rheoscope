@@ -22,8 +22,11 @@ Steps 5.6–5.9 already invoke its sensors: try interpreters in order until one 
 `python` → `python3`), and if a script is simply absent from this project (a capability was
 never enabled), skip it and say so — that's a NOTE, not a finding:
 
-1. **Environment + wiring health** — `python .claude/skills/doctor/doctor.py`. Read the exit
-   code plus every `FAIL`/`WARN` line (`core/skills/doctor/SKILL.md`).
+1. **Environment + wiring health** — `python .claude/skills/doctor/doctor.py
+   --fast-selftests`. Read the exit code plus every `FAIL`/`WARN` line
+   (`.claude/skills/doctor/SKILL.md`). The flag runs sensor self-tests as a stated
+   date-keyed rotation instead of the full 60-second-per-sensor battery (v3.0.27) — the
+   report says exactly what ran; init-end and manual `/doctor` checkups stay full-battery.
 2. **Knowledge-base conservation census** — `python deploy/staleness.py`, if present
    (knowledge-os only).
 3. **Session-candidate conservation census** — `python deploy/check-candidates.py`, if
@@ -31,19 +34,23 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
    every staged session candidate has a ledger entry and every open candidate's file is
    still there.
 4. **Structural sensors**, each if present: `python deploy/check-frontmatter.py`;
-   `python core/governance/check-reference-integrity.py <governing docs>` — the doc list is
-   `core/governance/CLAUDE.md` plus every `governance_docs[].path` from `project.yaml`, per
-   `core/skills/flight-plan/SKILL.md.template` Step 5.6 — and its full-tree citation sweep,
-   `python core/governance/check-reference-integrity.py --sweep` (every path-shaped citation
-   in every shipped doc, py docstring, and FIX string, classified against both the template
-   and instance layouts; dangling citations feed Needs-your-attention grouped by phantom
-   target, not one row per citer); `python deploy/check-derivation.py
-   --gate`; `python deploy/check-knowledge-debt.py --check` (compile:false canonical-integrity
-   + REVIEW aging debt — flight-plan Step 5.10).
+   `python core/governance/check-reference-integrity.py --sweep <governing docs>` — ONE
+   combined invocation (v3.0.27): the full-tree citation sweep (every path-shaped citation
+   in every shipped doc, py docstring, and FIX string, classified against both layouts,
+   grouped shipped-docs-first; dangling citations feed Needs-your-attention grouped by
+   phantom target, not one row per citer) plus the working-tree classes for the governing
+   docs — the doc list is `core/governance/CLAUDE.md` plus every `governance_docs[].path`
+   from `project.yaml`, per `core/skills/flight-plan/SKILL.md.template` Step 5.6. (The old
+   two separate invocations re-walked the same tree.) Do NOT run `check-derivation.py
+   --gate` here — step 1's doctor already ran it (its check 9); read doctor's line instead
+   of re-running (v3.0.27, the same-session dedupe rule). `python deploy/check-knowledge-debt.py
+   --check` (compile:false canonical-integrity + REVIEW aging debt — flight-plan Step 5.10).
 5. **Behavioral-manifest structure** — `python deploy/check-manifest.py`, if present.
 6. **Conformance SMOKE tier** — only if some `manifests/<surface>/MANIFEST-INDEX.md` names a
-   smoke set. Replay it per `/conformance`'s smoke rules (`core/skills/conformance/SKILL.md`).
-   /sweep never runs the FULL tier — that stays a deliberate, separately-invoked act.
+   smoke set. Replay it per `/conformance`'s smoke rules (`core/skills/conformance/SKILL.md`)
+   — but skip its "run check-manifest.py first" preamble when step 5 above already ran it
+   this sweep (v3.0.27; same tree, minutes apart, identical result). /sweep never runs the
+   FULL tier — that stays a deliberate, separately-invoked act.
 7. **Evidence-vs-roadmap spot check** — the read-only half of `/audit`: look for roadmap
    assumptions whose Status column contradicts current wiki evidence. Flag what's found; write
    nothing — no REVIEW.md entries, no roadmap edits. That's `/audit`'s job, not this one's.

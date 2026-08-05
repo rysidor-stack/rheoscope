@@ -102,6 +102,38 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.26 → v3.0.27 (sensor voice + speed + onboarding)
+
+Every instance takes items 1–2; knowledge-os instances also take item 3.
+
+1. **Re-copy the re-voiced sensors and doctor** (self-tests to expect after copying:
+   check-frontmatter **33/33**, check-knowledge-debt **7/7**, check-loop-state **36/36**,
+   check-triggers **23/23**, staleness **114/114**, doctor **63/63**,
+   reference-integrity **4/4**): `deploy/check-frontmatter.py`, `deploy/check-knowledge-debt.py`,
+   `deploy/check-loop-state.py`, `deploy/check-triggers.py` + `deploy/trigger-register.yaml.example`,
+   `deploy/staleness.py`, `.claude/skills/doctor/doctor.py` + `.claude/skills/doctor/SKILL.md`,
+   `core/governance/check-reference-integrity.py`. Your sensor findings change voice, not
+   coverage — every code and count moves to a bracket tail, nothing stops being checked.
+2. **Re-copy the re-paced skills and onboarding docs** (hand-substitute `{{...}}` in
+   templates): `.claude/skills/sweep/SKILL.md` (one combined citation call; doctor runs
+   `--fast-selftests` at session open — full battery stays the default everywhere else),
+   `.claude/skills/flight-plan/SKILL.md` (argument check first; bounded receipts read;
+   byte-identical briefing writes skipped), `.claude/skills/handoff/SKILL.md` +
+   `.claude/skills/handoff-close/SKILL.md` + `.claude/skills/audit/SKILL.md` (narrowed
+   re-reads), `.claude/skills/standing-loop/SKILL.md` + `.claude/skills/orient/SKILL.md`,
+   `core/onboarding/TOUR.md` + `core/onboarding/GLOSSARY.md`,
+   `core/methodology/flight-plan-template-v6.md` + `core/methodology/HOW-TO-USE-FLIGHT-PLAN.md`,
+   `core/governance/PROJECT-COMPASS.md.template` (affects future edits only), `INIT.md`,
+   `init.sh` + `init.ps1` + `init-validate.sh` + `init-validate.ps1` (message strings only).
+3. **Knowledge-os instances:** re-copy `.claude/skills/compile/SKILL.md` (census quoted to
+   you via its plain footer; the model-identity question now asks ONCE and records the
+   answer at `deploy/evidence/model-identity-attestation.md` — expect one final ask at your
+   next compile, then silence) and the five `manifests/**` files whose citations and pins
+   this release fixed (`compile-receipt/format-MANIFEST.md` + `MANIFEST-INDEX.md`,
+   `sweep-briefing/format-MANIFEST.md` + `MANIFEST-INDEX.md`,
+   `decision-inbox/format-MANIFEST.md` + `MANIFEST-INDEX.md`) — after which
+   `python deploy/check-manifest.py` should report **0 FAIL** for the first time since July.
+
 ## v3.0.25 → v3.0.26 (the decision surface + ownership)
 
 Every instance takes items 1–2; knowledge-os instances also take items 3–4.

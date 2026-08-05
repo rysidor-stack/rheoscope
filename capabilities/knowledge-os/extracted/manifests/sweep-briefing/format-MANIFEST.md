@@ -51,7 +51,7 @@ seed: manifests/sweep-briefing/source@v1
 
 Format-layer behavioral contract for the `/sweep` briefing (`SWEEP-BRIEFING.md` when
 scheduled, or the briefing text a session prints interactively) — surface 1 of the v3.0-44
-harness-surfaces dogfood (`harness-v3.0/specs/session-d-design-brief-2026-07-23.md` Part 1),
+harness-surfaces dogfood (the session-D design brief (dev-repo record, not shipped) Part 1),
 and the **certification + twin-build-pilot target**. The contract is `.claude/skills/sweep/
 SKILL.md` section "The briefing" (and the unclassifiable-output rule immediately beneath it),
 transcribed here as behavioral rows and pinned above by sha256. Unlike `decision-inbox` and

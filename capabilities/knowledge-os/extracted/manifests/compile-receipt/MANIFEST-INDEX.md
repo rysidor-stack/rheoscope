@@ -1,6 +1,6 @@
 # compile-receipt — MANIFEST-INDEX
 
-Surface 3 of the v3.0-44 harness-surfaces dogfood (session-d-design-brief-2026-07-23.md
+Surface 3 of the v3.0-44 harness-surfaces dogfood (the session-D design brief (dev-repo record, not shipped)
 Part 1) — "partially machine-checked already", per the brief, since
 `deploy/check-frontmatter.py` already enforces the shared receipt envelope. Per the
 round-1 vocabulary fold: this surface's **file** status is EXTRACTED while every

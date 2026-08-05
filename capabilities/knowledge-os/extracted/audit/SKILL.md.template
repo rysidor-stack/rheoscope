@@ -26,7 +26,7 @@ exactly as documented here.
 
 ## Step 0 — Load Schema
 
-Read `CLAUDE.md` at the project root, then `docs/wiki-schema.md`. Those files govern everything. Do not proceed without reading them. Pay particular attention to:
+Read `CLAUDE.md` at the project root, then `docs/wiki-schema.md` — unless already read this session (they're in context; don't re-read them). Those files govern everything. Do not proceed without having read them. Pay particular attention to:
 
 - The Roadmap Article Format section (assumption table columns, assumption types)
 - The REVIEW.md Schema section (entry format, severity windows, `audit` type)
@@ -34,7 +34,7 @@ Read `CLAUDE.md` at the project root, then `docs/wiki-schema.md`. Those files go
 
 ## Step 1 — Load Prior Audit State
 
-Read the most recent `receipts/*-audit.md` file if one exists. Extract:
+Read the most recent `receipts/*-audit.md` file if one exists (unless already read this session). Extract:
 
 - When the last audit ran (`timestamp`)
 - Which assumptions changed status in that run
@@ -54,7 +54,7 @@ Build a working list: `(roadmap_article, assumption_number, assumption_row)` for
 
 ## Step 3 — Build Evidence Index
 
-Read `wiki/HEALTH.md` for the current article count and the list of active articles per domain.
+Read `wiki/HEALTH.md` for the current article count and the list of active articles per domain (unless already read this session).
 
 You do **not** need to read every wiki article upfront. Instead, you read them on demand as each assumption is graded — the Wiki Source column tells you where to look first. Fall back to grep / search across wiki/ when the Wiki Source column is empty, stale, or insufficient.
 

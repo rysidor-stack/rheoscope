@@ -1,0 +1,65 @@
+# dormant-register.yaml -- ships PRE-POPULATED (v3.0.26, plain-language sweep M4).
+#
+# The recorded-decision side of /doctor's sensor-reachability check (backlog v3.0-80).
+# Every row below is a deploy/*.py the template itself ships without wiring an invoker:
+# the engine's test battery and drills, run by hand during engine work, never by a
+# skill. Before this file shipped, every fresh instance's very first /doctor run opened
+# with a wall of UNACCOUNTED warnings about scripts the TEMPLATE author parked on
+# purpose -- a disposition decision the operator was never equipped to make, fired at
+# the person least able to answer it, on day one. The template author's answer is
+# recorded here instead; the check now warns only about genuinely NEW orphans.
+#
+# THIS FILE IS A RECORD, NOT AN INVOCATION SURFACE: the reachability check explicitly
+# excludes it when collecting surfaces. Rows whose script was deleted, or became
+# reachable again, WARN as stale until removed -- if a later release wires one of
+# these into a skill, delete its row in the same commit.
+#
+# Schema (flat, parsed by doctor.py's line regex -- PyYAML not required):
+#   rows:
+#     - script: <filename under deploy/>
+#       reason: <why dormancy is intentional, one line>
+#       decision-ref: <backlog entry / spec / decision record that made the call>
+
+rows:
+  - script: check-eco2.py
+    reason: engine test battery (economy invariant E-CO2); run by hand during engine work
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: check-golden.py
+    reason: engine test battery (golden-replay comparison); run by hand during engine work
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: check-journal-sidecar.py
+    reason: engine test battery (journal sidecar integrity); run by hand during engine work
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: check-origin-propagation.py
+    reason: engine test battery (origin-tag propagation); run by hand during engine work
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: check-phase-gate.py
+    reason: MIG-2 phase-advance runner; fires at phase boundaries only, invoked by hand
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: check-split.py
+    reason: engine test battery (citation-split coverage); run by hand during engine work
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: drill-concurrency.py
+    reason: engine drill; run by hand during engine verification passes
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: drill-crash-absorb.py
+    reason: engine drill; run by hand during engine verification passes
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: drill-formatter.py
+    reason: engine drill; run by hand during engine verification passes
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: drill-lock-common-dir.py
+    reason: engine drill; run by hand during engine verification passes
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: drill-planted-defects.py
+    reason: engine drill; run by hand during engine verification passes
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: drill-r1-acceptance.py
+    reason: R-1 acceptance drill; run by hand when the R-1 pipeline changes
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: drill-stage-only.py
+    reason: engine drill; run by hand during engine verification passes
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)
+  - script: drill-workload-bench.py
+    reason: engine benchmark; run by hand when engine performance is in question
+    decision-ref: v3.0-80 + audits/2026-08-05-plain-language-sweep.md (M4)

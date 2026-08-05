@@ -7,12 +7,12 @@ distinct and never conflated (manifest-format.md §5 vs §7).
 
 ```yaml
 surface: decision-inbox
-updated: 2026-07-23
+updated: 2026-08-05
 layers:
   format:
     file: manifests/decision-inbox/format-MANIFEST.md
     status: EXTRACTED
-    rows: 12
+    rows: 13
     certified_by: null
 gate:
   next_increment: "session D v3.0-44 -- decision-inbox format certification (surface 2, after the sweep-briefing pilot)"

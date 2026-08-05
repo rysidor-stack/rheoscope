@@ -1,8 +1,10 @@
-# MIGRATION.md — manual upgrade recipes for instantiated projects
+# MIGRATION.md — upgrade recipes for instantiated projects
 
-*The harness instantiates as a one-way fork (see `TEMPLATE-README.md` § Why no upgrade path). This file is the manual recipe for operators who want to pull a newer harness's changes into an already-instantiated project. It is **per-surface and opt-in** — adopt what you need; nothing here re-runs init (init is one-shot by contract). Automated migration is deferred: revisit at ≥3 instantiated projects (ADR #1 reopen trigger 5; `adr/2026-06-09-2-v2.0-versioning-and-migration.md`).*
+**You don't do any of this by hand (v3.0.26).** Open a session in your project, point it at this file, and say "adopt v3.0.NN" — the numbered steps below are the SESSION's instructions, written in its language. Your part is small and real: every entry marked **[your call]** is a decision only you can make (arming reviews, permission changes, anything that alters what runs unattended); the session must stop and ask you those in plain words, and everything else it does and reports back per `core/governance/CLAUDE.md` § Reporting to the operator.
 
-*General method for any version step: clone the new harness next to your project, `diff -r` the surfaces named in its changelog entry, and copy what you adopt — substituting your project's values by hand where the template uses `{{...}}` variables (your values are all in your `project.yaml`).*
+*The harness instantiates as a one-way fork (see `TEMPLATE-README.md` § Why no upgrade path). This file is the per-surface, opt-in recipe for pulling a newer harness's changes into an already-instantiated project — adopt what you need; nothing here re-runs init (init is one-shot by contract). Automated migration is deferred: revisit at ≥3 instantiated projects (ADR #1 reopen trigger 5; `adr/2026-06-09-2-v2.0-versioning-and-migration.md`).*
+
+*General method for any version step: clone the new harness next to your project, `diff -r` the surfaces named in its changelog entry, and copy what you adopt — substituting your project's values where the template uses `{{...}}` variables (your values are all in your `project.yaml`).*
 
 **Standing step, every migration (added 2026-07-28, backlog v3.0-75): refresh the root
 orientation docs.** Copy the new harness's `ARCHITECTURE.md` over your project's root copy in
@@ -100,6 +102,33 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.25 → v3.0.26 (the decision surface + ownership)
+
+Every instance takes items 1–2; knowledge-os instances also take items 3–4.
+
+1. **Re-copy `deploy/decision-inbox.py`** (run `python deploy/decision-inbox.py --self-test`,
+   expect **119/119**), then regenerate once: `python deploy/decision-inbox.py`. Your
+   DECISIONS-PENDING.md changes shape — full item prose instead of clipped first sentences,
+   no checkboxes (the action channel is saying "yes to" an item in any session), a new
+   "Fixes the system can do on your yes" section, and item ages that survive rewording. If
+   your instance carries `manifests/decision-inbox/`, re-copy its `format-MANIFEST.md` +
+   `MANIFEST-INDEX.md` (amendment A2 rides along and heals that surface's stale source pin).
+2. **Re-copy `.claude/skills/doctor/doctor.py`** (self-test **63/63**) and — knowledge-os —
+   **`deploy/dormant-register.yaml`** (NEW, ships pre-populated). If you already minted your
+   own register rows: MERGE, don't overwrite — keep your rows, add the shipped 14; a row
+   duplicated is harmless, a row lost re-opens its warning. If you never made one, the copy
+   alone ends the "N unaccounted scripts" wall on every /doctor run.
+3. **Knowledge-os instances — re-copy the re-owned skills** (hand-substitute `{{...}}`):
+   `.claude/skills/compile/SKILL.md` (new Step 7.6 dashboard reconcile + the ask-once
+   syntax-fix exception on raw/), `.claude/skills/audit/SKILL.md` (blocking entries carry
+   the DECISION-PENDING marker; unvalidated findings batch per phase),
+   `.claude/skills/standing-loop/SKILL.md` (step 5b dashboard reconcile),
+   `.claude/skills/sweep/SKILL.md` and `.claude/skills/flight-plan/SKILL.md` (stale-inbox
+   to Watching; the preflight cadence row keys on the `preflighted` stamp — your standing
+   "/preflight overdue" alarm disappears; that was the fix, not a regression).
+4. **Optional but recommended:** re-copy this MIGRATION.md itself — its banner now tells
+   future adoptions to run as session work with **[your call]** decision tags.
+
 ## v3.0.24 → v3.0.25 (the report contract — plain language to the operator)
 
 Every instance takes items 1–3; knowledge-os instances also take item 4. After adopting,
@@ -188,11 +217,12 @@ take everything.
    `.claude/skills/handoff/SKILL.md` and `.claude/skills/compile/SKILL.md` (hand-substitute
    any `{{...}}` from your `project.yaml`), `core/handoffs/HANDOFF-AUTHORING.md`,
    `docs/engine/OPERATIONS.md`.
-4. **If your instance ever armed the standing loop** on the strength of a copied, inherited,
-   or absent rehearsal receipt: disarm, run the three-round rehearsal in the skill on a
-   scratch clone of YOUR project, and mint your own
+4. **[your call] If your instance ever armed the standing loop** on the strength of a copied,
+   inherited, or absent rehearsal receipt: disarm, have the session run the three-round
+   rehearsal in the skill on a scratch clone of YOUR project, and mint your own
    `deploy/evidence/rollback-rehearsal-receipt-<date>.md`. The fork's receipt and its
-   timings prove nothing about your instance.
+   timings prove nothing about your instance. (The disarm/re-arm is your decision; the
+   rehearsal itself is session work.)
 5. **Your next wired compile's `stamp_dispatch` call now requires `identity_source`** — a
    staging script copied from the old skill text will refuse with the legal forms printed.
    The compile skill's Step 3a says how to obtain identity per mode; never type it from
@@ -253,7 +283,7 @@ Knowledge-os instances take five files; others take only the last one.
    adoption of v3.0.17+ turned the validator red while doctor sat green, this is the fix;
    delete any local patch of the same lines in favor of the upstream files.
 
-One file, one decision. The shipped permission baseline no longer denies `git push`
+One file, one decision — **[your call]**. The shipped permission baseline no longer denies `git push`
 (operator ruling, backlog v3.0-90 — deny is for the unrecoverable or secret only).
 Existing instances: `.claude/settings.local.json` is untracked and per-machine, so no
 pull delivers this — delete the two lines `"Bash(git push *)",` and

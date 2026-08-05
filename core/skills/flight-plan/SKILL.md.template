@@ -77,7 +77,7 @@ Based on the receipt timestamps, check whether each orchestrator present in this
 | /flight-plan | Every session start | Always runs (that's this) |
 | /compile (knowledge-os) | Every session with raw/ activity | Any unprocessed files in raw/ |
 | /audit (knowledge-os) | Every 1–2 weeks | No audit receipt in 14 days |
-| /preflight (core) | Per phase-kickoff, stress-test, or reconfigure | No /preflight receipt in 30 days while in active phase work |
+| /preflight (core) | Per phase-kickoff, stress-test, or reconfigure | The active roadmap phase article carries no `preflighted YYYY-MM-DD` stamp (v3.0.26 — the old key, "no /preflight receipt in 30 days," watched an artifact no skill writes: /preflight ends with its report and a stamp on the phase article, never a receipt, so the row was permanently overdue on every instance — a standing false alarm that trained the operator to skip the whole Attention list) |
 | /doctor (core) | Init-end + on demand (after machine/env changes, or when anything feels off) | Never overdue by time — run when the environment changed |
 | /handoff, /handoff-close (close-leg protocol) (core) | On demand (cross-substrate decision routing) | No cadence — runs when a decision warrants substrate-separated inquiry |
 

@@ -122,6 +122,13 @@ unarmed-by-default is the same shipping invariant with the same per-instance gra
 5. Record what the branch would teach the wiki, either as a `DECISION-PENDING:` marker or
    directly in the compile branch's commit summary: "The wiki learned: `<one sentence per
    item>`. Absorb = say 'absorb it' in any session."
+5b. **Dashboard reconcile (v3.0.26 — on the compile branch only, before its commit):** if
+   step 4 ran a compile, update each affected flight plan's Layer-1 dashboard lines
+   (Status / Next action / Last session) to match what the branch just did — a dashboard
+   that still says "N raw files await /compile" after the compile IS the recurring
+   briefing noise the operator flagged; the orchestrator that changed the counts owns
+   the one-line reconcile (flight plans are direct-editable; `core/governance/CLAUDE.md`
+   § Single-writer rule names the exception). No compile this tick → touch nothing.
 6. Append a run summary to `STANDING-LOOP-LOG.md` (a report artifact, same as the two above).
 
 A skeleton of a step-5 note, for shape only (a real run names the real branch and items):

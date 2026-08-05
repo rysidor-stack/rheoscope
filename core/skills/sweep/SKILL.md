@@ -49,9 +49,13 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
    nothing — no REVIEW.md entries, no roadmap edits. That's `/audit`'s job, not this one's.
 8. **Decision-inbox staleness** — `python deploy/decision-inbox.py --check`, if present. This
    only reports whether `DECISIONS-PENDING.md` is stale against its sources — /sweep never
-   regenerates it, the same read-only rule as every other check here. A stale inbox is itself a
-   Needs-your-attention item: the fix is for `/standing-loop` or an interactive session to
-   regenerate it, not for /sweep to do it inline.
+   regenerates it, the same read-only rule as every other check here. A stale inbox goes to
+   **Watching** ("the decision list is a step behind and will refresh on the next scheduled
+   run"), NOT Needs-your-attention (v3.0.26 — a projection being a day behind is a fact with
+   zero decisions in it, and reporting it as attention had it echoing back into the very
+   inbox whose staleness it described). Escalate to Needs-your-attention only when the
+   staleness has persisted across two or more consecutive sweeps — that means the
+   regeneration loop itself is broken, which IS someone's problem.
 9. **Workspace hygiene** — `python deploy/check-workspace.py`, if present. A workspace with no
    `projects.yaml` registry at its root is a NOTE ("workspace governance not adopted here"),
    never a failure — most projects haven't opted into `core/governance/WORKSPACE.md` yet.

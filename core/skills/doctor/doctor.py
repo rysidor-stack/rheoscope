@@ -729,11 +729,14 @@ def check_sensor_reachability(ctx):
 
     problems = []
     if unaccounted:
-        problems.append("%d UNACCOUNTED script(s) -- reachable from no executable "
-                         "surface and absent from deploy/%s: %s"
+        problems.append("%d installed script(s) are used by nothing and not registered "
+                         "as parked on purpose. Nothing is broken -- they are dead "
+                         "weight until someone either wires them in or records why they "
+                         "are parked [UNACCOUNTED, absent from deploy/%s]: %s"
                          % (len(unaccounted), DORMANT_REGISTER, _cap(unaccounted)))
     if stale_rows:
-        problems.append("%d stale register row(s) -- script gone or now reachable: %s"
+        problems.append("%d register row(s) are out of date -- the script is gone, or "
+                         "something now uses it [stale rows]: %s"
                          % (len(stale_rows), _cap(stale_rows)))
     if problems:
         return Result("WARN", "sensor-reachability",

@@ -151,7 +151,11 @@ Append every REVIEW entry produced above to `wiki/REVIEW.md`, using the format f
 - **Source:** `/audit run YYYY-MM-DD`
 - **Details:** what was found, which assumption, which roadmap article, and which wiki article (or absence thereof) triggered it. Quote the contradicting evidence when applicable.
 
-If /audit would produce more than **20 REVIEW entries**, stop after 20 and log a single `scale` review entry explaining how many assumptions remain ungraded. Resume in the next audit run.
+**Batch the unvalidated (v3.0.26 — the flood rule).** `refuted`, contradiction, and reversal findings keep one blocking entry EACH — every one is its own decision. But `unvalidated`-in-an-active-phase findings batch into ONE entry per phase: "N of M phase-<X> assumptions have no evidence yet — the phase is advancing on faith; nothing to decide unless that count surprises you", listing the assumption names inside the entry. "Not yet checked" is a status, not a decision, and twenty same-severity entries bury the one real refutation. The Step-7 rollup LINKS the per-finding entries it summarizes instead of restating them.
+
+**Every blocking entry carries the decision marker (v3.0.26).** When an entry's severity is `blocking` — the entries this skill writes "so the operator decides" — its Details line ends with a `DECISION-PENDING: <the question, in plain words — what happens if you decide nothing by the stale date>` line. That marker is what the decision inbox scans `wiki/REVIEW.md` for: without it, a blocking escalation sits invisible until the 30-day aging alarm, and the operator's answer to "what's waiting on me?" reads "nothing" while the phase quietly builds on a refuted assumption. Phrase the marker text per `core/governance/CLAUDE.md` § Reporting to the operator: the question, the options, the cost of no answer — never the grading vocabulary.
+
+If /audit would produce more than **20 REVIEW entries** even after batching, stop after 20 and log a single `scale` review entry explaining how many assumptions remain ungraded. Resume in the next audit run.
 
 ## Step 9 — Write Audit Receipt
 

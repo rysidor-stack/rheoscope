@@ -22,12 +22,21 @@ required for this script to run clean):
      the words operator-gated (either all-lowercase-with-separator or ALL-CAPS) and
      does NOT contain the word RESOLVED anywhere in the entry -> one pending item
      per entry: "Backlog <id>: <title>".
-  2. SWEEP-BRIEFING.md -- numbered lines under a "Needs your attention" heading;
-     the first sentence of each is captured -> "Sweep finding: <sentence> (sweep
-     dated <file date>)". The file's own date is its filesystem modified-date.
-     If the heading is present with non-empty content beneath it but the parser
-     recognizes zero numbered items there, that parse failure is itself surfaced
-     as a single drift item -- never silently dropped (see _SWEEP_DRIFT_TEXT).
+  2. SWEEP-BRIEFING.md -- numbered items under a "Needs your attention" heading;
+     the FULL item prose is captured (all sentences, continuation lines joined,
+     the trailing "(details: ...)" tail stripped) -> "Sweep finding: <prose>
+     (sweep dated <file date>)". Capturing only the first sentence (the pre-
+     v3.0.26 behavior) systematically deleted exactly the two sentences a
+     decision needs -- the briefing contract puts the consequence in sentence 2
+     and the fix in sentence 3. Items whose prose offers a consented self-fix
+     (the contract's "... with a yes" phrasing) route to their own section --
+     "Fixes the system can do on your yes" -- so chores never masquerade as
+     decisions. An item ABOUT this inbox itself (its own staleness) is skipped
+     with a note: a projection never ingests reports about itself. The file's
+     own date is its filesystem modified-date. If the heading is present with
+     non-empty content beneath it but the parser recognizes zero numbered items
+     there, that parse failure is itself surfaced as a single drift item --
+     never silently dropped (see _SWEEP_DRIFT_TEXT).
   3. wiki/flight-plans/*.md -- lines shaped like a Blocker field (optionally
      bulleted, optionally bold, e.g. "**Blocker:** ...") whose value is not empty
      and is not exactly "None" -> "Flight-plan blocker (<file stem>): <value>".
@@ -40,11 +49,13 @@ required for this script to run clean):
      self-reference loop.
 
 Output shape: an HTML header comment (never hand-edit; the sources win; the
-regeneration date) followed by "# Waiting on you" and one markdown section per
-source class that actually produced an item, each item a checkbox line with a
-"(details: <path>)" tail pointing back at its source. When nothing is pending the
-file is exactly the header plus the single line "Nothing is waiting on you. All
-clear."
+regeneration date) followed by "# Waiting on you", a one-line action channel
+("say so in any session" -- v3.0.26: the old checkbox glyphs were an affordance
+lie, ticking one did nothing and regeneration erased it), and one markdown
+section per source class that actually produced an item, each item a plain
+dashed line with a "(details: <path>)" tail pointing back at its source. When
+nothing is pending the file is exactly the header plus the single line "Nothing
+is waiting on you. All clear."
 
 AGE TRACKING (harness-backlog.md v3.0-39 item 2): every rendered item also carries
 a plain age tail -- "-- new today" or "-- waiting N days" -- backed by a sidecar,
@@ -54,9 +65,13 @@ appearing -- never deleted). STABLE IDENTITY per source class (the most durable
 field each scanner already has, documented beside each scan_* function below):
   0. candidate  -- the ledger's own candidate_id (already the ledger's primary key)
   1. backlog    -- the entry id (e.g. "v3.0-38"), the heading's own stable handle
-  2. sweep      -- a hash of the finding SENTENCE only (never the date suffix, so
-                   the same finding keeps the same identity across sweep runs);
-                   the one-per-file format-drift item uses a fixed singleton key
+  2. sweep      -- when the finding names a backlog id (e.g. "v3.0-63") it
+                   INHERITS that id ("backlog:<id>") so the same decision never
+                   renders twice across sources and its age survives rewording;
+                   otherwise a hash of the NORMALIZED prose (case- and
+                   punctuation-folded, never the date suffix), so sweep-to-sweep
+                   rewording churn doesn't reset ages (v3.0.26); the
+                   one-per-file format-drift item uses a fixed singleton key
   3. flight_plan -- the file stem plus a hash of the Blocker value text
   4. marker     -- the file's root-relative path plus a hash of the flagged text
 This sidecar is written ONLY by a real regeneration (do_generate); --check reads
@@ -162,20 +177,47 @@ def _short_hash(text):
 # that content -- a format-drift signal, never a silent drop (fix B1). Built
 # from _EM_DASH, not a literal byte, per this file's ASCII-only-source rule.
 _SWEEP_DRIFT_TEXT = (
-    "The sweep briefing has attention items this inbox could not parse " +
-    _EM_DASH +
-    " read SWEEP-BRIEFING.md directly and report the format drift")
+    "Some findings from the last sweep could not be summarized here " + _EM_DASH +
+    " they are still in the sweep report, and the next session can re-read it and"
+    " fix the mismatch with a yes")
+
+# The reporting contract's consented-self-fix phrasing (sweep SKILL "The briefing":
+# "... whether the system can do it itself next session with a yes"). An item whose
+# prose carries it is a chore awaiting consent, not a decision -- routed to its own
+# section so the decision list stays decisions (v3.0.26, plain-language sweep Q1).
+_CONSENTED_RE = re.compile(r"with a yes|on a yes|say yes", re.IGNORECASE)
+
+# A backlog entry id cited inside a sweep finding's prose -- the cross-source
+# identity key (Q8): the sweep telling of a backlog decision IS that decision.
+_BACKLOG_ID_IN_TEXT_RE = re.compile(r"\bv\d+(?:\.\d+)?-\d+\b")
+
+# An item about this inbox itself (its staleness, its regeneration) -- a
+# projection must not ingest reports about itself (Q9; same guard class as the
+# marker scan's fix B2 exclusions).
+_SELF_ECHO_RE = re.compile(r"decision inbox|DECISIONS.PENDING", re.IGNORECASE)
+
+# A trailing "(details: ...)" tail (optionally emphasized) at the end of a joined
+# sweep item -- stripped from the captured prose; the inbox renders its own tail.
+_DETAILS_TAIL_RE = re.compile(r"\s*\*?\(details:[^()]*\)\*?\s*$")
+
+_PROPOSED_FIX_RE = re.compile(r"^\s*[-*]?\s*\**Proposed fix\**\s*:\s*\**\s*(.*)$")
+
+_ACTION_LINE = ("This file is a read-only view " + _EM_DASH + " to act on an item, say so "
+                "in any session (\"yes to\" plus the item's id, or just quote it). Edits "
+                "here do nothing: the sources win, and the file is regenerated from them.")
 
 _SECTIONS = (
     # Placed FIRST (build-decisions Part 7): a candidate awaiting confirmation is the
     # single most actionable thing in this file -- it is a drafted-but-unarmed artifact
     # one signed commit away from becoming truth, not a passive flag someone else should
-    # notice eventually. The operator reads top-down, so it leads.
+    # notice eventually. The operator reads top-down, so it leads. "sweep_fix" (v3.0.26)
+    # renders after the decision sections: consented chores never crowd the decisions.
     ("candidate", "Session candidates awaiting your confirmation"),
     ("backlog", "Backlog items awaiting a decision"),
     ("sweep", "From the last sweep"),
     ("flight_plan", "Flight-plan blockers"),
     ("marker", "Flagged in a document"),
+    ("sweep_fix", "Fixes the system can do on your yes (from the last sweep)"),
 )
 
 
@@ -332,10 +374,23 @@ def scan_backlog(root, notes):
     items = []
     for idx, (line_i, entry_id, title) in enumerate(headings):
         end = headings[idx + 1][0] if idx + 1 < len(headings) else n
-        body = "\n".join(lines[line_i + 1:end])
+        body_lines = lines[line_i + 1:end]
+        body = "\n".join(body_lines)
         if _OPERATOR_GATED_RE.search(body) and _RESOLVED_MARKER not in body:
+            # Q4 (v3.0.26): carry the entry's own proposed fix (first sentence)
+            # into the item text, so the operator sees WHAT is being asked
+            # without a round-trip into an engineer file -- the bare label was
+            # a pointer, not a question.
+            text = "Backlog %s: %s" % (entry_id, title)
+            for bln in body_lines:
+                pm = _PROPOSED_FIX_RE.match(bln)
+                if pm:
+                    fix = _first_sentence(pm.group(1).strip().strip("*").strip())
+                    if fix:
+                        text += " " + _EM_DASH + (" proposed: %s" % fix)
+                    break
             items.append((
-                "Backlog %s: %s" % (entry_id, title), "harness-backlog.md",
+                text, "harness-backlog.md",
                 # Identity: the entry id (e.g. "v3.0-38") -- the heading's own
                 # stable handle, unaffected by later title edits.
                 "backlog:%s" % entry_id,
@@ -347,15 +402,64 @@ def scan_backlog(root, notes):
 # Source 2: SWEEP-BRIEFING.md.
 # ---------------------------------------------------------------------------
 
+def _normalized(prose):
+    """Case- and punctuation-folded form of an item's prose -- the hash input
+    for sweep identities (Q8, v3.0.26): sweep briefings are model-authored and
+    re-worded run to run, and a wording-fragile identity silently reset the
+    "waiting N days" counter, the inbox's one honesty feature."""
+    return re.sub(r"[\W_]+", " ", prose).strip().lower()
+
+
 def scan_sweep(root, notes):
+    """Returns (decision_items, fix_items) -- v3.0.26: full-prose capture, with
+    consented self-fix items ("... with a yes") routed to their own section so
+    chores never masquerade as decisions. See the module docstring, Source 2."""
     path = os.path.join(root, _SWEEP_BRIEFING_NAME)
     if not os.path.isfile(path):
         notes.append("NOTE: SWEEP-BRIEFING.md absent -- nothing to check")
-        return []
+        return [], []
     with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
         text = fh.read()
     date_str = _file_date(path)
-    items = []
+    decisions = []
+    fixes = []
+    recognized = [0]
+    pending = []
+
+    def flush():
+        if not pending:
+            return
+        joined = " ".join(pending).strip()
+        del pending[:]
+        prose = _DETAILS_TAIL_RE.sub("", joined).strip()
+        if not prose:
+            return
+        recognized[0] += 1
+        if _SELF_ECHO_RE.search(prose):
+            # Q9: a projection never ingests reports about itself -- the sweep's
+            # "the decision inbox is stale" notice would otherwise echo back in
+            # as a decision the very regeneration that cured it.
+            notes.append("NOTE: a sweep item about this inbox itself was "
+                         "skipped (self-reference guard)")
+            return
+        m_id = _BACKLOG_ID_IN_TEXT_RE.search(prose)
+        if m_id:
+            # Q8: a sweep finding naming a backlog entry IS that backlog
+            # decision -- inherit its identity so it never renders twice and
+            # its age survives rewording.
+            identity = "backlog:%s" % m_id.group(0)
+        else:
+            identity = "sweep:%s" % _short_hash(_normalized(prose))
+        item = ("Sweep finding: %s (sweep dated %s)" % (prose, date_str),
+                _SWEEP_BRIEFING_NAME, identity)
+        # Q1: the briefing contract's sentence 3 says whether the system can
+        # self-apply the fix with a yes; such items are chores awaiting consent,
+        # not decisions, and render in their own section.
+        if _CONSENTED_RE.search(prose):
+            fixes.append(item)
+        else:
+            decisions.append(item)
+
     in_section = False
     saw_content = False
     for raw in text.splitlines():
@@ -370,22 +474,22 @@ def scan_sweep(root, notes):
             saw_content = True
         m = _NUMBERED_RE.match(raw)
         if m:
-            sentence = _first_sentence(m.group(1))
-            items.append((
-                "Sweep finding: %s (sweep dated %s)" % (sentence, date_str),
-                _SWEEP_BRIEFING_NAME,
-                # Identity: a hash of the SENTENCE only, never the "(sweep dated
-                # ...)" suffix -- the date changes every run even when the same
-                # finding persists, and first-seen tracking needs the finding's
-                # identity to survive that daily churn.
-                "sweep:%s" % _short_hash(sentence),
-            ))
-    if in_section and saw_content and not items:
+            flush()
+            pending.append(m.group(1).strip())
+        elif pending and stripped:
+            # Continuation line of a wrapped item (including a details tail on
+            # its own line) -- joined so the FULL prose is captured (Q1; the
+            # old first-sentence-of-first-line capture deleted the consequence
+            # and fix sentences the briefing contract mandates).
+            pending.append(stripped)
+    flush()
+    if in_section and saw_content and not recognized[0]:
         # Fix B1: the heading is there, there's content under it, but nothing this
         # parser recognizes -- surface the parse failure itself rather than
-        # silently reporting "nothing to see."
-        items.append((_SWEEP_DRIFT_TEXT, _SWEEP_BRIEFING_NAME, _SWEEP_DRIFT_IDENTITY))
-    return items
+        # silently reporting "nothing to see." Routed as a consented fix (Q11):
+        # re-reading the report is the next session's work, not the operator's.
+        fixes.append((_SWEEP_DRIFT_TEXT, _SWEEP_BRIEFING_NAME, _SWEEP_DRIFT_IDENTITY))
+    return decisions, fixes
 
 
 # ---------------------------------------------------------------------------
@@ -511,17 +615,17 @@ def scan_handoff_closes(root, notes):
             if (_HANDOFF_CLOSE_PENDING_RE.search(text)
                     and _HANDOFF_STATUS_ANSWERED_RE.search(text)):
                 items.append((
-                    ("Handoff %s: T1 close leg parked (close: pending) " % entry)
+                    ("Handoff %s: its final write-up step stalled and will retry"
+                     " automatically " % entry)
                     + _EM_DASH
-                    + " auto-retried by the next /handoff invocation or nightly tick;"
-                      " nothing for you to do",
+                    + " nothing for you to do",
                     "%s/%s/meta.yaml" % (env.replace(os.sep, "/"), entry),
                 ))
     return items
 
 
 _FYI_SECTION_TITLE = ("FYI " + _EM_DASH +
-                      " parked handoff closes (auto-retrying; not waiting on you)")
+                      " background wrap-ups retrying themselves (nothing needs you)")
 
 
 # ---------------------------------------------------------------------------
@@ -658,14 +762,31 @@ def generate_content(root, date_str):
         by_class = {key: [] for key, _ in _SECTIONS}
         fyi_items = []
     else:
+        sweep_decisions, sweep_fixes = scan_sweep(root, notes)
         by_class = {
             "candidate": scan_candidates(root, notes),
             "backlog": scan_backlog(root, notes),
-            "sweep": scan_sweep(root, notes),
+            "sweep": sweep_decisions,
             "flight_plan": scan_flight_plans(root, notes),
             "marker": scan_markers(root, notes),
+            "sweep_fix": sweep_fixes,
         }
         fyi_items = scan_handoff_closes(root, notes)
+
+    # Cross-source identity dedup (Q8, v3.0.26): the same underlying decision can
+    # arrive from two sources (a sweep finding naming a backlog id inherits that
+    # id above). First section in _SECTIONS order wins; later duplicates are
+    # dropped from the render AND from the sidecar keys, so ages track the one
+    # surviving telling.
+    seen_identities = set()
+    for key, _title in _SECTIONS:
+        kept = []
+        for item in by_class[key]:
+            if item[2] in seen_identities:
+                continue
+            seen_identities.add(item[2])
+            kept.append(item)
+        by_class[key] = kept
 
     current_keys = [identity for key, _ in _SECTIONS
                     for (_line, _detail, identity) in by_class[key]]
@@ -679,6 +800,11 @@ def generate_content(root, date_str):
         lines.append(_ALL_CLEAR_LINE)
     else:
         lines.append("# Waiting on you")
+        lines.append("")
+        # Q2 (v3.0.26): the old checkbox glyphs were an affordance lie -- ticking
+        # one did nothing and the next regeneration erased it. Plain dashes, and
+        # the real action channel stated once, up front.
+        lines.append(_ACTION_LINE)
         for key, title in _SECTIONS:
             entries = by_class[key]
             if not entries:
@@ -687,7 +813,7 @@ def generate_content(root, date_str):
             lines.append("## %s" % title)
             for line_text, detail, identity in entries:
                 tail = _age_tail(date_str, sidecar_update["items"].get(identity))
-                lines.append("- [ ] %s%s *(details: %s)*" % (line_text, tail, detail))
+                lines.append("- %s%s *(details: %s)*" % (line_text, tail, detail))
     # FYI items render LAST, checkbox-free, and never count toward the waiting-
     # on-you total -- information, not a task (v3.0-78; see scan_handoff_closes).
     if fyi_items:
@@ -948,8 +1074,8 @@ def self_test():
              "(details: SWEEP-BRIEFING.md)" in content, content)
         case("(5b) sweep format drift: no spurious 'Sweep finding:' alongside it",
              "Sweep finding:" not in content, content)
-        case("(5b) sweep format drift: filed under the sweep section",
-             "## From the last sweep" in content, content)
+        case("(5b) sweep format drift: filed under the consented-fix section (Q11)",
+             "## Fixes the system can do on your yes" in content, content)
 
         # --- (5c) sweep: heading present but truly empty beneath it -> no drift item -
         root = mkroot()
@@ -1405,6 +1531,94 @@ def self_test():
              _BACKLOG_HEADING_RE.match("### v2.1-5 -- Some title") is not None)
         case("_BLOCKER_RE: rejects 'Blocker (build):' (text before the colon)",
              _BLOCKER_RE.match("**Blocker (build):** NONE.") is None)
+
+        # --- (26) v3.0.26 Q1/Q2: full prose, consented routing, no checkboxes -----
+        root = mkroot()
+        write(os.path.join(root, "SWEEP-BRIEFING.md"), (
+            "**All clear:** 5 checks ran clean.\n"
+            "\n"
+            "**Needs your attention:**\n"
+            "1. A table row in a plan came loose. Until it is rejoined the checks\n"
+            "   cannot read it. The system can restore it from history next session\n"
+            "   with a yes.\n"
+            "   (details: TABLE-NOSEP L106)\n"
+            "2. A certificate renewal window is closing. Ignoring it risks an outage.\n"
+            "   Renewing needs a person.\n"
+            "\n"
+            "**Watching:**\n"
+            "- Nothing else.\n"
+        ))
+        content, notes, _ = gen(root)
+        case("(26) Q1: consequence sentence survives capture (not truncated)",
+             "Until it is rejoined the checks cannot read it." in content, content)
+        case("(26) Q1: fix sentence survives capture",
+             "restore it from history next session with a yes" in content, content)
+        case("(26) Q1: consented item routed to the fixes section",
+             "## Fixes the system can do on your yes" in content
+             and content.index("table row in a plan came loose")
+             > content.index("## Fixes the system can do on your yes"), content)
+        case("(26) Q1: decision item stays in the sweep decision section",
+             "## From the last sweep" in content
+             and content.index("certificate renewal window")
+             > content.index("## From the last sweep")
+             and content.index("certificate renewal window")
+             < content.index("## Fixes the system can do on your yes"), content)
+        case("(26) Q1: the item's own details tail is stripped from prose",
+             "TABLE-NOSEP" not in content, content)
+        case("(26) Q2: no checkbox glyphs anywhere",
+             "- [ ]" not in content, content)
+        case("(26) Q2: the action-channel line renders under the title",
+             _ACTION_LINE in content, content)
+
+        # --- (27) v3.0.26 Q4: backlog item carries its proposed fix ---------------
+        root = mkroot()
+        write(os.path.join(root, "harness-backlog.md"), (
+            "### v9.9-8 -- Should the verifier stop grading split sources?\n"
+            "- **Severity:** standard. operator-gated.\n"
+            "- **Proposed fix:** carry the plan's routing into the packet. Then more.\n"
+        ))
+        content, notes, _ = gen(root)
+        case("(27) Q4: proposed-fix first sentence in the item text",
+             "proposed: carry the plan's routing into the packet." in content, content)
+        case("(27) Q4: only the FIRST sentence is carried",
+             "Then more" not in content, content)
+
+        # --- (28) v3.0.26 Q8: sweep finding naming a backlog id dedups against it --
+        root = mkroot()
+        write(os.path.join(root, "harness-backlog.md"), (
+            "### v9.9-9 -- A pending operator-gated design question\n"
+            "- **Symptom:** operator-gated, unresolved.\n"
+        ))
+        write(os.path.join(root, "SWEEP-BRIEFING.md"), (
+            "**Needs your attention:**\n"
+            "1. Backlog v9.9-9 still awaits a ruling. Until it is decided the noise\n"
+            "   continues. Only you can decide it.\n"
+        ))
+        content, notes, _ = gen(root)
+        case("(28) Q8: the backlog telling renders",
+             "Backlog v9.9-9:" in content, content)
+        case("(28) Q8: the sweep telling of the same decision is suppressed",
+             "Sweep finding: Backlog v9.9-9" not in content, content)
+
+        # --- (28b) Q8: identity survives rewording (normalized hash) ---------------
+        k1 = "sweep:%s" % _short_hash(_normalized("The widget check found a gap."))
+        k2 = "sweep:%s" % _short_hash(_normalized("the widget CHECK found a gap"))
+        case("(28b) Q8: case/punctuation rewording keeps the same identity", k1 == k2)
+
+        # --- (29) v3.0.26 Q9: an item about the inbox itself is never ingested -----
+        root = mkroot()
+        write(os.path.join(root, "SWEEP-BRIEFING.md"), (
+            "**Needs your attention:**\n"
+            "1. The decision inbox is a day behind its sources. Until regenerated it\n"
+            "   may miss items. A session can regenerate it with a yes.\n"
+        ))
+        content, notes, printed = gen(root)
+        case("(29) Q9: self-echo item skipped from the projection",
+             "decision inbox is a day behind" not in content, content)
+        case("(29) Q9: the skip is noted, never silent",
+             any("self-reference guard" in n for n in notes), str(notes))
+        case("(29) Q9: no drift item fired (the item WAS recognized)",
+             _SWEEP_DRIFT_TEXT not in content, content)
 
     finally:
         for d in tmp_dirs:

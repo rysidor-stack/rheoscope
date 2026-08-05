@@ -158,8 +158,14 @@ routing_rules = open("docs/wiki-schema.md", encoding="utf-8").read()   # routing
 cb.emit_packets(".", plan, ".batch-run/<tag>", routing_rules)
 # ... now write one answers/NN-<slug>.json per manifest packet entry (Step 2.5) ...
 cb.stamp_dispatch(".batch-run/<tag>/dispatch-manifest.json",
-                  model="<your model id>", vendor="<your vendor>")
+                  model=..., vendor=..., identity_source=...)
 ```
+
+**Where the stamped identity comes from (never from memory — 2026-08-05).** The stamp is the permanent, sha-committed absorb-side attestation, so `stamp_dispatch` now refuses placeholder or empty values and requires `identity_source` — a record of HOW the identity was obtained. Typing what you believe you are is not a source (the same anti-pattern /handoff names for `answered_by`). The three legal forms:
+
+- **Interactive session:** ask the operator, once, at stamping time: *"Confirm this session's model identity as your UI shows it (model selector / status line) — I will stamp exactly what you confirm."* Stamp what they answer, `identity_source="operator-attested:<YYYY-MM-DD>"`, and carry their verbatim confirmation in the run's receipt. If the operator's answer differs from your self-belief, the operator's answer wins — that is the point.
+- **Unattended (standing-loop) run:** the identity is copied from the scheduled command line that pins the model (invocation metadata), `identity_source="scheduled-invocation:<task name>"`. If the scheduled command pins no model, there is no mechanical identity: SKIP the compile step this tick and say why in the run summary — never stamp self-belief to keep an unattended run moving.
+- **A mechanical identity record**, where the instance has one (an attestation sidecar or runtime-written identity file): `identity_source="attestation:<path>"`.
 
 `emit_packets` names each answer file (`answers/NN-<slug>.json`, `NN` = plan item order, slug derived from the view path) — read the manifest it writes and use those exact filenames. **Stamp LAST**, after every answer file exists: the stamp commits to the manifest's contents, and re-running `emit_packets` after stamping invalidates it.
 

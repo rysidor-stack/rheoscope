@@ -605,19 +605,81 @@ def _canonical_manifest_bytes(manifest_no_dispatch):
     return json.dumps(manifest_no_dispatch, indent=1, sort_keys=True).encode("utf-8")
 
 
-def stamp_dispatch(manifest_path, model, vendor):
+# The three legal provenance classes for the identity a dispatch stamp
+# carries (G3, silence-sweep remediation 2026-08-05). The stamped identity
+# becomes the permanent sha-committed absorb-side attestation, so WHERE it
+# came from is recorded alongside WHAT it says -- and "the session typed what
+# it believes it is" is not a legal source (the exact anti-pattern /handoff
+# names: typing identity instead of copying an attestation):
+#   attestation:<record>            a mechanical record (an F17 attestation
+#                                   sidecar, a runtime-written identity file,
+#                                   or a named test fixture)
+#   operator-attested:<date/note>   an interactive session: the operator
+#                                   confirmed the identity from their own UI,
+#                                   in their own words, this run
+#   scheduled-invocation:<task>     an unattended run: identity copied from
+#                                   the scheduled command line that pinned
+#                                   the model (invocation metadata)
+IDENTITY_SOURCE_CLASSES = ("attestation:", "operator-attested:",
+                           "scheduled-invocation:")
+
+
+def _identity_source_wellformed(identity_source):
+    """(ok, reason): a non-empty string in one of the legal classes above,
+    with a non-empty payload after the class prefix."""
+    if not isinstance(identity_source, str) or not identity_source.strip():
+        return False, (
+            "identity_source is required: how was this model/vendor identity "
+            "obtained? Legal forms: %s -- each with a non-empty payload. "
+            "Typing an identity from memory is not a source."
+            % ", ".join("'%s<...>'" % c for c in IDENTITY_SOURCE_CLASSES))
+    for cls in IDENTITY_SOURCE_CLASSES:
+        if identity_source.startswith(cls):
+            if identity_source[len(cls):].strip():
+                return True, "ok"
+            return False, ("identity_source '%s' has an empty payload after "
+                           "its class prefix" % identity_source)
+    return False, (
+        "identity_source '%s' is not in a legal class (%s)"
+        % (identity_source, ", ".join(IDENTITY_SOURCE_CLASSES)))
+
+
+def stamp_dispatch(manifest_path, model, vendor, identity_source=None):
     """F17 absorb-side attestation (2026-07-05 design), channel `dispatch-record`.
 
     The ONLY way a dispatch-manifest.json's packet entries get a real
     model/vendor after emit_packets() leaves them null. Stamps EVERY packet
     entry with `model`/`vendor`, and adds a top-level `dispatch` block
-    {model, vendor, stamped_at, manifest_sha256_at_stamp} where the sha256
-    covers the manifest JSON canonically serialized WITH the dispatch block
-    EXCLUDED (so the stamp commits to the packet contents it applies to,
-    without a self-referential hash-of-itself problem).
+    {model, vendor, identity_source, stamped_at, manifest_sha256_at_stamp}
+    where the sha256 covers the manifest JSON canonically serialized WITH the
+    dispatch block EXCLUDED (so the stamp commits to the packet contents it
+    applies to, without a self-referential hash-of-itself problem).
+
+    REFUSALS (G3, 2026-08-05 -- this function used to validate nothing, and
+    the skill's example text invited literally typing "<your model id>"):
+    empty/placeholder model or vendor (angle brackets are the placeholder
+    tell), a combined vendor string (F18 requires separate fields; '/' or ':'
+    in vendor is the combined-string tell, mirroring check-substrate), and a
+    missing or out-of-class identity_source (see IDENTITY_SOURCE_CLASSES).
 
     Returns the stamped manifest dict (also rewritten to manifest_path).
     """
+    for label, value in (("model", model), ("vendor", vendor)):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("stamp_dispatch: %s is empty -- the dispatch "
+                             "stamp is the permanent absorb-side attestation "
+                             "and cannot be blank" % label)
+        if "<" in value or ">" in value:
+            raise ValueError(
+                "stamp_dispatch: %s %r looks like an unfilled placeholder -- "
+                "supply the real identity, never the template text" % (label, value))
+    if "/" in vendor or ":" in vendor:
+        raise ValueError(
+            "stamp_dispatch: vendor %r looks like a combined vendor/model "
+            "string -- F18 requires separate fields" % vendor)
+    src_ok, src_reason = _identity_source_wellformed(identity_source)
+    if not src_ok:
+        raise ValueError("stamp_dispatch: %s" % src_reason)
     with open(manifest_path, encoding="utf-8") as fh:
         manifest = json.load(fh)
     for entry in manifest.get("packets") or []:
@@ -628,6 +690,7 @@ def stamp_dispatch(manifest_path, model, vendor):
     manifest["dispatch"] = {
         "model": model,
         "vendor": vendor,
+        "identity_source": identity_source,
         "stamped_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "manifest_sha256_at_stamp": manifest_sha,
     }
@@ -643,10 +706,14 @@ def _verify_dispatch_stamp(manifest):
     dispatch = manifest.get("dispatch")
     if not isinstance(dispatch, dict):
         return False, "manifest has no well-formed top-level 'dispatch' stamp"
-    required = ("model", "vendor", "stamped_at", "manifest_sha256_at_stamp")
+    required = ("model", "vendor", "identity_source", "stamped_at",
+                "manifest_sha256_at_stamp")
     missing = [k for k in required if not dispatch.get(k)]
     if missing:
         return False, "dispatch stamp missing field(s): %s" % ", ".join(missing)
+    src_ok, src_reason = _identity_source_wellformed(dispatch.get("identity_source"))
+    if not src_ok:
+        return False, "dispatch stamp identity_source rejected: %s" % src_reason
     check = dict(manifest)
     check.pop("dispatch", None)
     recomputed = _sha256_bytes(_canonical_manifest_bytes(check))
@@ -1333,7 +1400,8 @@ def self_test():
                 tmp, "self-test-manifest-%d.json" % _stamp_counter[0])
             with open(manifest_path, "w", encoding="utf-8", newline="\n") as fh:
                 json.dump({"packets": []}, fh)
-            stamp_dispatch(manifest_path, model=model, vendor=vendor)
+            stamp_dispatch(manifest_path, model=model, vendor=vendor,
+                           identity_source="attestation:self-test-fixture")
             return BridgeVerifyBackend(tmp, gate_kind=gate_kind,
                                        staging=staging, runner=runner,
                                        dispatch_manifest_path=manifest_path)
@@ -1772,7 +1840,8 @@ def self_test():
                  "dispatch-record" in str(e) or "dispatch" in str(e))
 
         # (b) stamp it -> happy path: dispatch block present, sha verifies
-        stamped = stamp_dispatch(manifest_path, "gpt-5.5", "openai")
+        stamped = stamp_dispatch(manifest_path, "gpt-5.5", "openai",
+                                 identity_source="attestation:self-test-fixture")
         case("stamp_dispatch adds top-level dispatch block",
              stamped.get("dispatch", {}).get("model") == "gpt-5.5"
              and stamped["dispatch"]["vendor"] == "openai")
@@ -1781,6 +1850,45 @@ def self_test():
                  for p in stamped["packets"]))
         ok_stamp, _ = _verify_dispatch_stamp(stamped)
         case("stamp_dispatch happy path: recomputed sha matches", ok_stamp)
+        case("stamp records its identity_source verbatim",
+             stamped["dispatch"]["identity_source"]
+             == "attestation:self-test-fixture")
+
+        # (b2) G3 refusals (silence-sweep 2026-08-05): the stamp used to
+        # validate nothing, so the skill text's literal placeholder
+        # "<your model id>" -- a session's typed self-belief -- became the
+        # permanent absorb-side attestation. Each illegal form must refuse.
+        def _stamp_refused(kwargs):
+            try:
+                stamp_dispatch(manifest_path, **kwargs)
+                return False
+            except ValueError:
+                return True
+        case("placeholder model '<your model id>' refused",
+             _stamp_refused(dict(model="<your model id>", vendor="openai",
+                                 identity_source="attestation:x")))
+        case("empty vendor refused",
+             _stamp_refused(dict(model="gpt-5.5", vendor="  ",
+                                 identity_source="attestation:x")))
+        case("combined vendor/model string refused (F18)",
+             _stamp_refused(dict(model="gpt-5.5", vendor="openai/gpt-5.5",
+                                 identity_source="attestation:x")))
+        case("missing identity_source refused",
+             _stamp_refused(dict(model="gpt-5.5", vendor="openai")))
+        case("out-of-class identity_source refused",
+             _stamp_refused(dict(model="gpt-5.5", vendor="openai",
+                                 identity_source="typed-from-memory")))
+        case("empty-payload identity_source refused",
+             _stamp_refused(dict(model="gpt-5.5", vendor="openai",
+                                 identity_source="operator-attested: ")))
+        # a stamp whose identity_source was stripped post-hoc fails
+        # verification (fail-closed at the driver's refusal path too)
+        stripped = dict(stamped)
+        stripped["dispatch"] = dict(stamped["dispatch"])
+        stripped["dispatch"].pop("identity_source")
+        ok_stripped, stripped_reason = _verify_dispatch_stamp(stripped)
+        case("stamp with identity_source stripped fails verification",
+             not ok_stripped and "identity_source" in stripped_reason)
 
         # (c) tamper with a packet entry post-stamp -> sha mismatch -> refused
         tampered = json.load(open(manifest_path, encoding="utf-8"))
@@ -1836,7 +1944,8 @@ def self_test():
         tampered_stamped = json.load(open(manifest_path, encoding="utf-8"))
         with open(tampered_manifest_path, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(tampered_stamped, fh, indent=1, sort_keys=True)
-        stamp_dispatch(tampered_manifest_path, model="gpt-5.5", vendor="openai")
+        stamp_dispatch(tampered_manifest_path, model="gpt-5.5", vendor="openai",
+                       identity_source="attestation:self-test-fixture")
         tm = json.load(open(tampered_manifest_path, encoding="utf-8"))
         tm.setdefault("packets", []).append(
             {"event": "raw/injected.md", "view": "wiki/injected.md",
@@ -1942,7 +2051,8 @@ def self_test():
         int_manifest = emit_packets(repo, plan, int_staging, routing_text)
         int_manifest = stamp_dispatch(
             os.path.join(int_staging, "dispatch-manifest.json"),
-            "gpt-5.5", "openai")
+            "gpt-5.5", "openai",
+            identity_source="attestation:self-test-fixture")
         int_answer_path = os.path.join(
             int_staging, int_manifest["packets"][0]["answer"].replace(
                 "/", os.sep))
@@ -2535,7 +2645,8 @@ def self_test():
                                         routing_text)
         guarded_manifest = stamp_dispatch(
             os.path.join(guarded_staging, "dispatch-manifest.json"),
-            "gpt-5.5", "openai")
+            "gpt-5.5", "openai",
+            identity_source="attestation:self-test-fixture")
         guarded_answer_path = os.path.join(
             guarded_staging,
             guarded_manifest["packets"][0]["answer"].replace("/", os.sep))

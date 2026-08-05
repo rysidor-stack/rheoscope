@@ -208,7 +208,11 @@ cb = load("compile-backends.py")                          # import the shipped m
 staging = ".batch-run/<tag>"                                # throwaway per-shard staging dir
 manifest = cb.emit_packets(repo, plan, staging, routing_rules_text)
 # ... write one answer JSON per manifest entry (the absorb backend's output) ...
-cb.stamp_dispatch(manifest_path, model=..., vendor=...)
+cb.stamp_dispatch(manifest_path, model=..., vendor=..., identity_source=...)
+#   ^ identity_source is REQUIRED (2026-08-05): operator-attested:<date> |
+#     scheduled-invocation:<task> | attestation:<record> -- how the identity
+#     was OBTAINED. Self-belief typed from memory refuses; see the compile
+#     skill's Step 3a for the per-mode procedure.
 backend = cb.FileHandoffAbsorbBackend(staging)
 try:
     result = cb.run_guarded(repo, plan, backend)            # ABSORB is AUTONOMOUS -- no gate

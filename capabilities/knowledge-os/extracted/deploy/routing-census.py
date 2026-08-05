@@ -55,7 +55,15 @@ Usage:
   routing-census.py --root DIR --manifest ledger-slice.json
   routing-census.py --self-test
 Exit: 0 always on a normal census run (this is a reporting primitive, not a
-  pass/fail gate); 2 on malformed input (bad manifest / no events given).
+  pass/fail gate); 2 on malformed input (bad manifest / no events given /
+  a ledger slice naming an event that does not exist on disk under --root
+  -- a ghost event would otherwise read as matched-but-dropped, so it is a
+  loud error instead); 3 INCONCLUSIVE -- the resolved root lacks the
+  structure this census reads (raw/ events dir, wiki/ views dir, or
+  deploy/entities.yaml all-absent), so the authoritative census output and
+  its output_sha256 are never emitted over a tree that was never located.
+  (2 was already taken by malformed input, so the unlocated-tree verdict
+  gets its own code, 3.)
 """
 
 import hashlib
@@ -195,8 +203,37 @@ def compute_census(root, events):
     return input_manifest, input_manifest_sha256, output, output_sha256
 
 
+# ------------------------------------------------------------------ preflight
+def census_preflight(root, events):
+    """Fail-honest guard: a census hash is only meaningful over a tree that
+    was actually located. Returns (missing_structure, missing_events).
+    missing_structure names the subject inputs this census reads that are
+    absent under root (the raw/ events dir, the wiki/ views dir the citer
+    index is built from, deploy/entities.yaml); missing_events lists slice
+    events with no file on disk. Either non-empty means the authoritative
+    output (and its output_sha256) must NOT be printed -- a wrong --root
+    would otherwise read as every event matched-but-dropped under a
+    confident hash, a confident answer about a tree never located."""
+    missing_structure = []
+    if not os.path.isdir(root):
+        missing_structure.append("root is not a directory")
+        return missing_structure, []
+    if not os.path.isdir(os.path.join(root, "raw")):
+        missing_structure.append("raw/ events dir absent")
+    if not any(os.path.isdir(os.path.join(root, w)) for w in WIKI_DIRS):
+        missing_structure.append("wiki/ views dir absent")
+    if _entities_blob_sha(root)["kind"] == "absent":
+        missing_structure.append("deploy/entities.yaml unresolvable "
+                                 "(not committed and not on disk)")
+    missing_events = [ev for ev in sorted(set(events))
+                      if not os.path.isfile(os.path.join(root, *ev.split("/")))]
+    return missing_structure, missing_events
+
+
 # ------------------------------------------------------------------ self-test
 def self_test():
+    import contextlib
+    import io
     import shutil
     import tempfile
     total = failed = 0
@@ -288,10 +325,49 @@ def self_test():
         no_events_rc = main(["--root", base])
         case("no events given -> exit 2", no_events_rc == 2)
 
+        # events as they exist on disk NOW (e1 was renamed above) -- the
+        # ghost-event guard makes a manifest naming vanished files a loud
+        # error, so the well-formed case must name real files.
+        live_events = ["raw/e1-renamed.md", "raw/e2.md", "raw/e3.md"]
         good_manifest = os.path.join(base, "good-manifest.json")
-        write(good_manifest, json.dumps({"events": events}))
+        write(good_manifest, json.dumps({"events": live_events}))
         rc_good = main(["--root", base, "--manifest", good_manifest])
         case("well-formed manifest run -> exit 0", rc_good == 0)
+
+        # fail-honest: a wrong/empty --root must go INCONCLUSIVE (exit 3)
+        # with no authoritative output -- never a confident census where
+        # every event reads as matched-but-dropped over a tree that was
+        # never located.
+        empty_root = tempfile.mkdtemp(prefix="rcensus-empty-")
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc_empty = main(["--root", empty_root,
+                                 "--events", "raw/e2.md"])
+            out_txt = buf.getvalue()
+            case("wrong root (structure absent) -> INCONCLUSIVE exit 3",
+                rc_empty == 3)
+            case("INCONCLUSIVE names the resolved root and what was missing",
+                os.path.abspath(empty_root) in out_txt
+                and "INCONCLUSIVE" in out_txt
+                and "raw/ events dir absent" in out_txt)
+            case("no output_sha256 emitted over an unlocated tree",
+                "output_sha256" not in out_txt)
+        finally:
+            shutil.rmtree(empty_root, ignore_errors=True)
+
+        # fail-honest: an event named on the command line with no file on
+        # disk is a loud error (exit 2), never a silent matched-but-dropped
+        # entry in an exit-0 census.
+        buf2 = io.StringIO()
+        with contextlib.redirect_stdout(buf2):
+            rc_ghost = main(["--root", base,
+                             "--events", "raw/ghost.md", "raw/e2.md"])
+        ghost_txt = buf2.getvalue()
+        case("nonexistent event file -> loud error exit 2", rc_ghost == 2)
+        case("ghost event named in the error, no census output emitted",
+            "raw/ghost.md" in ghost_txt and "ERROR" in ghost_txt
+            and "output_sha256" not in ghost_txt)
 
     finally:
         shutil.rmtree(base, ignore_errors=True)
@@ -327,6 +403,22 @@ def main(argv):
     if not events:
         print("routing-census: no events in ledger slice (need --events or "
              "a --manifest with a non-empty \"events\" list)")
+        return 2
+    # Fail-honest: refuse to census a tree that was never located, and refuse
+    # ghost events -- both would otherwise surface as an authoritative
+    # "matched-but-dropped" census with exit 0.
+    missing_structure, missing_events = census_preflight(root, events)
+    if missing_structure:
+        print("routing-census: INCONCLUSIVE -- resolved root %s lacks the "
+             "census's subject structure: %s. No census output (and no "
+             "output hash) is emitted over an unlocated tree."
+             % (os.path.abspath(root), "; ".join(missing_structure)))
+        return 3
+    if missing_events:
+        print("routing-census: ERROR -- ledger slice names event(s) with no "
+             "file on disk under %s: %s. A ghost event would read as "
+             "matched-but-dropped; refusing to census it."
+             % (os.path.abspath(root), ", ".join(missing_events)))
         return 2
     input_manifest, ims, output, osha = compute_census(root, events)
     print(json.dumps({"input_manifest": input_manifest,

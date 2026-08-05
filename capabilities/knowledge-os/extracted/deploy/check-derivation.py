@@ -79,7 +79,14 @@ a future git-backed test can point check-derivation.py --stale-only directly
 at them and see the same verdicts against a real git history.
 
 Usage:
-  check-derivation.py [PATH ...]   scan (default: wiki/); print audit-pending T1 views
+  check-derivation.py [PATH ...]   scan (default: wiki/ under the resolved root);
+                                    print audit-pending T1 views
+  check-derivation.py --root DIR   resolve wiki/ (and the git HEAD comparisons) under
+                                    DIR. Default root when absent = the parent of the
+                                    deploy/ dir holding this script (family root
+                                    standard, silence-sweep 2026-08-04) -- NEVER the
+                                    CWD, so a wrong working directory can no longer
+                                    make the F12 gate pass on a tree it never located.
   check-derivation.py --gate       exit 2 if any audit-pending T1 view OR any
                                     stale-verified view is found (either trips the gate)
   check-derivation.py --stale-only [PATH ...]   scan ONLY for stale-verified views
@@ -92,6 +99,12 @@ Exit codes: 0 = clean / report-only
         or --stale-only, OR an unparseable derivation region on a file that HAS
         one (inconclusive) -- inconclusive is reported distinctly in text but
         shares this exit code family per this module's existing CLI convention
+  | 3 = INCONCLUSIVE, TREE NOT LOCATED (fail-honest, silence-sweep S2): no PATH
+        args and no wiki/ directory exists under the resolved root, in EVERY mode
+        including --gate. Chosen as a NEW code precisely because existing callers
+        treat 0 as pass and 2 as gate-failure (doctor.py's derivation-gate; the
+        flight-plan Step 5.8 sweep) -- an unlocated tree must read as neither.
+        An EXISTING-but-empty wiki/ is a located tree and keeps exit 0.
   | 1 = self-test failure.
 """
 
@@ -102,6 +115,12 @@ import sys
 
 DERIV_START = "# --- derivation"
 DERIV_END = "# --- /derivation"
+
+# Family root standard (silence-sweep 2026-08-04; same pattern as check-loop-state.py):
+# the default scan root is the parent of the deploy/ dir holding this script -- never
+# the CWD. A caller may override with --root DIR.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_ROOT = os.path.dirname(_HERE)
 
 
 def _extract_derivation(text):
@@ -287,8 +306,9 @@ def _iter_files(paths):
 
 def scan_stale(paths, repo=None):
     """Runs the CONTENT-3 canonical stale-verified check across paths.
-    Returns (stale_list, inconclusive_list)."""
-    repo = repo or os.getcwd()
+    Returns (stale_list, inconclusive_list). repo defaults to DEFAULT_ROOT
+    (family root standard) -- never the CWD."""
+    repo = repo or DEFAULT_ROOT
     stale = []
     inconclusive = []
     for fp in _iter_files(paths):
@@ -307,7 +327,7 @@ def scan_stale(paths, repo=None):
     return stale, inconclusive
 
 
-def scan(paths, gate=False, stale_only=False):
+def scan(paths, gate=False, stale_only=False, repo=None):
     pending = []
     if not stale_only:
         for fp in _iter_files(paths):
@@ -319,7 +339,7 @@ def scan(paths, gate=False, stale_only=False):
             if audit_pending_t1(text):
                 pending.append(fp)
 
-    stale, inconclusive = scan_stale(paths)
+    stale, inconclusive = scan_stale(paths, repo=repo)
 
     rc = 0
 
@@ -407,7 +427,42 @@ def self_test():
             failed += 1
         print("  %s %-24s got=%-13s exp=%s" % ("ok " if ok else "XX ", name, got, expected))
 
-    total = len(cases) + len(sv_cases)
+    # ---- FAIL-HONEST tree-absent cases (silence-sweep S2; tempdir fixture -------
+    # pattern per check-loop-state.py's (1a3) envelope-resolution cases): a root
+    # with NO wiki/ must be INCONCLUSIVE exit 3 in EVERY mode (--gate included --
+    # the old exit-0 rendered as a PASSing F12 gate on an unlocated tree), while a
+    # root with an existing-but-EMPTY wiki/ is a located tree and keeps exit 0.
+    import shutil
+    import tempfile
+    d = tempfile.mkdtemp(prefix="cdv-root-")
+    try:
+        root_cases = [
+            ("tree-absent plain",  ["check-derivation.py", "--root", d], 3),
+            ("tree-absent --gate", ["check-derivation.py", "--gate", "--root", d], 3),
+            ("tree-absent --stale-only",
+             ["check-derivation.py", "--stale-only", "--root", d], 3),
+        ]
+        for name, argv, exp in root_cases:
+            got = main(argv)
+            ok = (got == exp)
+            if not ok:
+                failed += 1
+            print("  %s %-24s exit=%-10s exp=%s" % ("ok " if ok else "XX ", name, got, exp))
+        os.makedirs(os.path.join(d, "wiki"))
+        empty_cases = [
+            ("empty-wiki plain",  ["check-derivation.py", "--root", d], 0),
+            ("empty-wiki --gate", ["check-derivation.py", "--gate", "--root", d], 0),
+        ]
+        for name, argv, exp in empty_cases:
+            got = main(argv)
+            ok = (got == exp)
+            if not ok:
+                failed += 1
+            print("  %s %-24s exit=%-10s exp=%s" % ("ok " if ok else "XX ", name, got, exp))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+    total = len(cases) + len(sv_cases) + len(root_cases) + len(empty_cases)
     if failed:
         print("check-derivation self-test: FAIL (%d/%d)" % (total - failed, total))
         return 1
@@ -421,13 +476,33 @@ def main(argv):
         return self_test()
     gate = "--gate" in args
     stale_only = "--stale-only" in args
+    # --root DIR: family root standard (see DEFAULT_ROOT above). The flag's value is
+    # consumed here so the positional-path collection below never mistakes it for a
+    # scan target.
+    root = DEFAULT_ROOT
+    if "--root" in args:
+        i = args.index("--root")
+        if i + 1 >= len(args) or args[i + 1].startswith("--"):
+            print("check-derivation: --root requires a directory argument")
+            return 3
+        root = os.path.abspath(args[i + 1])
+        args = args[:i] + args[i + 2:]
     paths = [a for a in args if not a.startswith("--")]
     if not paths:
-        paths = [d for d in ("wiki",) if os.path.isdir(d)]
-        if not paths:
-            print("check-derivation: no wiki/ present; nothing to scan.")
-            return 0
-    return scan(paths, gate=gate, stale_only=stale_only)
+        wiki = os.path.join(root, "wiki")
+        if not os.path.isdir(wiki):
+            # FAIL-HONEST (silence-sweep S2): the sensor did not locate its subject
+            # tree, so it must not answer -- in ANY mode. The old behavior exited 0
+            # here, which doctor.py rendered as "[PASS] derivation-gate: no
+            # audit-pending T1 views" on a tree with no wiki at all. Exit 3 is
+            # deliberately neither 0 (pass) nor 2 (gate failure) -- see the
+            # exit-code contract in the module docstring.
+            print("check-derivation: INCONCLUSIVE -- no wiki/ directory under "
+                  "resolved root %s; the sensor never located its tree, so no "
+                  "verdict is issued in any mode (--gate included; exit 3)." % root)
+            return 3
+        paths = [wiki]
+    return scan(paths, gate=gate, stale_only=stale_only, repo=root)
 
 
 if __name__ == "__main__":

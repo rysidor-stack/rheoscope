@@ -14,10 +14,12 @@ this session before writing anything.
 
 **What changed vs the old three-skill march (v3.0-78, 2026-07-31):** the operator no longer
 carries packets between vendors or approves each send — answer legs ride the contained
-cross-vendor bridge (`bridge/handoff-leg.js`, same transport/consent class as `/cross-check`;
-standing grant: `deploy/evidence/operator-2026-07-31-wired-compile-dispatch-grant.md`).
-Rounds beyond 1 are an explicit escalation, not a default shape. Operator touches per
-decision: **T2/T3 = zero (beyond having asked); T1 = one — the lock itself.**
+cross-vendor bridge (`bridge/handoff-leg.js`, same transport/consent class as `/cross-check`),
+covered by the project's **standing handoff dispatch grant** — a committed `deploy/evidence/`
+artifact this project mints for itself via the first-need ceremony in Step 4 (one in-session
+question, once ever; never a fork's artifact, never assumed). Rounds beyond 1 are an explicit
+escalation, not a default shape. Operator touches per decision: **T2/T3 = zero (beyond having
+asked); T1 = one — the lock itself.**
 
 ## Step 0 — auto-retry parked work (every invocation, before anything else)
 
@@ -88,9 +90,30 @@ node "${CROSS_VENDOR_BRIDGE_DIR:-.claude/skills/bridge}/handoff-leg.js" \
   [--effort medium|high] [--timeout-ms 300000]
 ```
 
-Consent is the standing grant named above — do not surface a per-send approval. The leg is
-contained (read-only, tool-less, no network) and lands the deliverable atomically; exit
-non-zero = `LEG FAILED` = nothing landed. On failure: leave status `open`, report loudly,
+**Consent.** Dispatch rides the project's standing handoff dispatch grant: a committed
+`deploy/evidence/` artifact whose text **expressly covers `/handoff` bridge legs**. Check for
+one before this session's first dispatch. If the project has none — or has only a compile
+dispatch grant without a handoff sentence — **fire the first-need ceremony now, in this
+session** (one question, once ever; the same pattern as the compile skill's first-contact
+grant — never operator homework, never a fabricated or assumed artifact): ask, in plain
+English: *"First cross-vendor handoff on this project: the packet's content travels to the
+other vendor's API under your own account. Your yes covers this and every future `/handoff`
+bridge leg here — answer, escalation-round, close, and unattended retries. Say yes once and
+this project never asks again — I'll record your words and continue."* On the yes, mint
+`deploy/evidence/operator-<date>-wired-handoff-dispatch-grant.md` carrying the verbatim quote,
+the date, and an express-scope sentence — "this grant authorizes every `/handoff` bridge-leg
+dispatch on this project (answer, round-N, close), interactive and unattended" (the express
+sentence is load-bearing: a grant naming only mechanics fails consent review) — commit it,
+and dispatch. On a no: record the dated decline and stop — no dispatch; `--file-external`
+remains the operator-couriered path if they still want the handoff. With a grant on file,
+never surface a per-send approval — the one-time grant question is consent working; per-send
+re-asking is the anti-pattern, not the asking itself. An unattended retry (Step 0 via the
+nightly tick) with NO grant on file does not dispatch and does not ask (nobody is present):
+the leg stays parked with the reason in the run summary, and the next interactive invocation
+asks the one question.
+
+The leg is contained (read-only, tool-less, no network) and lands the deliverable atomically;
+exit non-zero = `LEG FAILED` = nothing landed. On failure: leave status `open`, report loudly,
 done — Step 0 retries it next invocation or nightly tick. Never hand-courier instead.
 
 On success, validate the deliverable (verdict tag; brief questions addressed; substrate
@@ -199,8 +222,10 @@ brief, context, README (immutable after authoring); re-litigate filed round verd
 
 - Authoring without resolving the decision identifier first
 - Dispatching a packet whose references were paraphrased instead of inlined verbatim
-- Surfacing a per-send approval for a bridge leg (consent is the standing grant; asking
-  again is the v3.0-86 anti-pattern in reverse)
+- Surfacing a per-send approval for a bridge leg when a grant is on file (consent is the
+  standing grant; asking again is the v3.0-86 anti-pattern in reverse — but the ONE
+  first-need grant question in Step 4 is not a per-send approval, it is how the grant comes
+  to exist; dispatching with no grant at all is the worse failure)
 - Typing `answered_by`/`locked_by` instead of copying the attestation sidecar (F17)
 - Hand-couriering a bridge-reachable leg, or "helpfully" running a failed close yourself —
   park-and-retry is the contract; automation-or-wait, never an operator step

@@ -421,6 +421,16 @@ def check_derivation_gate(ctx):
                        "audit-pending T1 view(s) present. "
                        "FIX: run the adversarial verify loop before building on those views. "
                        "%s" % _tail(out))
+    if rc == 3:
+        # The sensor's fail-honest tree-not-located code (silence-sweep S2): no wiki/
+        # under its resolved root. Neither a pass (nothing was verified) nor the
+        # audit-pending FAIL (nothing was found) -- state is simply unverified.
+        return Result("WARN", "derivation-gate",
+                       "derivation gate could not locate the wiki tree -- state unverified. "
+                       "FIX: if this project keeps a knowledge corpus, check that wiki/ exists "
+                       "next to deploy/ (or run `python deploy/check-derivation.py --root "
+                       "<tree>` by hand); if knowledge-os content was never populated, this "
+                       "warning is the honest report of that. %s" % _tail(out))
     if rc == "TIMEOUT":
         return Result("WARN", "derivation-gate",
                        "check-derivation.py --gate timed out; state unverified. "
@@ -1304,12 +1314,22 @@ def self_test():
         check("python-sensors: unreadable file -> FAIL with FIX",
               r is not None and r.status == "FAIL" and "FIX:" in r.detail)
 
-        # A check-derivation stub exiting an unexpected code (neither 0 nor 2) -> WARN + FIX.
+        # A check-derivation stub exiting an unexpected code (neither 0, 2, nor 3) -> WARN + FIX.
         (deploy_dir / "check-derivation.py").write_text(
             "import sys\nsys.exit(7)\n", encoding="utf-8")
         r = note(check_derivation_gate(ctx))
         check("derivation-gate: unexpected exit code -> WARN with FIX",
               r.status == "WARN" and "FIX:" in r.detail)
+
+        # A stub exiting 3 (the sensor's fail-honest tree-not-located code, silence-sweep
+        # S2) -> the dedicated WARN ("could not locate the wiki tree"), never PASS, never
+        # the audit-pending FAIL.
+        (deploy_dir / "check-derivation.py").write_text(
+            "import sys\nsys.exit(3)\n", encoding="utf-8")
+        r = note(check_derivation_gate(ctx))
+        check("derivation-gate: tree-not-located exit 3 -> WARN 'could not locate' with FIX",
+              r.status == "WARN" and "could not locate the wiki tree" in r.detail
+              and "FIX:" in r.detail)
 
     # Check 12: sensor-reachability -- the four states (skip / orphan-WARN with the
     # transitive chain honored / registered-dormant PASS / stale-row WARN), plus the

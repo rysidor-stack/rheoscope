@@ -450,7 +450,8 @@ def run(root, plan_path, staging, absorb_vendor=None, absorb_model=None,
     # values before any absorb() call reads it.
     cb.stamp_dispatch(
         os.path.join(staging, "dispatch-manifest.json"),
-        absorb_model or "unknown", absorb_vendor or "unknown")
+        absorb_model or "unknown", absorb_vendor or "unknown",
+        identity_source="attestation:drill-invocation-argv")
 
     absorb_backend = cb.FileHandoffAbsorbBackend(staging)
 

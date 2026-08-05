@@ -100,6 +100,47 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.22 → v3.0.23 (emergency batch: honest gates, honest sensors)
+
+Every instance takes the two core skills (item 3's first two files); knowledge-os instances
+take everything.
+
+1. **Re-copy the sensor family** — `deploy/`: `staleness.py`, `check-loop-state.py`,
+   `check-derivation.py`, `check-frontmatter.py`, `routing-census.py`, `check-split.py`,
+   `compile-backends.py`, `compile-driver.py`, `drill-planted-defects.py`,
+   `drill-workload-bench.py`. Run each `--self-test`; expected: staleness **113/113**,
+   check-loop-state **36/36**, check-derivation **14/14**, check-frontmatter **33/33**,
+   routing-census **19/19**, check-split **20/20**, compile-backends **167/167**,
+   compile-driver **156/156**. Then run each sensor live once with `--root .` — an
+   INCONCLUSIVE naming your root means the sensor could not LOCATE its subject tree; fix the
+   root/invocation, never silence the message.
+2. **Exit-code changes** for any local wiring that reads them: check-derivation exits **3**
+   (INCONCLUSIVE, wiki/ not located — new, in every mode incl. `--gate`); check-frontmatter
+   exits **2** for the same class (incl. `--strict`); routing-census exits **3** for the same
+   class and **2** for events named but absent on disk. Re-copy
+   `.claude/skills/doctor/doctor.py` — it renders the new derivation code as WARN
+   (self-test **63/63**).
+3. **Re-copy the skills and docs**: `.claude/skills/standing-loop/SKILL.md`,
+   `.claude/skills/handoff/SKILL.md` and `.claude/skills/compile/SKILL.md` (hand-substitute
+   any `{{...}}` from your `project.yaml`), `core/handoffs/HANDOFF-AUTHORING.md`,
+   `docs/engine/OPERATIONS.md`.
+4. **If your instance ever armed the standing loop** on the strength of a copied, inherited,
+   or absent rehearsal receipt: disarm, run the three-round rehearsal in the skill on a
+   scratch clone of YOUR project, and mint your own
+   `deploy/evidence/rollback-rehearsal-receipt-<date>.md`. The fork's receipt and its
+   timings prove nothing about your instance.
+5. **Your next wired compile's `stamp_dispatch` call now requires `identity_source`** — a
+   staging script copied from the old skill text will refuse with the legal forms printed.
+   The compile skill's Step 3a says how to obtain identity per mode; never type it from
+   memory.
+6. **If a raw file carrying `canonical:` was drawing a check-frontmatter unknown-key WARN**
+   (the class Ultrapak hit): re-copying the sensor clears it. The field stays required by
+   check-knowledge-debt — deleting it was never the fix.
+7. **First `/handoff` after adopting**: if the project has no committed dispatch-grant
+   artifact expressly covering handoff bridge legs, the skill now asks its one first-need
+   question and mints the grant — that question appearing once is the fix working, not a
+   regression to per-send approvals.
+
 ## v3.0.21 → v3.0.22 (envelope resolution + no-self-adjudication)
 
 Knowledge-os instances take three files; instances without the capability take nothing.

@@ -460,7 +460,10 @@ def validate_staging(staging, stamp_check=None):
         raise StagingError(
             "dispatch-manifest.json refused (F17 dispatch-record attestation): "
             "%s -- run compile-backends.stamp_dispatch(manifest_path, model, "
-            "vendor) after authoring the answers" % reason)
+            "vendor, identity_source=...) after authoring the answers; "
+            "identity_source records how the identity was obtained "
+            "(attestation:<record> | operator-attested:<date> | "
+            "scheduled-invocation:<task>), never typed from memory" % reason)
 
     packets = manifest.get("packets") or []
     if not packets:
@@ -1729,7 +1732,9 @@ def self_test():                                            # noqa: C901
         import hashlib
         blob = json.dumps(manifest, indent=1, sort_keys=True).encode("utf-8")
         manifest["dispatch"] = {
-            "model": "m", "vendor": "v", "stamped_at": "2026-07-28T00:00:00",
+            "model": "m", "vendor": "v",
+            "identity_source": "attestation:self-test-fixture",
+            "stamped_at": "2026-07-28T00:00:00",
             "manifest_sha256_at_stamp": hashlib.sha256(blob).hexdigest()}
         write(os.path.join(st, "dispatch-manifest.json"),
               json.dumps(manifest, indent=1, sort_keys=True))
@@ -1740,7 +1745,8 @@ def self_test():                                            # noqa: C901
         d = manifest.get("dispatch")
         if not isinstance(d, dict):
             return False, "manifest has no well-formed top-level 'dispatch' stamp"
-        for k in ("model", "vendor", "stamped_at", "manifest_sha256_at_stamp"):
+        for k in ("model", "vendor", "identity_source", "stamped_at",
+                  "manifest_sha256_at_stamp"):
             if not d.get(k):
                 return False, "dispatch stamp missing field(s): %s" % k
         check = dict(manifest)

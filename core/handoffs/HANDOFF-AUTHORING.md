@@ -49,32 +49,45 @@ Slug is the decision being informed if known, else the topic. Examples: `decisio
 
 ## meta.yaml
 
+**This block is the canonical meta shape, and this file is its one home.** The enforcing
+sensor is `deploy/check-loop-state.py`: it requires exactly these keys on current-protocol
+folders and treats unknown keys as violations, and its `--self-test` asserts key-for-key
+agreement with this very block — a shape change lands in both files in the same commit or the
+self-test fails. (Reconciled 2026-08-05: this block had drifted from the sensor — four
+missing keys, three retired ones — so a meta authored from it drew seven violations.)
+
 ```yaml
 handoff_id: <YYYY-MM-DD>-<slug>
 status: open                  # open | answered | locked | halted | superseded
 tier: T2                      # T1 | T2 | T3 (T4 does not handoff)
 authored: <YYYY-MM-DD>
 authored_by: <substrate>      # e.g. "model family and version (Claude Code orchestrator)"
-target_substrate: <desc>      # substrate this round's brief is routed to
-informs_decisions:
-  - <decision-slug>
-governing_documents:
-  - <relative path from repo root>
-hypothesis: "<one-sentence hypothesis the brief carries>"
+answered: null                # date the round's output was filed
+answered_by: []               # per round: the substrate that produced output-round-N.md
+decision_under_investigation: "<one sentence: the decision this handoff informs>"
+parent_phase: <phase-slug>    # the flight-plan phase this decision belongs to (null if none)
+hypothesis_carried: "<one-sentence hypothesis the brief carries>"
 hypothesis_outcome: pending   # confirmed | revised | rejected | pending
-# --- round model ---
-rounds_completed: 0           # bumped by handoff-receive when an output is filed
+target_substrate: <desc>      # substrate this round's brief is routed to
+rounds_completed: 0           # bumped when a round's output is filed
 round_modes: []               # per round, e.g. ["round 1: initial", "round 2: pressure-test"]
 round_overrides: []           # convergence-check overrides, with reasons
-answered_by: []               # per round: the substrate that produced output-round-N.md
-# --- close ---
 locked: null                  # date the decision locked
-locked_by_raw_file: null      # relative path to docs/adr/<file> at close
+locked_by_raw_file: null      # relative path to the lock raw at close
 supersedes: null
 superseded_by: null
 ```
 
-(The legacy `verdict_summary` field is deprecated — decision content lives in the ADR raw file at close, not in meta.)
+Optional keys the sensor also accepts: `packet_modes` (per-round `inline`|`reference`),
+`locked_by` (the locking substrate identifier, copied from the close leg's attestation),
+and `close: pending` — the park marker for a dead headless close leg, legal ONLY alongside
+`status: answered`.
+
+Retired keys (pre-2026-07 shape; the sensor flags them as unknown): `informs_decisions` and
+`hypothesis` were renamed to `decision_under_investigation` and `hypothesis_carried`;
+`governing_documents` was dropped — governing docs ride `context.md` Section 2. The legacy
+`verdict_summary` is likewise deprecated — decision content lives in the lock raw at close,
+not in meta.
 
 ## context.md — three sections
 

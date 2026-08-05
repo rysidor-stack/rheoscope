@@ -179,7 +179,11 @@ Exit codes (house convention, deploy/README.md Sec Sensors):
      registration store absent pre-mint, or a broken registration chain)
 
 Usage:
-  py deploy/check-loop-state.py --check         # validate the live repo
+  py deploy/check-loop-state.py [--root DIR]    # validate the live repo
+                                                 # (S9 fix 2026-08-05: the
+                                                 # long-documented --check flag
+                                                 # was never parsed -- the bare
+                                                 # invocation IS the live run)
   py deploy/check-loop-state.py --self-test     # validate committed fixtures
                                                  # (deploy/test-fixtures/loop-state/)
 """
@@ -257,6 +261,12 @@ HANDOFF_STATUS = {"open", "answered", "locked", "halted", "superseded"}
 HANDOFF_STATUS_LEGACY_EXTRA = {"halted-provider-dependency"}
 HYPOTHESIS_OUTCOME = {"confirmed", "revised", "rejected", "pending"}
 
+# Canonical meta shape: this list and the meta.yaml block in
+# core/handoffs/HANDOFF-AUTHORING.md are the SAME fact in two homes, and the
+# self-test's doc-parity case asserts they agree key-for-key (reconciled
+# 2026-08-05 -- the doc had drifted 4-missing/3-retired and a meta authored
+# from it drew seven violations here). A shape change lands in both files in
+# the same commit or --self-test fails.
 HANDOFF_REQUIRED = [
     "handoff_id", "status", "tier", "authored", "authored_by",
     "answered", "answered_by", "locked", "locked_by_raw_file",
@@ -271,7 +281,8 @@ HANDOFF_OPTIONAL = {
     # headless close leg. Legal ONLY as `close: pending` alongside
     # `status: answered` (auto-retried by the next /handoff invocation or the
     # nightly standing-loop tick; no manual fallback). Amended here together
-    # with handoffs/METHODOLOGY.md's meta shape, per that file's own rule.
+    # with core/handoffs/HANDOFF-AUTHORING.md's meta block (the canonical
+    # shape's shipped home), per the parity rule above HANDOFF_REQUIRED.
     "close",
 }
 
@@ -1309,6 +1320,50 @@ def run_self_test(yaml):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    # ---- (1a4) doc-parity (D1, 2026-08-05): the canonical meta shape has
+    # two homes -- HANDOFF_REQUIRED above and the meta.yaml block in
+    # core/handoffs/HANDOFF-AUTHORING.md -- and they must agree key-for-key
+    # (the doc had drifted 4-missing/3-retired; a meta authored from it drew
+    # seven violations here). Walk up from deploy/ to find the doc (instance
+    # layout: <root>/core/handoffs/; template layout: the repo root a few
+    # levels above extracted/deploy/). The doc being unfindable is a FAILURE,
+    # not a skip -- a tree shipping this sensor without the canonical meta
+    # doc is exactly the silent-drift state this case exists to catch.
+    def _doc_meta_parity():
+        d, cand = _HERE, None
+        for _ in range(8):
+            p = os.path.join(d, "core", "handoffs", "HANDOFF-AUTHORING.md")
+            if os.path.isfile(p):
+                cand = p
+                break
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+        if cand is None:
+            return ["doc-parity: core/handoffs/HANDOFF-AUTHORING.md not "
+                    "found walking up from %s" % _HERE]
+        with open(cand, encoding="utf-8") as fh:
+            doc_text = fh.read()
+        m = re.search(r"## meta\.yaml.*?```yaml\n(.*?)```", doc_text, re.S)
+        if not m:
+            return ["doc-parity: %s has no yaml fence under '## meta.yaml'"
+                    % cand]
+        got = set(re.findall(r"(?m)^([a-z_]+):", m.group(1)))
+        want = set(HANDOFF_REQUIRED)
+        probs = []
+        if want != got:
+            probs.append(
+                "doc-parity: %s meta block disagrees with HANDOFF_REQUIRED "
+                "(missing from doc: %s; extra in doc: %s)"
+                % (cand, sorted(want - got), sorted(got - want)))
+        for k in sorted(HANDOFF_OPTIONAL):
+            if not re.search(r"`%s\b" % re.escape(k), doc_text):
+                probs.append("doc-parity: optional key '%s' not mentioned "
+                             "in %s" % (k, cand))
+        return probs
+    failures.extend(_doc_meta_parity())
+
     # ---- (1b) degraded-fallback fix cases (fork divergence, orchestrator
     # adjudication 2026-07-06): block-list form under YAML-hostile
     # frontmatter must extract CLEAN values (no leading dash -- the fixed
@@ -1588,10 +1643,11 @@ def run_self_test(yaml):
         print(f"RESULT: FAIL -- self-test, {len(failures)} unexpected outcome(s)")
         return 1
     n_cases = (
-        len(base_cases) + len(tree_cases) + 8 + len(env_cases)
+        len(base_cases) + len(tree_cases) + 9 + len(env_cases)
         + len(substrate_cases)
     )  # +2 fallback-fix, +2 harness-era, +1 receipts-population-parity (B-2),
        # +3 close-park marker cases (v3.0-78),
+       # +1 doc-parity (meta shape vs HANDOFF-AUTHORING.md, D1 2026-08-05),
        # +len(env_cases) envelope-resolution cases (handoffs/ vs core/handoffs/),
        # +len(substrate_cases) P6 substrate-separation unit cases
     print(f"RESULT: PASS -- self-test, {n_cases} fixture case(s) behaved as expected")

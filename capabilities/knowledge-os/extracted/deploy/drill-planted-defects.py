@@ -616,7 +616,8 @@ def _stamp_fixture_dispatch_manifest(root, model="unknown", vendor="unknown"):
     manifest_path = os.path.join(receipts_dir, "dispatch-manifest.json")
     with open(manifest_path, "w", encoding="utf-8", newline="\n") as fh:
         json.dump({"packets": []}, fh, indent=1, sort_keys=True)
-    cb.stamp_dispatch(manifest_path, model, vendor)
+    cb.stamp_dispatch(manifest_path, model, vendor,
+                      identity_source="attestation:drill-fixture")
     return manifest_path
 
 

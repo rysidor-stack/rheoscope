@@ -13,8 +13,12 @@ Run as the acceptance check after a view F is split into parts P1..Pn. Validates
      'fabricated' -> the frozen 'two = ambiguous citation'); dropping it trips 'dropped'
      -> 'zero = lost knowledge'. If A(F-before) is EMPTY the gate exits 2 INCONCLUSIVE,
      never PASS (A1 fail-closed; EX-3).
-  3. CITATIONS. For every file in raw/ and handoffs/ whose text cites F by basename with
-     a line number, the stub's line->part map covers it OR a REVIEW entry names it. The
+  3. CITATIONS. For every file in raw/ and the handoff envelope whose text cites F by
+     basename with a line number, the stub's line->part map covers it OR a REVIEW entry
+     names it. The envelope is resolved by CONTENT the way sibling check-loop-state.py
+     does (fork layout handoffs/, or the template's documented core/handoffs/ -- the old
+     hardwired handoffs/ scan covered zero handoff files on template-layout instances);
+     records in BOTH envelopes is itself a violation, never a silent one-envelope scan. The
      citation grammar is conjunction/range-aware [content2-amendment A2]: 'lines 1622 and
      661' is TWO citations (both must resolve); 'lines 100-120' is one range (covered iff
      the whole range maps). (raw/ is immutable, so the stub is where a citation is healed.)
@@ -44,6 +48,11 @@ Usage:
   check-split.py STUB_PATH [--before REF] [--root DIR]   validate a real split
   check-split.py --self-test                              embedded 3-file-split battery
 
+When --root is absent the root is the parent of the deploy/ dir this script lives
+in (the family standard, matching check-loop-state.py) -- never the caller's CWD,
+which pointed the citation scan at whatever directory the operator happened to be
+in.
+
 Exit codes: 0 = split integral | 1 = a violation, or self-test failure
             | 2 = inconclusive (git/F-before unavailable).
 """
@@ -63,6 +72,13 @@ try:
     import yaml
 except ImportError:  # pragma: no cover
     yaml = None
+
+# Family root standard (matches sibling check-loop-state.py): the default root
+# is the parent of the deploy/ dir this script lives in, never os.getcwd() --
+# a CWD-relative root silently pointed the citation scan at whatever directory
+# the operator happened to be standing in.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(_HERE)
 
 H_RE = re.compile(r"^(#{2,3})\s+(.*?)\s*#*\s*$")
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
@@ -263,6 +279,52 @@ def cited_line_numbers(text, basename):
     return nums
 
 
+# The next two helpers are copied verbatim from sibling check-loop-state.py
+# (its 2026-08-04 fork-layout fix). The deploy/ dir has no package imports, so
+# the module stays self-contained by carrying its own copy.
+def _envelope_has_records(path):
+    """A handoff envelope 'has records' when at least one immediate
+    subdirectory carries a meta.yaml. Protocol DOCS living in the same
+    directory (core/handoffs/HANDOFF-*.md, README.md) are plain files and
+    never count."""
+    if not os.path.isdir(path):
+        return False
+    for entry in os.listdir(path):
+        if os.path.isfile(os.path.join(path, entry, "meta.yaml")):
+            return True
+    return False
+
+
+def handoffs_dir(root):
+    """Resolve the handoff envelope. Returns (path, ambiguous).
+
+    The fork this sensor grew up on keeps records at `handoffs/`; the shipped
+    template's protocol README instructs instances to create them at
+    `core/handoffs/<YYYY-MM-DD>-<slug>/`, and the /handoff skill names both
+    layouts ("the project's `handoffs/` directory -- `core/handoffs/` on
+    projects that keep it there"). This sensor hardwired the fork path, so on
+    every docs-following instance it scanned an empty location and went
+    INCONCLUSIVE (reported live 2026-08-04, a LAMPS T1 lock session).
+
+    Resolution is by CONTENT, not preference: the candidate holding at least
+    one record folder wins. Records in BOTH is a real defect state --
+    (first, True) so callers refuse loudly instead of silently scanning one
+    envelope of two. Records in NEITHER falls back to the first candidate
+    that exists on disk (empty-envelope reporting keeps its old shape), then
+    to the fork path."""
+    cands = [os.path.join(root, "handoffs"),
+             os.path.join(root, "core", "handoffs")]
+    with_records = [c for c in cands if _envelope_has_records(c)]
+    if len(with_records) == 2:
+        return with_records[0], True
+    if with_records:
+        return with_records[0], False
+    for c in cands:
+        if os.path.isdir(c):
+            return c, False
+    return cands[0], False
+
+
 def validate_split(before_text, stub_text, root, parts_texts=None, cite_files=None):
     """Return a list of violation strings ([] = integral). parts_texts/cite_files
     let the self-test inject content without disk; runtime mode reads from `root`."""
@@ -319,12 +381,24 @@ def validate_split(before_text, stub_text, root, parts_texts=None, cite_files=No
         elif anchor not in anchor_multiset(ptext):
             violations.append("redirect-map.anchors #%s not an anchor in %s" % (anchor, part))
 
-    # 3. citations: raw/ + handoffs/ line-numbered citations covered by lines map
+    # 3. citations: raw/ + the RESOLVED handoff envelope's line-numbered
+    #    citations covered by the lines map. The envelope is resolved by
+    #    content via handoffs_dir() -- the old hardwired ("raw", "handoffs")
+    #    tuple scanned zero handoff files on template-layout instances
+    #    (records at core/handoffs/), so this leg passed vacuously there.
+    #    Records in BOTH envelopes is a defect state, named loudly as a
+    #    violation rather than silently scanning one envelope of two.
     basename = os.path.basename(stub_path_global or "F.md")
     if cite_files is None:
+        hdir, env_ambiguous = handoffs_dir(root)
+        if env_ambiguous:
+            violations.append(
+                "handoff records found in BOTH handoffs/ and core/handoffs/ -- "
+                "two live envelopes is a defect state (records must live in "
+                "exactly one); consolidate before the citation scan can be "
+                "trusted")
         cite_files = {}
-        for sub in ("raw", "handoffs"):
-            d = os.path.join(root, sub)
+        for d in (os.path.join(root, "raw"), hdir):
             if not os.path.isdir(d):
                 continue
             for dr, _ds, fs in os.walk(d):
@@ -362,7 +436,9 @@ def anchor_set_empty(before_text):
 def run(stub_path, before_ref="HEAD", root=None):
     global stub_path_global
     stub_path_global = stub_path
-    root = root or os.getcwd()
+    # Family root standard: default to the repo containing this deploy/ dir,
+    # never the caller's CWD (see REPO_ROOT above).
+    root = os.path.abspath(root) if root else REPO_ROOT
     try:
         with open(stub_path, "r", encoding="utf-8-sig") as fh:
             stub_text = fh.read()
@@ -553,6 +629,55 @@ def self_test():
     case("A1.2 explicit {#id} and <a id> join the anchor set",
          set(anchor_multiset(_before_ids)) >= {"money", "tax"})
     stub_path_global = prev_stub
+
+    # -- envelope resolution for the citation leg (fixture style follows
+    #    check-loop-state.py run_self_test "(1a3) envelope resolution"):
+    #    on-disk tempdir roots, cite_files=None so the real scan runs.
+    import shutil
+    import tempfile
+
+    def _cite_root(record_dirs, citer_rel=None):
+        d = tempfile.mkdtemp(prefix="csplit-env-")
+        for rel in record_dirs:
+            p = os.path.join(d, *rel.split("/"))
+            os.makedirs(p, exist_ok=True)
+            with open(os.path.join(p, "meta.yaml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("status: open\n")
+        if citer_rel:
+            cp = os.path.join(d, *citer_rel.split("/"))
+            with open(cp, "w", encoding="utf-8") as fh:
+                fh.write(_CITER)
+        return d
+
+    # template layout: a citing record at core/handoffs/ must be SEEN by the
+    # citation leg -- the old ("raw", "handoffs") tuple covered zero handoff
+    # files here, so an uncovered citation passed vacuously.
+    d = _cite_root(["core/handoffs/2026-08-01-h"],
+                   citer_rel="core/handoffs/2026-08-01-h/notes.md")
+    try:
+        stub_noline_env = _STUB_OK.replace('lines:\n  "6": F-b.md\n',
+                                           "lines: {}\n")
+        v = validate_split(_BEFORE, stub_noline_env, d,
+                           parts_texts=_parts_ok(), cite_files=None)
+        case("template-layout core/handoffs citer is scanned (uncovered trips)",
+             any("uncovered line citation" in x for x in v))
+        v = validate_split(_BEFORE, _STUB_OK, d,
+                           parts_texts=_parts_ok(), cite_files=None)
+        case("template-layout citer covered by the lines map -> clean", v == [])
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+    # records in BOTH envelopes: loud defect naming both, never a silent
+    # single-envelope scan.
+    d = _cite_root(["handoffs/2026-08-01-a", "core/handoffs/2026-08-01-b"])
+    try:
+        v = validate_split(_BEFORE, _STUB_OK, d,
+                           parts_texts=_parts_ok(), cite_files=None)
+        case("records in BOTH envelopes -> loud violation naming both",
+             any("BOTH handoffs/ and core/handoffs/" in x for x in v))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
     if failed:
         print("check-split self-test: FAIL (%d/%d)" % (failed, total))

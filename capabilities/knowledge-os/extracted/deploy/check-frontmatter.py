@@ -43,12 +43,23 @@ before parse-first landed. With PyYAML absent the heuristic still runs, its find
 unverified so the briefing layer cannot state it as fact.
 
 Usage:
-  check-frontmatter.py [PATH ...]   scan files/dirs (default: raw wiki roadmap receipts)
+  check-frontmatter.py [PATH ...]   scan files/dirs (default: raw wiki roadmap receipts
+                                    under the resolved root)
+  check-frontmatter.py --root DIR   resolve the default corpus dirs under DIR. Default
+                                    root when absent = the parent of the deploy/ dir
+                                    holding this script (family root standard, silence-
+                                    sweep 2026-08-04) -- NEVER the CWD, so a wrong
+                                    working directory can no longer make the sensor
+                                    answer about a tree it never located.
   check-frontmatter.py --self-test  run embedded fixtures (CL-3); exit 0 if all pass
   check-frontmatter.py --strict     exit 1 on any finding (not just hard refusals)
 
 Exit codes: 0 = clean (or findings, degrade mode) | 1 = a hard refusal (schema skew),
-or any finding under --strict, or a self-test failure.
+or any finding under --strict, or a self-test failure | 2 = INCONCLUSIVE -- no PATH
+args and NONE of the subject corpus dirs (raw/ wiki/ roadmap/ receipts/) exist under
+the resolved root: the sensor never located its tree, so it issues NO verdict (fail-
+honest, silence-sweep S3). Holds under --strict too -- an unlocated tree is never a
+pass AND never a finding-fail; it is its own condition.
 """
 
 import os
@@ -61,6 +72,12 @@ try:
     import yaml as _yaml_opt
 except ImportError:  # pragma: no cover
     _yaml_opt = None
+
+# Family root standard (silence-sweep 2026-08-04; same pattern as check-loop-state.py):
+# the default scan root is the parent of the deploy/ dir holding this script -- never
+# the CWD. A caller may override with --root DIR.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_ROOT = os.path.dirname(_HERE)
 
 # The derivation-block schema version this sensor enforces. Matches the frozen
 # memory-engine-v3-spec.md §5 (`schema_version: 3.2`). Skew is the one hard refusal.
@@ -87,11 +104,18 @@ SCHEMA_VERSION = "3.2"
 #     passes NO declared_origin -- verified 2026-07-23: a raw event declaring
 #     `origin: human` registered as `corpus`). Recognizing the KEY silences schema
 #     noise; it does not, and must never, make the VALUE load-bearing.
+#   canonical -- doc<->sensor key conflict (drift cluster #3, silence-sweep
+#     2026-08-04; live-confirmed on the Ultrapak instance 2026-08-05): wiki-schema
+#     REQUIRES the key on flagged raw files and the sibling check-knowledge-debt.py
+#     ENFORCES it (presence + dangling-target checks live there), while this sensor
+#     flagged it as unknown -- a schema-compliant raw drew a permanent WARN.
+#     Recognized here as optional ONLY: requiredness stays check-knowledge-debt's
+#     job; this entry exists solely to stop the false unknown-key WARN.
 RAW_KEYS = {
     "required": {"source", "date", "tags", "summary"},
     "optional": {"domain", "compile", "informed_by", "decision_method",
                  "supersedes", "amends", "informs", "type", "related_dispatch",
-                 "topics", "author", "origin"},
+                 "topics", "author", "origin", "canonical"},
 }
 WIKI_KEYS = {
     "required": {"title", "domain", "scope", "last_updated", "sources", "confidence"},
@@ -547,6 +571,17 @@ bogus_key: x
 body
 """
 
+_RAW_CANONICAL = """---
+source: alice
+date: 2026-06-20
+tags: [systems, schema]
+summary: One line.
+compile: false
+canonical: wiki/systems/x.md
+---
+body
+"""  # wiki-schema-mandated canonical: key -- must draw NO unknown-key finding
+
 _VALID_DERIV = """---
 title: Schema foundations
 domain: systems
@@ -589,6 +624,8 @@ def self_test():
         ("valid raw",        _VALID_RAW,        "raw/x.md",          0, 0),
         ("raw missing key",  _RAW_MISSING,      "raw/x.md",          1, 0),
         ("raw unknown key",  _RAW_UNKNOWN,      "raw/x.md",          1, 0),
+        # drift cluster #3 fix: a schema-compliant canonical: raw is exactly clean
+        ("raw canonical key",_RAW_CANONICAL,    "raw/x.md",          0, 0),
         ("valid derivation", _VALID_DERIV,      "wiki/systems/x.md", 0, 0),
         ("deriv skew",       _DERIV_SKEW,       "wiki/systems/x.md", 1, 1),
         ("deriv missing key",_DERIV_MISSING,    "wiki/systems/x.md", 1, 0),
@@ -644,6 +681,37 @@ def self_test():
     if not bom_hit:
         failed += 1
     print("  %s %-18s flatten=%s (exp=True)" % ("ok " if bom_hit else "XX ", "flatten-with-bom", bom_hit))
+
+    # FAIL-HONEST tree-absent cases (silence-sweep S3; tempdir fixture pattern per
+    # check-loop-state.py's (1a3) envelope-resolution cases): a root holding NONE of the
+    # corpus dirs must be INCONCLUSIVE exit 2 -- plain AND --strict alike (the old
+    # behavior was exit 0 in both, a CI gate that gated nothing from a wrong CWD) --
+    # while a root holding an existing-but-empty corpus dir stays a LOCATED tree
+    # (exit 0, unchanged behavior).
+    import shutil
+    import tempfile
+    d = tempfile.mkdtemp(prefix="cfm-root-")
+    try:
+        for name, argv, exp in [
+            ("tree-absent",        ["check-frontmatter.py", "--root", d], 2),
+            ("tree-absent-strict", ["check-frontmatter.py", "--strict", "--root", d], 2),
+        ]:
+            total += 1
+            rc = main(argv)
+            ok = (rc == exp)
+            if not ok:
+                failed += 1
+            print("  %s %-18s exit=%s (exp=%d)" % ("ok " if ok else "XX ", name, rc, exp))
+        os.makedirs(os.path.join(d, "raw"))
+        total += 1
+        rc = main(["check-frontmatter.py", "--root", d])
+        ok = (rc == 0)
+        if not ok:
+            failed += 1
+        print("  %s %-18s exit=%s (exp=0) -- empty-but-present corpus dir stays located"
+              % ("ok " if ok else "XX ", "tree-located-empty", rc))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
     # v3.0-82 parse-first regression fixtures: the two real false-positive shapes from the
     # 2026-07-29 sweep. Both are LEGAL YAML whose prose carries >= FLATTEN_MIN_EXTRA_KEYS
@@ -793,17 +861,38 @@ def self_test():
     return 0
 
 
+CORPUS_DIRS = ("raw", "wiki", "roadmap", "receipts")
+
+
 def main(argv):
     args = argv[1:]
     if "--self-test" in args:
         return self_test()
     strict = "--strict" in args
+    # --root DIR: family root standard (see DEFAULT_ROOT above). The flag's value is
+    # consumed here so the positional-path collection below never mistakes it for a scan
+    # target.
+    root = DEFAULT_ROOT
+    if "--root" in args:
+        i = args.index("--root")
+        if i + 1 >= len(args) or args[i + 1].startswith("--"):
+            print("check-frontmatter: --root requires a directory argument")
+            return 2
+        root = os.path.abspath(args[i + 1])
+        args = args[:i] + args[i + 2:]
     paths = [a for a in args if not a.startswith("--")]
     if not paths:
-        paths = [d for d in ("raw", "wiki", "roadmap", "receipts") if os.path.isdir(d)]
+        paths = [os.path.join(root, d) for d in CORPUS_DIRS
+                 if os.path.isdir(os.path.join(root, d))]
         if not paths:
-            print("check-frontmatter: no corpus dirs (raw/ wiki/ roadmap/ receipts/) present; nothing to scan.")
-            return 0
+            # FAIL-HONEST (silence-sweep S3): the sensor did not locate its tree, so it
+            # must not answer -- not "clean" (the old exit-0 lie, --strict included) and
+            # not a finding-fail. INCONCLUSIVE, exit 2, in every mode.
+            print("check-frontmatter: INCONCLUSIVE -- none of the corpus dirs "
+                  "(%s) exist under resolved root %s; the sensor never located its "
+                  "tree, so no verdict is issued (exit 2; --strict does not change this)."
+                  % ("/ ".join(CORPUS_DIRS) + "/", root))
+            return 2
     return scan(paths, strict=strict)
 
 

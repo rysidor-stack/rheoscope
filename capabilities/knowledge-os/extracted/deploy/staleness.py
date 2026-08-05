@@ -66,6 +66,9 @@ every event and the census is all-UNROUTED -- the correct pre-engine state.
 
 Usage:
   staleness.py                      run conservation census over the live tree (raw/, wiki/, receipts/)
+                                    under the DEFAULT root: the parent of the deploy/ dir this
+                                    script lives in -- deterministic, never the caller's CWD
+  staleness.py --root DIR           census the instance rooted at DIR instead of the default root
   staleness.py --report             emit the census + holes as JSON (preflight delegation)
   staleness.py --strict             exit 1 if any WARN (e.g. PENDING age > PARTIAL_CANDIDATE_DAYS)
   staleness.py --self-test          run embedded fixtures (classify per-class + ACC-2 holes)
@@ -75,7 +78,9 @@ Usage:
 
 Exit codes: 0 = clean / PENDING reported (work queue) | 1 = conservation FAIL
   (new journal hole, non-total partition, orphan claim) or a WARN under --strict, or a
-  self-test failure | 2 = inconclusive (PyYAML unavailable; cannot parse the receipt journal).
+  self-test failure | 2 = inconclusive (PyYAML unavailable; cannot parse the receipt
+  journal -- OR the subject tree was never located: no raw/ directory exists under the
+  resolved root, so there is nothing this sensor can honestly vouch for).
 """
 
 import hashlib
@@ -97,10 +102,53 @@ except ImportError:  # pragma: no cover
     yaml = None
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_KNOWN_HOLES_FILE = os.path.join(_HERE, "known-holes.yaml")
-_ENTITIES_FILE = os.path.join(_HERE, "entities.yaml")
+
+# S1 (audited remediation, 2026-08-05): the census root used to be os.getcwd() -- run
+# from an empty directory, this sensor printed the documented green ("RESULT: PASS --
+# 0 event(s)...") over a tree it never located. The default root is now DETERMINISTIC:
+# the parent of the deploy/ directory this script lives in (this checkout's instance
+# root), never the caller's CWD. --root DIR points the census at another instance.
+_DEFAULT_ROOT = os.path.dirname(_HERE)
+
+# S6 (audited remediation, 2026-08-05): entities.yaml is resolved ROOT-RELATIVE
+# (root/deploy/entities.yaml, via _entities_file below), matching routing-census.py's
+# convention -- before this fix the two sensors read DIFFERENT files for the same name
+# whenever the census root was not this checkout (this one script-relative from _HERE,
+# routing-census root-relative). _ENTITIES_FILE survives purely as an OVERRIDE hook:
+# the R-3 self-test fixtures monkeypatch it to a tempdir file; when it is None (the
+# default), resolution is root-relative.
+_ENTITIES_FILE = None
 _RESIDUE_FILE = os.path.join(
     _HERE, "test-fixtures", "memory-engine", "consumed-sets", "residue-p1.yaml")
+
+
+def _entities_file(root):
+    """Resolve entities.yaml for `root`: the _ENTITIES_FILE override (self-test hook)
+    when set, else root/deploy/entities.yaml (routing-census.py's convention). Returns
+    None when neither is resolvable (no override, no root) -- callers treat None the
+    same as a missing file (degrade, never crash)."""
+    if _ENTITIES_FILE is not None:
+        return _ENTITIES_FILE
+    if root is None:
+        return None
+    return os.path.join(root, "deploy", "entities.yaml")
+
+
+def _subject_tree_missing(root):
+    """S1 fail-honest gate: the census's subject tree is raw/ (the ledger substrate;
+    receipts/ and wiki/ legitimately start absent on a fresh instance and every loader
+    degrades to empty for them, but a root with no raw/ directory is a tree the sensor
+    NEVER FOUND, not a tree with zero events). Returns a plainly-worded reason string
+    when the subject tree is absent under `root`, else None. An EXISTING-but-empty
+    raw/ is NOT missing -- that is a fresh instance with zero events, a legitimate
+    PASS."""
+    raw_root = os.path.join(root, "raw")
+    if not os.path.isdir(raw_root):
+        return ("subject tree not located under root %s -- the raw/ directory does "
+                "not exist (looked for %s). A census over a tree that was never "
+                "found proves nothing; pass --root DIR to point this sensor at a "
+                "real instance root." % (root, raw_root))
+    return None
 
 
 def _load_sibling(basename, alias):
@@ -603,12 +651,19 @@ def load_receipts(root):
 
 
 def load_known_holes(root):
-    """Merge entities.yaml `known_holes:` (if present) with the sibling known-holes.yaml."""
+    """Merge entities.yaml `known_holes:` (if present) with deploy/known-holes.yaml --
+    BOTH resolved under `root` (root/deploy/...). S1/S6 remediation (2026-08-05): this
+    function took a root argument and never read it -- both files resolved
+    script-relative, so a census pointed at another instance would have consulted THIS
+    checkout's allowlist while counting holes in a DIFFERENT tree. Under the default
+    root (the parent of this script's deploy/) the resolved paths are byte-identical
+    to the old script-relative ones, so the live-tree result is unchanged. The
+    _ENTITIES_FILE override hook (self-test) still wins for the entities half."""
     holes = set()
     if yaml is None:
         return holes
-    for f in (_ENTITIES_FILE, _KNOWN_HOLES_FILE):
-        if os.path.isfile(f):
+    for f in (_entities_file(root), os.path.join(root, "deploy", "known-holes.yaml")):
+        if f and os.path.isfile(f):
             try:
                 data = yaml.safe_load(_read(f)) or {}
                 for h in (data.get("known_holes") or []):
@@ -618,7 +673,7 @@ def load_known_holes(root):
     return holes
 
 
-def _load_alias_map(path=None):
+def _load_alias_map(path=None, root=None):
     """R-3 (alias-aware routing): parse entities.yaml's governed vocabulary into
     {alias_lower: entity_name_lower}, so load_matches can route an event tagged with a
     registered ALIAS (e.g. `gateway-ops`) to a view that subscribes to the ENTITY
@@ -626,8 +681,9 @@ def _load_alias_map(path=None):
     contract as load_known_holes above: yaml unavailable, or the file missing /
     unreadable / malformed, never crashes the census -- degrades to ({}, []), and
     routing falls back to literal-tag-only matching (today's behavior, unchanged).
-    `path` defaults to _ENTITIES_FILE; overridable so the self-test can point this at a
-    fixture file without touching the real repo entities.yaml.
+    `path` (explicit fixture file, the self-test hook) wins outright; else the file is
+    resolved via _entities_file(root) -- root-relative (S6), with the _ENTITIES_FILE
+    monkeypatch override still honoured. Neither resolvable -> the same empty degrade.
 
     COLLISION RULE: entities.yaml's own header says each alias resolves to EXACTLY ONE
     entity. If an alias is claimed by two different entities (including an alias that
@@ -637,8 +693,8 @@ def _load_alias_map(path=None):
     (alias_map, collisions) where collisions is a sorted list of human-readable strings
     for run_census to surface as census warnings (never a hard failure -- a governed-
     vocabulary defect, not a conservation problem)."""
-    path = _ENTITIES_FILE if path is None else path
-    if yaml is None or not os.path.isfile(path):
+    path = _entities_file(root) if path is None else path
+    if yaml is None or path is None or not os.path.isfile(path):
         return {}, []
     try:
         data = yaml.safe_load(_read(path)) or {}
@@ -747,7 +803,7 @@ def load_matches(root, ledger):
             if subs:
                 view_subs[rel] = subs
     matches = {}
-    alias_map, _collisions = _load_alias_map()
+    alias_map, _collisions = _load_alias_map(root=root)
     for e, meta in ledger.items():
         m = set()
         ents = _norm_entities(meta.get("tags"))
@@ -968,7 +1024,7 @@ def run_census(root, now=None, enlarged=True):
     # get the collisions list back out for warning surfacing below, without changing
     # load_matches's return shape (still plain {event: {view...}}) or its sole call
     # site -- the smaller diff over threading collisions through load_matches's return.
-    _, _alias_collisions = _load_alias_map()
+    _, _alias_collisions = _load_alias_map(root=root)
 
     # B-3 (steady-state-ops, 2026-07-09): project the compile-v2 JSON run
     # journal on top of the legacy-prose bootstrap -- AUGMENTS matches/journal,
@@ -1080,6 +1136,15 @@ def _exit_code(report, strict=False):
 def run(root, report_json=False, strict=False):
     if yaml is None:
         print("RESULT: INCONCLUSIVE -- PyYAML unavailable; cannot parse the receipt journal")
+        return 2
+    # S1 fail-honest gate (audited remediation, 2026-08-05): if the subject tree was
+    # never located (no raw/ under the resolved root), say so plainly and exit 2 --
+    # the sensor must never print PASS over a tree it never found. An existing-but-
+    # empty raw/ passes this gate and legitimately reports PASS with 0 events (a
+    # fresh instance's true state). Exit 2 reuses the established inconclusive code.
+    missing = _subject_tree_missing(root)
+    if missing is not None:
+        print("RESULT: INCONCLUSIVE -- %s" % missing)
         return 2
     # P5 atomic flip (adjudication 6): the standard census/load path runs ENLARGED
     # by default now -- explicit here for readability (run_census's own default
@@ -2137,6 +2202,113 @@ def self_test():
     case("--help returns 0, prints usage, and does not run the live census",
          rc_help == 0 and "usage" in out_help.lower() and "RESULT:" not in out_help)
 
+    # --- S1/S6 (audited remediation, 2026-08-05): root resolution + the fail-honest
+    # empty state. Inline-tempdir fixtures, the same pattern check-loop-state.py's
+    # (1a3) envelope-resolution cases use: build the layout, run, assert, rmtree.
+
+    # (S1a) ABSENT raw/ under the resolved root -> INCONCLUSIVE, exit 2, naming the
+    # root -- never the documented green over a tree the sensor never located.
+    base_absent = tempfile.mkdtemp(prefix="staleness-s1-absent-")
+    try:
+        buf_s1a = io.StringIO()
+        with contextlib.redirect_stdout(buf_s1a):
+            rc_s1a = run(base_absent)
+        out_s1a = buf_s1a.getvalue()
+        case("(S1a) run() over a root with NO raw/ dir exits 2 (inconclusive), never 0",
+             rc_s1a == 2)
+        case("(S1a) the result line is INCONCLUSIVE and NAMES the resolved root",
+             "RESULT: INCONCLUSIVE" in out_s1a and base_absent in out_s1a
+             and "raw/" in out_s1a)
+        case("(S1a) 'tree not found' never prints PASS", "RESULT: PASS" not in out_s1a)
+        buf_s1r = io.StringIO()
+        with contextlib.redirect_stdout(buf_s1r):
+            rc_s1r = main(["staleness.py", "--root", base_absent])
+        case("(S1a) the CLI --root path hits the same gate (INCONCLUSIVE, exit 2)",
+             rc_s1r == 2 and "RESULT: INCONCLUSIVE" in buf_s1r.getvalue())
+        buf_s1b = io.StringIO()
+        with contextlib.redirect_stdout(buf_s1b):
+            rc_s1b = main(["staleness.py", "--root", base_absent,
+                           "--baseline-write", os.path.join(base_absent, "b.json")])
+        case("(S1a) --baseline-write over an unlocated tree is also INCONCLUSIVE "
+             "(a baseline of nothing is not a baseline)",
+             rc_s1b == 2 and "RESULT: INCONCLUSIVE" in buf_s1b.getvalue()
+             and not os.path.isfile(os.path.join(base_absent, "b.json")))
+    finally:
+        shutil.rmtree(base_absent, ignore_errors=True)
+
+    # (S1b) EXISTING-but-empty raw/ (a fresh instance, zero events) legitimately
+    # keeps the OLD shape: PASS with 0 events, exit 0 -- the gate distinguishes
+    # "tree with nothing in it yet" from "tree never found".
+    base_empty = tempfile.mkdtemp(prefix="staleness-s1-empty-")
+    try:
+        os.makedirs(os.path.join(base_empty, "raw"))
+        buf_s1e = io.StringIO()
+        with contextlib.redirect_stdout(buf_s1e):
+            rc_s1e = run(base_empty)
+        out_s1e = buf_s1e.getvalue()
+        case("(S1b) an EXISTING-but-empty raw/ still reports the old shape: "
+             "PASS, 0 event(s), exit 0 (fresh instance, not an unlocated tree)",
+             rc_s1e == 0 and "RESULT: PASS" in out_s1e and "0 event(s)" in out_s1e)
+    finally:
+        shutil.rmtree(base_empty, ignore_errors=True)
+
+    # (S1c) --root argument validation: same INCONCLUSIVE-on-bad-usage contract as
+    # check-loop-state.py (missing value / not a directory -> exit 2, named reason).
+    buf_s1c = io.StringIO()
+    with contextlib.redirect_stdout(buf_s1c):
+        rc_s1c = main(["staleness.py", "--root"])
+    case("(S1c) --root with no value -> INCONCLUSIVE exit 2",
+         rc_s1c == 2 and "INCONCLUSIVE" in buf_s1c.getvalue())
+    buf_s1d = io.StringIO()
+    with contextlib.redirect_stdout(buf_s1d):
+        rc_s1d = main(["staleness.py", "--root",
+                       os.path.join(tempfile.gettempdir(), "staleness-s1-no-such-dir")])
+    case("(S1c) --root pointing at a non-directory -> INCONCLUSIVE exit 2",
+         rc_s1d == 2 and "not a directory" in buf_s1d.getvalue())
+
+    # (S6) entities.yaml resolves ROOT-relative (root/deploy/entities.yaml, the
+    # routing-census.py convention) with NO monkeypatch -- proving the census pointed
+    # at another instance reads THAT instance's vocabulary, not this checkout's.
+    base_s6 = tempfile.mkdtemp(prefix="staleness-s6-entroot-")
+    try:
+        case("(S6) _entities_file resolves root-relative, matching routing-census",
+             _entities_file(base_s6) == os.path.join(base_s6, "deploy", "entities.yaml"))
+        _write(base_s6, "raw/e1.md",
+               "---\nsource: session\ndate: 2026-01-01\ntags: [foometa]\n---\nbody\n")
+        _write(base_s6, "wiki/v.md",
+               "# --- derivation (engine-managed; strip region) ---\n"
+               "schema_version: 3.2\n"
+               "view: topic\n"
+               "entities: [foo]\n"
+               "subscribes:\n"
+               "  entities: [foo]\n"
+               "  corpus: []\n"
+               "# --- /derivation ---\n")
+        _write(base_s6, "deploy/entities.yaml",
+               "entities:\n"
+               "  foo:\n"
+               "    aliases: [foometa]\n"
+               "    views: [wiki/v.md]\n"
+               "known_holes:\n"
+               "  - receipts/entities-listed-hole.md\n")
+        led_s6 = load_ledger(base_s6, enlarged=False)
+        matches_s6 = load_matches(base_s6, led_s6)
+        case("(S6) load_matches routes via root/deploy/entities.yaml with NO "
+             "_ENTITIES_FILE override in play (alias 'foometa' -> entity 'foo')",
+             "wiki/v.md" in matches_s6.get("raw/e1.md", set()))
+        # (S6/known-holes) load_known_holes finally USES its root argument: both the
+        # root's deploy/known-holes.yaml and the root entities.yaml known_holes merge.
+        _write(base_s6, "deploy/known-holes.yaml",
+               "known_holes:\n  - receipts/legacy-hole.md\n")
+        kh_s6 = load_known_holes(base_s6)
+        case("(S6) load_known_holes reads the ROOT's deploy/known-holes.yaml "
+             "(the root argument is finally load-bearing)",
+             "receipts/legacy-hole.md" in kh_s6)
+        case("(S6) load_known_holes merges known_holes from the ROOT's entities.yaml",
+             "receipts/entities-listed-hole.md" in kh_s6)
+    finally:
+        shutil.rmtree(base_s6, ignore_errors=True)
+
     if failed:
         print("staleness self-test: FAIL (%d/%d)" % (failed, total))
         return 1
@@ -2155,19 +2327,44 @@ def _arg_value(args, flag):
 def main(argv):
     args = argv[1:]
     if "-h" in args or "--help" in args:
-        print("usage: staleness.py [--self-test | --baseline-write PATH | --baseline-check PATH | --report | --strict]")
+        print("usage: staleness.py [--root DIR] [--self-test | --baseline-write PATH | --baseline-check PATH | --report | --strict]")
+        print("  --root DIR               instance root to census (default: the parent of this")
+        print("                           script's deploy/ dir -- deterministic, never the CWD)")
         print("  --self-test              offline self-test (temp dirs only, no repo access)")
         print("  --baseline-write PATH    mint the enlarged-ledger census baseline")
         print("  --baseline-check PATH    diff the census against a committed baseline")
         print("  --report                 emit the census as JSON")
         print("  --strict                 WARNs escalate to exit 1")
-        print("  (default, no args)       live read-only census over raw/ receipts/ wiki/ of the CWD")
+        print("  (default, no args)       live read-only census over raw/ receipts/ wiki/ under the resolved root")
         return 0
     if "--self-test" in args:
         return self_test()
-    root = os.getcwd()
+    # S1 (audited remediation, 2026-08-05): root resolution is --root DIR, else the
+    # DETERMINISTIC default (_DEFAULT_ROOT, the parent of this script's deploy/ dir)
+    # -- never os.getcwd(), which let an empty working directory read as a clean tree.
+    # Same flag shape and INCONCLUSIVE-on-bad-usage contract as check-loop-state.py.
+    if "--root" in args:
+        root_arg = _arg_value(args, "--root")
+        if root_arg is None:
+            print("RESULT: INCONCLUSIVE -- --root requires a directory")
+            return 2
+        root = os.path.abspath(root_arg)
+        if not os.path.isdir(root):
+            print("RESULT: INCONCLUSIVE -- --root is not a directory: %s" % root)
+            return 2
+    else:
+        root = _DEFAULT_ROOT
 
     baseline_write = _arg_value(args, "--baseline-write")
+    baseline_check = _arg_value(args, "--baseline-check")
+    # S1 fail-honest gate for the baseline surfaces too: a baseline minted or checked
+    # over a tree that was never located is not a baseline of anything. run() carries
+    # its own copy of this gate for the census path (and for programmatic callers).
+    if baseline_write is not None or baseline_check is not None:
+        missing = _subject_tree_missing(root)
+        if missing is not None:
+            print("RESULT: INCONCLUSIVE -- %s" % missing)
+            return 2
     if baseline_write is not None:
         try:
             payload = write_baseline(root, baseline_write)
@@ -2178,7 +2375,6 @@ def main(argv):
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
-    baseline_check = _arg_value(args, "--baseline-check")
     if baseline_check is not None:
         try:
             ok, diffs = check_baseline(root, baseline_check)

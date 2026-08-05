@@ -1,6 +1,6 @@
 ---
 name: standing-loop
-description: The scheduled write-side session that runs the knowledge housekeeping end to end — sweep, decision-inbox regeneration, and a compile-on-branch when raw content is waiting — leaving the operator only yes/no absorption moments. Phase B of the reversible-cutover runbook — everything on a branch, nothing merges itself.
+description: The scheduled write-side session that runs the knowledge housekeeping end to end — sweep, decision-inbox regeneration, and a compile-on-branch when raw content is waiting — leaving the operator only yes/no absorption moments. Phase B discipline — everything on a branch, nothing merges itself.
 ---
 
 # /standing-loop — The Write-Side Autopilot (Phase B: everything on a branch, nothing merges itself)
@@ -40,14 +40,38 @@ Before ANY run does work, three things are checked mechanically. Any one missing
 reports "not armed" and exits without writing anything — not even a report artifact.
 
 1. **The rollback rehearsal receipt exists** — a file matching
-   `harness-v3.0/rollback-rehearsal-receipt-*.md`. For this fork, that's
-   `harness-v3.0/rollback-rehearsal-receipt-2026-07-21.md`: two rehearsed rounds (a clean abort
-   and a crash-recovery abort) against a scratch clone, both restoring the baseline
-   byte-identical — 87 ms and 444 ms respectively. No receipt, no run.
+   `deploy/evidence/rollback-rehearsal-receipt-*.md`, recording a rehearsal THIS instance
+   actually ran. No receipt, no run. The rehearsal, conducted on a **scratch clone of this
+   project** (never the live tree), is three rounds:
+   - **Round 1 — clean abort:** create a `standing-loop/compile-<date>` branch, commit junk on
+     it, delete it (`git branch -D`); verify the baseline is byte-identical
+     (`git status --porcelain` empty, `git rev-parse HEAD` unchanged).
+   - **Round 2 — crash-recovery abort:** same branch plus uncommitted damage in the working
+     tree; recover with `git checkout -- .` + `git clean -fd` + switch away + `git branch -D`;
+     verify as in round 1.
+   - **Round 3 — post-merge revert:** merge the branch, then `git revert -m 1 <merge-sha>
+     --no-edit`; verify the content tree matches the pre-merge baseline byte-for-byte.
+   The receipt records the date, the scratch clone's path, and each round's actual commands
+   and verification output. A receipt not backed by a rehearsal this instance ran is
+   **fabrication** — its evidence comes from the run itself, and the arming review checks that
+   it names this project's clone. (The dev fork's receipt and its millisecond timings are the
+   fork's own; they prove nothing about your instance and must never be copied.)
 2. **A committed operator authorization artifact exists** — `deploy/evidence/operator-standing-
    loop-*.md`, carrying the operator's verbatim activation quote (the HUMAN-GATE pattern: a
    recorded, quoted "go ahead," never standing memory of one). It must be committed — predating
    the run — so a same-run forgery can't satisfy it. No artifact, no run.
+   **Minting it is a first-need, in-session ceremony — never operator homework** (same pattern
+   as the compile skill's dispatch-grant question): at arming time, ask the operator ONE plain
+   question naming what arming means — scheduled unattended write-side runs; compile on
+   disposable branches; nothing merges itself; the supervised first run (item 3). On the yes,
+   YOU mint `deploy/evidence/operator-standing-loop-arming-<date>.md` (it matches the glob
+   above) carrying the verbatim quote, the date, and the item-3 first-run commitment; commit
+   it; proceed. Arming is a SEPARATE consent from the cross-vendor dispatch grant the loop's
+   compile step rides — if the project has no dispatch grant yet, the compile skill's own
+   first-contact question fires at the same moment: two consents, two artifacts, each in the
+   operator's own words. Arming never silently inherits, and never fabricates, either one. A
+   no is recorded as a dated decision (the `standing-loop-arming-review` register row keeps it
+   dated).
 3. **The first armed run is supervised** — the same operator authorization artifact from item 2
    must also record that the operator will watch that first run live, or review its complete log
    immediately after, before the schedule is left to take over unattended on later ticks. A
@@ -74,7 +98,10 @@ unarmed-by-default is the same shipping invariant with the same per-instance gra
    folders at `status: answered, close: pending` (a T1 headless close leg died) or
    `status: open` with a `packet-round-N.md` but no `output-round-N.md` (an answer leg
    died). For each, re-dispatch the leg per `/handoff` Step 0 (bridge transport; the
-   standing dispatch grant covers it — no per-send approval). A close deliberation that
+   standing handoff dispatch grant covers it — no per-send approval. No grant on file →
+   do NOT dispatch and do not ask, nobody is present: the leg stays parked with the reason
+   in the run summary, and the next interactive `/handoff` asks its one grant question). A
+   close deliberation that
    lands here CANNOT take the operator's lock yes (nobody is present): leave the
    deliverable in the folder, clear nothing — the next interactive `/handoff` invocation
    surfaces it for the single yes. A leg that fails again simply stays parked; report it
@@ -119,13 +146,13 @@ setting, no repeated schedule, no accumulated trust makes the loop merge on its 
 
 Exactly the rehearsed procedure, no improvisation: `git branch -D` for a clean abort, or
 `git checkout -- .` + `git clean -fd` + branch switch + `git branch -D` when the branch also
-carries uncommitted damage — rehearsed at 87 ms and 444 ms respectively (see the receipt cited
-above). If census or `/doctor` comes back red on the branch at any point, the loop itself
+carries uncommitted damage — rounds 1 and 2 of the rehearsal your own receipt records
+(activation gate item 1). If census or `/doctor` comes back red on the branch at any point, the loop itself
 deletes the branch and reports the failure — fail-closed. A broken compile never sits around
 waiting to be absorbed by mistake; it is gone before the next tick, with the reason in the log.
 
-Post-merge recovery is a different case, rehearsed separately (round 3 of the receipt cited
-above): once a branch has actually been absorbed and only later found bad, there's no branch left
+Post-merge recovery is a different case, rehearsed separately (round 3 of the rehearsal):
+once a branch has actually been absorbed and only later found bad, there's no branch left
 to delete, so recovery is the rehearsed `git revert -m 1 <merge-sha> --no-edit` of the merge
 commit — content restored byte-for-byte, but the history stays append-only (the merge and its
 revert both remain in the log, rather than being erased). This is distinct from, not a
@@ -142,8 +169,7 @@ replacement for, the pre-merge branch deletion above.
   touching anything.
 - **Append-only-or-branch.** Every write this loop makes is either a new file, an append to a
   report artifact, or a commit on a disposable branch — never an in-place edit to truth on the
-  default branch. This mirrors the standing invariants in
-  `harness-v3.0/reversible-cutover-runbook.md` § "Standing invariants."
+  default branch. This is a standing invariant of this skill, and this section is its home.
 
 ## Scheduling recipe
 
@@ -174,8 +200,9 @@ ready to run; it is armed only by those two acts, never by installing it.
 /standing-loop is the scheduled counterpart to `/sweep` and `/compile`: `/sweep` reads and
 reports, `/compile` is the manual, interactive compile any session can invoke, and
 /standing-loop is what runs both of those (plus the decision inbox) unattended, on the schedule
-described above, stopping at a branch every time truth would change. It is Phase B of
-`harness-v3.0/reversible-cutover-runbook.md` — "compile on branch, human-merged" — relocated onto
-a timer instead of a session someone remembered to run. Phase C (standing autonomy, permanently
-gated) is a later, separately-gated step this skill does not take; nothing here merges, and
-nothing here should ever be asked to.
+described above, stopping at a branch every time truth would change. In the reversible-cutover
+model this harness grew up on, that is **Phase B** — "compile on branch, human-merged" —
+relocated onto a timer instead of a session someone remembered to run (Phase A is the same
+work run attended and interactively; Phase C, standing autonomy where merges need no human,
+is permanently gated and NOT a phase this skill takes). Nothing here merges, and nothing here
+should ever be asked to.

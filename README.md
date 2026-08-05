@@ -1,10 +1,10 @@
 ﻿# Rheoscope
 
-Rheoscope is a project harness. Wrap it around any project you can think of (a software product, a business, a research effort, a book) and AI does the work while you make only the decisions. You unpack it, answer a founding interview about your venture, and the whole factory is wired for that project alone: the knowledge engine, the build discipline, the verification machinery, the one plain-English briefing you read each day.
+Most AI-run projects share the same weakness: the work happens fast, and nobody can prove what actually happened. Knowledge lives in chat transcripts that evaporate. Builds get declared done on a feeling. Decisions get re-argued every month because nobody wrote down why.
 
-It exists because AI-run projects share the same weakness: the work happens fast, and nobody can prove what actually happened. Knowledge evaporates with the chat window. Builds get declared done on a feeling. Decisions get re-argued every month because nobody wrote down why.
+Rheoscope is a trust machine: an operating system for projects where AI does the work and a human makes only the decisions. Every fact in its knowledge base traces to a dated source. Every build starts from a written, checkable spec, and the machinery refuses to start without one. Every claim that matters gets challenged by a different vendor's AI before it counts, and the verdict is kept as a receipt. The human sees one plain-English briefing a day, plus the handful of calls that genuinely need a person.
 
-Underneath the harness is a trust machine, and the phrase is literal. Facts in the knowledge base trace to dated sources; a model's memory of a conversation doesn't count. Builds can't begin until the behavior is written down as a checkable spec, and the machinery refuses to fire without one. When a claim actually matters, an AI from a different vendor is called in to attack it, and the verdict stays on file as a receipt. What lands on your desk is the part that genuinely needs a person: decisions, ratifications, and the GO call on anything irreversible.
+It is a template: unpack it, answer a founding interview about your venture, and the whole factory (the knowledge engine, the spec-gated build discipline, the verification machinery, the sensors, the security perimeter) is yours, wired for that project alone.
 
 **New here? Start with [TEMPLATE-README.md](TEMPLATE-README.md): the operator manual; the guided tour lives at `core/onboarding/TOUR.md`.**
 
@@ -140,8 +140,8 @@ drift.
 Follow the path described in **How to instantiate** below: open the unpacked folder in Claude
 Code and tell it to set the project up. Underneath, init is one-shot; once
 `project.yaml.instantiated_date` is stamped, it refuses to run again, so there's no ambiguity
-about whether a project has already been initialized. From there, `INIT.md`'s nine-step kickoff
-interview turns the conversation into the project's actual governing artifacts (session
+about whether a project has already been initialized. From there, `INIT.md`'s kickoff
+interview (INIT.md carries the step list) turns the conversation into the project's actual governing artifacts (session
 orientation, decision authority, hard constraints, a glossary, the first roadmap phase) instead of
 leaving them to be reconstructed later from memory. The standard first session runs the health
 check, the first-phase preflight, and flight-plan authoring back to back, in one sitting.
@@ -174,7 +174,7 @@ check, the first-phase preflight, and flight-plan authoring back to back, in one
 | `/discover` | Surfaces what your knowledge base implies but never actually states. |
 | `/audit` | Re-grades your roadmap assumptions against the evidence currently on file. |
 
-None of this needs memorizing. Plain English usually finds the right one anyway; these are shortcuts, and [TEMPLATE-README.md](TEMPLATE-README.md) carries the full detail.
+None of this needs memorizing. Plain English usually finds the right one anyway. These are the everyday shortcuts, not the complete set — the full core-skill roster is whatever `core/skills/` ships, enumerated in [TEMPLATE-README.md](TEMPLATE-README.md)'s file-layout table (Core skills row), which also carries the full detail.
 
 ## Architecture
 

@@ -4,7 +4,7 @@
 
 # Handoff Authoring Spec
 
-*Read this before authoring a handoff. You are an orchestrator session creating a directed, substrate-separated inquiry. `/handoff-author` walks these steps; this doc is the canonical protocol and the reasoning behind it.*
+*Read this before authoring a handoff. You are an orchestrator session creating a directed, substrate-separated inquiry. `/handoff`'s authoring phase walks these steps (the retired `/handoff-author` skill once did); this doc is the canonical protocol and the reasoning behind it.*
 
 ## What a handoff is
 
@@ -124,7 +124,7 @@ Because the verifier may run on a substrate with no filesystem access, every rou
 
 ## After authoring
 
-Hand `packet-round-N.md` to the chosen substrate (paste into a non-Claude tool, or open a fresh Claude session pointed at the packet). The orchestrator then ends its participation until the closing phase. Filing the returned output is `/handoff-receive`'s job; locking is `/handoff-close`'s.
+Hand `packet-round-N.md` to the chosen substrate — `/handoff`'s contained bridge leg does this in-pass; pasting into an external tool is the manual (Mode B) alternative. Authoring ends here: filing the returned output is the receiving phase (`HANDOFF-RECEIVING.md`) and locking is the closing phase (`HANDOFF-CLOSING.md`), both run by the same `/handoff` pass.
 
 ## Style notes
 

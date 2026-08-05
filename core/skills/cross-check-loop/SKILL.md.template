@@ -198,7 +198,7 @@ evidence provenance/SHAs as the audit trail. Record the result where your sessio
 This skill adds no new store of its own.
 
 ### 7 — Escalate (couldn't converge → hand off)
-Don't spin. Write `<run-dir>/escalation.md` — a handoff-ready stub the operator (or `handoff-author`)
+Don't spin. Write `<run-dir>/escalation.md` — a handoff-ready stub the operator (or `/handoff`)
 lifts into a real packet (the handoff protocol § packet-round-N). It must carry:
 
 - **Open question** — the unsettled claim(s), verbatim.

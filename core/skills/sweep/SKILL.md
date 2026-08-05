@@ -33,7 +33,11 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
 4. **Structural sensors**, each if present: `python deploy/check-frontmatter.py`;
    `python core/governance/check-reference-integrity.py <governing docs>` — the doc list is
    `core/governance/CLAUDE.md` plus every `governance_docs[].path` from `project.yaml`, per
-   `core/skills/flight-plan/SKILL.md.template` Step 5.6; `python deploy/check-derivation.py
+   `core/skills/flight-plan/SKILL.md.template` Step 5.6 — and its full-tree citation sweep,
+   `python core/governance/check-reference-integrity.py --sweep` (every path-shaped citation
+   in every shipped doc, py docstring, and FIX string, classified against both the template
+   and instance layouts; dangling citations feed Needs-your-attention grouped by phantom
+   target, not one row per citer); `python deploy/check-derivation.py
    --gate`; `python deploy/check-knowledge-debt.py --check` (compile:false canonical-integrity
    + REVIEW aging debt — flight-plan Step 5.10).
 5. **Behavioral-manifest structure** — `python deploy/check-manifest.py`, if present.

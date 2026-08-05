@@ -127,13 +127,16 @@ ROADMAP_KEYS = {
     "optional": {"sources", "audited"},
 }
 # Receipts share an envelope but vary by type; validate the envelope, allow the rest.
+# Canon home: docs/wiki-schema.md section 7 (compile receipt schema). journal_seq +
+# run_commit joined the canon 2026-07-28 with the engine wiring; this list trailed
+# until the 2026-08-05 single-homing pass (drift cluster 4).
 RECEIPT_KEYS = {
     "required": {"type", "timestamp"},
     "optional": {
         "duration_minutes", "token_cost", "raw_inputs", "articles_modified",
         "scope_tags", "cross_links_changed", "confidence_changes",
         "meaningful_change", "circuit_breaker_hit", "review_compacted",
-        "pending_cascade", "notes",
+        "pending_cascade", "notes", "journal_seq", "run_commit",
     },
     "lenient": True,  # type-specific keys vary; unknown keys are INFO, not WARN
 }

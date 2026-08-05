@@ -685,6 +685,8 @@ Two artifact classes live outside the raw→wiki pipeline and have declared home
 
 **`assets/` — large or binary media, held by pointer.** Audio masters, video, imagery, datasets: the repository holds **pointer manifests, never the binaries**. Each asset gets `assets/<slug>.asset.md`: where the binary actually lives (path, drive, URL, or storage locator), its SHA-256, size, provenance (source, date, rights status), and what derives from it. The hash makes the pointer verifiable; the manifest makes the asset governable without bloating git. A binary small enough and final enough to commit belongs in `deliverables/`; everything else is a pointer here.
 
+This section governs artifact *routing* only — it is not the layout list. The full post-init top-level layout is TEMPLATE-README's § File layout table; that table, not this section, is the enumerating home a layout check should read. In particular, `intake/` (the R-1 candidate pipeline's staging area, `intake/session-candidates/`) and `receipts/` (engine-written run state, § 17.4) are engine-written homes documented there — their presence is the pipeline working, not a shadow system.
+
 **Layout honesty:** `/sweep` flags tracked top-level directories that don't appear in the documented layout (TEMPLATE-README's file-layout table) — informational, not blocking. An unrecognized directory usually means an artifact class that needs a declared home, not a mistake.
 
 ---

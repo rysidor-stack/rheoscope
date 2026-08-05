@@ -35,12 +35,12 @@ The harness has opinions. Some projects benefit from those opinions; some don't.
 4. **Run** `init.ps1` (Windows) or `init.sh` (Unix). The script substitutes `{{variables}}` across all `*.template` files, wires the capabilities you enabled into runtime locations, and deletes the `capabilities/` catalog from your project. Along the way it prompts for consent to wire the security hooks — copying `core/security/settings.local.json.example` → `.claude/settings.local.json` (an interactive terminal defaults to Yes on empty input; a non-interactive run wires by default with a loud notice; `--hooks`/`-Hooks` and `--no-hooks`/`-NoHooks` skip the prompt either way; declining leaves the example file in place, unwired). At the very end of the run, init invokes `/doctor` as a readiness check and prints its verdict — this never fails init, it only surfaces issues to fix before your first working session. Init's own final output also prints its recommended next steps — `git init; git config core.longpaths true` *(Windows long-path safety — harmless elsewhere; see the note above)* `; git add -A; git commit` — right here, before you ever open `INIT.md`.
 5. **Validate** by running `init-validate.ps1` / `init-validate.sh`. Confirm PASS — any remaining `{{...}}` placeholder, any leftover `*.template` file, or any missing capability runtime path is a hard fail.
 6. **Commit** — the interim commit init's own output just recommended. Doing it now, before the kickoff interview, gives committed-doc-dependent sensors (e.g. `check-reference-integrity.py`) a HEAD to check against.
-7. **Open** `INIT.md` and walk the nine-step kickoff interview in a fresh Claude session. Record answers; populate skeleton governance docs; seed `CONTEXT.md`; create the first phase articles.
+7. **Open** `INIT.md` and walk its kickoff interview in a fresh Claude session — INIT.md itself is the authority for the step list. Record answers; populate skeleton governance docs; seed `CONTEXT.md`; create the first phase articles.
 8. **Commit again** — `INIT.md`'s own Commit section covers this second, final commit: the same message, with `— kickoff complete` appended. Begin work.
 
 **New to the harness?** Before or during the kickoff interview, walk `core/onboarding/TOUR.md` (a staged walkthrough) or open `core/onboarding/SYSTEM-MAP.html` (double-click it — a self-contained map). For ad-hoc questions any time, ask `/orient` — it answers by reading the installed docs, citations required.
 
-**Restart Claude Code after init — a new chat is not enough.** Init creates `.claude/skills/`. Claude Code only scans for top-level skill directories that existed when it started: per the Claude Code docs, *"Creating a top-level skills directory that did not exist when the session started requires restarting Claude Code."* Opening a new chat in the same running instance will **not** discover the freshly-wired skills (`/compile`, `/audit`, `/discover` (knowledge-os), `/preflight`, `/reason`, `/flight-plan`, `/handoff` (with `/handoff-close` as its close-leg protocol), `/log-backlog`, `/cross-check`, `/cross-check-loop`, `/doctor`, `/orient`). Fully restart Claude Code after step 4, then run the INIT.md kickoff. See https://code.claude.com/docs/en/skills.md.
+**Restart Claude Code after init — a new chat is not enough.** Init creates `.claude/skills/`. Claude Code only scans for top-level skill directories that existed when it started: per the Claude Code docs, *"Creating a top-level skills directory that did not exist when the session started requires restarting Claude Code."* Opening a new chat in the same running instance will **not** discover the freshly-wired skills — the entire core set (enumerated in the Core skills row of the file-layout table below) plus, with knowledge-os enabled, `/compile`, `/audit`, and `/discover`. Fully restart Claude Code after step 4, then run the INIT.md kickoff. See https://code.claude.com/docs/en/skills.md.
 
 The whole instantiation is one-shot. Init is **not re-runnable** — it refuses to run on an already-stamped project (the `instantiated_date` field in `project.yaml` is the guard). To re-instantiate, start with a fresh harness clone.
 
@@ -58,7 +58,7 @@ So: review `core/security/hooks/` (a few dozen lines of bash) and the init scrip
 
 The harness uses a **core + capabilities** model:
 
-- **Core** (always present): methodology kernel, governance (CLAUDE.md, PROJECT-COMPASS, HARDCONSTRAINTS), handoffs (three-session decision inquiry), security perimeter (PreToolUse hooks), and **core skills** wired to `.claude/skills/` unconditionally — `/flight-plan` (session cockpit, degrades gracefully without knowledge-os), the three handoff orchestrators, and `/log-backlog`. Loaded regardless of `project.yaml`.
+- **Core** (always present): methodology kernel, governance (CLAUDE.md, PROJECT-COMPASS, HARDCONSTRAINTS), handoffs (the single-pass `/handoff` decision inquiry — one pass authors, gets a cross-vendor answer, and locks, with `/handoff-close` surviving as the close leg's protocol), security perimeter (PreToolUse hooks), and **core skills** wired to `.claude/skills/` unconditionally. Init wires whatever `core/skills/` ships, by directory glob, so that directory is the single source of the skill list; the Core skills row of the file-layout table below enumerates the current set. Loaded regardless of `project.yaml`.
 - **Capabilities** (opt-in): each declared in `project.yaml.capabilities`. Three maturity states: `extracted` (working code lifted from a real project), `prototype` (working code, unvalidated as a generalizable pattern), `deferred` (recipe only, no code). The harness ships extracted code for knowledge-os, stress-testing, and a `code-conventions` prototype.
 
 See `ARCHITECTURE.md` for the full model, the recipe format (10 fields), and the substitution mechanism (`.template` suffix convention, mechanically enforced).
@@ -87,7 +87,7 @@ Externally-authored skills often assume a flat layout (`CLAUDE.md` at the projec
 | Methodology kernel | `core/methodology/` |
 | Handoff protocol (docs) | `core/handoffs/` |
 | Onboarding | `core/onboarding/` — `TOUR.md` (staged walkthrough), `GLOSSARY.md` (human glossary), `SYSTEM-MAP.html` (self-contained system map) |
-| Core skills | `.claude/skills/` — `flight-plan`, `handoff` (single-pass decision handoff, v3.0-78), `handoff-close` (its close-leg protocol), `log-backlog`, `preflight`, `reason`, `orient`, `cross-check`, `cross-check-loop`, `doctor`, `conformance`, `sweep`, `standing-loop`, `bridge` (transport library — no slash command) |
+| Core skills | `.claude/skills/` — `flight-plan`, `handoff` (single-pass decision handoff, v3.0-78), `handoff-close` (its close-leg protocol), `log-backlog`, `preflight`, `reason`, `orient`, `cross-check`, `cross-check-loop`, `doctor`, `conformance`, `sweep`, `standing-loop`, `bridge` (transport library — no slash command). *This row is the enumerating home for the core-skill set — every other doc points here; init derives the actual wiring from the `core/skills/` directory glob* |
 | Capability skills (if enabled) | `.claude/skills/` — `compile`, `audit`, `discover` (knowledge-os) |
 | Canonical glossary | `CONTEXT.md` (repo root) |
 | Wiki schema (knowledge-os) | `docs/wiki-schema.md` |
@@ -96,6 +96,10 @@ Externally-authored skills often assume a flat layout (`CLAUDE.md` at the projec
 | Raw intake | `raw/` |
 | Roadmap | `roadmap/` |
 | Reference material | `references/` |
+| Behavioral manifests | `manifests/<surface>/` — one file per touched registry layer plus `MANIFEST-INDEX.md`; written by manifest extraction, read by the build gate (`core/methodology/manifest-format.md`) |
+| Handoff records (instance) | `handoffs/` — the project's decision-handoff folders (`<YYYY-MM-DD>-<slug>/`), written by `/handoff`; the protocol docs stay in `core/handoffs/` |
+| Run receipts *(knowledge-os only)* | `receipts/` — engine-written run state: chained journal, registration chain, cross-vendor VERIFY artifacts, discover receipts (`docs/wiki-schema.md` § 17.4), plus human-authored receipt files |
+| Candidate staging *(knowledge-os / R-1 only)* | `intake/` — the R-1 candidate pipeline's staging area; `deploy/candidates.py` writes harvested session-authored spans to `intake/session-candidates/` to await the signed promotion gate |
 | Capability recipes (deferred) | `docs/recipes/<capability>/` |
 
 When adapting an external skill that references "CLAUDE.md at the project root," repoint it at `core/governance/CLAUDE.md`. The directory-preservation and single-writer rules documented there apply to all skills.

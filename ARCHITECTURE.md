@@ -133,7 +133,7 @@ Extracted recipes have substantive Field 10 and empty Field 7. Deferred recipes 
 2. Run `init.ps1` (Windows) or `init.sh` (Unix).
 3. The script: parses `project.yaml`; validates against the schema; builds a substitution dictionary from project fields plus computed values; substitutes every `*.template` file in-place (dropping the `.template` suffix); copies each enabled capability's `extracted/` contents to its runtime location (`.claude/skills/<orchestrator>`, `docs/wiki-schema.md`, `methodology/code-conventions.examples`); propagates each enabled capability's `deferred/*.RECIPE.md` to `docs/recipes/<capability>/`; unconditionally propagates `capabilities/kickoff-orchestration/` to `docs/recipes/kickoff-orchestration/`; deletes the `capabilities/` catalog; stamps `instantiated_date` and `instantiated_capabilities` back to `project.yaml`.
 4. Run `init-validate.{ps1,sh}` to confirm no unresolved mustache placeholders or leftover `*.template` files remain, and that each enabled capability's runtime files exist.
-5. Open `INIT.md` and run the nine-step manual kickoff interview in a fresh Claude session.
+5. Open `INIT.md` and run the manual kickoff interview in a fresh Claude session (INIT.md itself is the authority for its step list).
 
 Init is **not re-runnable**. Once `project.yaml.instantiated_date` is stamped, init refuses to run. `init.{ps1,sh} -DryRun` / `--dry-run` is non-destructive and intended for firewall checkpoints during the harness build; it does not stamp metadata or delete the catalog.
 

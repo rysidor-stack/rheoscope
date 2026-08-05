@@ -169,6 +169,10 @@ class EnlargementViolation(Exception):
     the design mandates full coverage over the enlarged ledger, whatever its size."""
     pass
 
+# Derivation-schema version. CANONICAL HOME: check-frontmatter.py SCHEMA_VERSION
+# (drift cluster 9, single-homed 2026-08-05) -- this copy exists so staleness
+# stays import-light, and the self-test asserts byte-parity with the canonical
+# constant, so the two cannot drift silently. Bump both in the same commit.
 SCHEMA_VERSION = "3.2"
 PARTIAL_CANDIDATE_DAYS = 14
 
@@ -1334,6 +1338,13 @@ def self_test():
         print("  %s %s" % ("ok " if ok else "XX ", name))
         if not ok:
             failed += 1
+
+    # SCHEMA_VERSION parity (drift cluster 9, 2026-08-05): check-frontmatter.py
+    # is the canonical home of the derivation-schema version; this copy must
+    # match it byte-for-byte or the two sensors read the same block differently.
+    _cfm = _load_sibling("check-frontmatter.py", "check_frontmatter_staleness_parity")
+    case("SCHEMA_VERSION parity with canonical home check-frontmatter.py",
+         SCHEMA_VERSION == _cfm.SCHEMA_VERSION)
 
     V = "wiki/v.md"
     absorbed = {"disposition": "absorbed", "attested_by": None}

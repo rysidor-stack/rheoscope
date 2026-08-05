@@ -4,7 +4,7 @@
 
 # Handoff Receiving Spec
 
-*Read this if you are filing or producing a handoff round output. You are the Verifier in a Builder/Verifier exchange (or filing a Verifier's work). `/handoff-receive` walks these steps.*
+*Read this if you are filing or producing a handoff round output. You are the Verifier in a Builder/Verifier exchange (or filing a Verifier's work). `/handoff`'s answer leg walks these steps (the retired `/handoff-receive` skill once did).*
 
 ## Two modes
 
@@ -48,11 +48,11 @@ Validate before writing. Does the pasted output have a verdict tag? Address the 
 
 ## Closure (both modes)
 
-1. **Write `output-round-N.md`** in this folder. Rounds are immutable — never write over an existing `output-round-N.md`; if revision is needed, that's a new round authored via `/handoff-author`.
+1. **Write `output-round-N.md`** in this folder. Rounds are immutable — never write over an existing `output-round-N.md`; if revision is needed, that's a new round authored via `/handoff`.
 2. **Update `meta.yaml`:** `status: answered`; `answered: <today>`; append the substrate to `answered_by`; set `rounds_completed: N`; set `hypothesis_outcome` to match the verdict.
 3. **Update `core/handoffs/INDEX.md`:** change the row to `answered`.
 
-If your session has no filesystem access (Mode A on a non-CC substrate), state that at the top of your response so the operator can file via a follow-up `/handoff-receive` run.
+If your session has no filesystem access (Mode A on a non-CC substrate), state that at the top of your response so the operator can file the output via `/handoff` (Mode B filing).
 
 ## Anti-patterns
 

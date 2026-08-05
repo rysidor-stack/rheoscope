@@ -83,6 +83,11 @@ propagate regardless of any toggle). See `ARCHITECTURE.md` § Overview and § Co
 
 ### The skills you'll actually type
 
+These are the tour stops — the skills a first week actually touches — not the complete
+roster. The full core set is whatever `core/skills/` ships, enumerated in
+`TEMPLATE-README.md`'s file-layout table (Core skills row); enabled capabilities add their
+own on top.
+
 | Skill | One sentence | Full doc |
 |---|---|---|
 | `/flight-plan` | Generates a delta-first session briefing — what changed, what's healthy, what needs attention; the cockpit for in-progress work. | `core/skills/flight-plan/SKILL.md.template` (pre-init) → `.claude/skills/flight-plan/SKILL.md` (post-init path) |
@@ -140,10 +145,11 @@ where the full instructions live.
 ### 1. Kickoff interview
 
 **Do:** Open `INIT.md` in a fresh Claude session (a conversation, not a Claude Code build
-session) after `init.ps1`/`init.sh` has run and `init-validate` reports PASS. Walk the nine
-steps in order, recording each answer in `raw/YYYY-MM-DD-session-project-init.md`.
-**Green:** all nine steps answered, governance/roadmap skeletons created, the log's frontmatter
-carries `compile: false` (it's a process record, not knowledge intake).
+session) after `init.ps1`/`init.sh` has run and `init-validate` reports PASS. Walk the
+interview steps in order (INIT.md is the authority for the list), recording each answer in
+`raw/YYYY-MM-DD-session-project-init.md`.
+**Green:** every interview step answered (INIT.md's list), governance/roadmap skeletons created,
+the log's frontmatter carries `compile: false` (it's a process record, not knowledge intake).
 **Full doc:** `INIT.md` §§ "Kickoff interview" through "Post-interview validation".
 
 ### 2. CONTEXT.md population

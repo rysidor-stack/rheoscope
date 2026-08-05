@@ -100,6 +100,39 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.23 → v3.0.24 (citation sweep + single-homing + the silence rule)
+
+Every instance takes items 1–3; knowledge-os instances also take item 4.
+
+1. **Re-copy `core/governance/check-reference-integrity.py`** (run
+   `python core/governance/check-reference-integrity.py --self-test`, expect **4/4**) and
+   `.claude/skills/sweep/SKILL.md`. Then run the new mode once:
+   `python core/governance/check-reference-integrity.py --sweep`. Findings are dangling
+   citations in YOUR tree — docs citing files that exist in neither the template nor the
+   instance layout. Some are inherited from the template (a known baseline the template is
+   burning down release by release); a finding in a doc you authored is yours to fix. Never
+   silence a finding by deleting the sentence that carries it — fix the citation or log the
+   gap.
+2. **Re-copy the reconciled docs**: `TEMPLATE-README.md`, `README.md`, `ARCHITECTURE.md`,
+   `core/onboarding/TOUR.md`, `core/handoffs/README.md` + the three `HANDOFF-*.md` phase
+   docs, `.claude/skills/cross-check-loop/SKILL.md` (hand-substitute `{{...}}`). If your
+   rendered `CLAUDE.md` session contract still says "three-session protocol," re-render that
+   bullet from the new `core/governance/CLAUDE.md.template` — and add its new **silence
+   rule** section (stop-and-ask on any harness silence; every escalation names the
+   operator). That section is the audit's whole lesson in one place; adopt it even if you
+   adopt nothing else in this release.
+3. **Re-copy `.claude/skills/doctor/doctor.py`** (STAMPED_DOCS now watches WORKSPACE.md,
+   standing-loop, sweep; self-test **63/63**) — expect up to three new stamp-drift WARNs if
+   those docs' stamps trail your `template_version`; that is the check working, refresh the
+   docs rather than the stamps.
+4. **Knowledge-os instances**: re-copy `.claude/skills/compile/SKILL.md` (Step 10 receipt
+   field list reconciled to `docs/wiki-schema.md` §7 — if your receipts carried `duration`,
+   canon is `duration_minutes`), `deploy/check-frontmatter.py` (**33/33**; receipts carrying
+   `journal_seq`/`run_commit` are now known keys), `deploy/staleness.py` (**114/114**;
+   includes the SCHEMA_VERSION parity case), and `docs/wiki-schema.md` (artifact-homes
+   section now defers to TEMPLATE-README's layout table — if your /sweep flagged `intake/`
+   or `receipts/` as undeclared, this is the fix).
+
 ## v3.0.22 → v3.0.23 (emergency batch: honest gates, honest sensors)
 
 Every instance takes the two core skills (item 3's first two files); knowledge-os instances

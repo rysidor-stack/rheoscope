@@ -81,4 +81,4 @@ The handoff folder is immutable. A later revision is a *new* handoff or a succes
 
 ## Scope boundary
 
-`handoff-close` does NOT: update wiki articles (that's `/compile`), author new handoffs (`/handoff-author`), edit prior outputs/brief/context (immutable), or re-litigate prior round verdicts (they're inputs; the lock is downstream). The raw file is the locker's synthesis in the locker's voice — verifier voice lives immutably in `output-round-*.md`, not paraphrased into the ADR.
+`handoff-close` does NOT: update wiki articles (that's `/compile`), author new handoffs (that's `/handoff`), edit prior outputs/brief/context (immutable), or re-litigate prior round verdicts (they're inputs; the lock is downstream). The raw file is the locker's synthesis in the locker's voice — verifier voice lives immutably in `output-round-*.md`, not paraphrased into the ADR.

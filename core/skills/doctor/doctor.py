@@ -117,6 +117,12 @@ STAMPED_DOCS = (
     # step ever refreshed it, so an instance several releases along still described the
     # harness it was born with. The stamp makes that drift visible here.
     "ARCHITECTURE.md",
+    # 2026-08-05 (silence-sweep drift cluster 6): three docs carried stamps this list
+    # never watched, so their stamps could rot unnoticed -- the exact state this
+    # check exists to prevent.
+    "core/governance/WORKSPACE.md",
+    ".claude/skills/standing-loop/SKILL.md",
+    ".claude/skills/sweep/SKILL.md",
 )
 
 _STAMP_RE = re.compile(r"verified-against:\s*([^\s(]+)\s*\(([^)]+)\)")

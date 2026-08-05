@@ -112,6 +112,16 @@ route around it. Read the FULL verdict, not just the top-level field: a
 `substrate-gated` outer verdict can still carry a substantive nested `bridge_verdict` (a real
 `rejected` with reasoning) that every top-level tally otherwise misses (v3.0-23) — check both.
 
+**No self-adjudication (2026-08-04; from a live incident in which a session ruled six external
+rejections a "verifier defect" and closed them itself, with no rule saying who may).** The
+session whose absorption was graded never rules a non-confirm verdict a verifier defect, a
+false positive, or otherwise void — grading the grader is not its call. Exactly two
+dispositions exist: (a) correct through the correction cycle (§7a), or (b) if the session
+believes the verdict itself is wrong, **stop** — leave the run in its exit-1 state and put the
+full verdict plus the contrary evidence in front of the operator. The operator is the only
+party who may set a verdict aside, and that ruling is recorded (decision + reason, in the
+run's receipt or an ADR) before any re-run. There is no third disposition.
+
 **Co-absorption / joint citation for multi-event spans.** Absorption-verify grades **per run**. If
 a view accumulates content from several events across separate compile runs without an
 intervening confirmed verify, later runs on it are unverifiable alone — cite the whole

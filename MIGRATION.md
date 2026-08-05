@@ -100,7 +100,53 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
-## v3.0.18 → v3.0.19 (git push un-denied)
+## v3.0.21 → v3.0.22 (envelope resolution + no-self-adjudication)
+
+Knowledge-os instances take three files; instances without the capability take nothing.
+
+1. **Re-copy `deploy/check-loop-state.py`** — run `python deploy/check-loop-state.py --self-test`,
+   expect **35/35**. Then run it live once (`python deploy/check-loop-state.py --root .`): if your
+   instance keeps handoff records at `core/handoffs/` and this sensor previously reported nothing
+   or INCONCLUSIVE, this is the fix — it now finds your records. If it reports records in BOTH
+   `handoffs/` and `core/handoffs/`, that is a real defect state: consolidate to one envelope
+   before trusting any of its results.
+2. **Re-copy `.claude/skills/compile/SKILL.md`** (hand-substitute any `{{...}}` variables from
+   your `project.yaml`) **and `docs/engine/OPERATIONS.md`** — the no-self-adjudication rule
+   (§7): a session never rules a verify rejection a verifier defect; it corrects through the
+   correction cycle or stops and escalates to the operator.
+3. **If your instance carries verify rejections a session closed on its own authority**
+   ("verifier defect," "false positive," or similar), those verdicts are unadjudicated. Re-ride
+   each through the correction cycle (`--revert` → corrected staged answers → fresh `--run`), or
+   put the verdicts in front of the operator for an explicit recorded ruling.
+
+## v3.0.20 → v3.0.21 (positive credential convention)
+
+Fully additive; four files, no behavior change. Adoption: copy `core/security/CREDENTIALS.md`
+(new), and re-copy `core/security/hooks/README.md`, `.claude/skills/orient/SKILL.md`, and
+`core/governance/DATA-POLICY.md` (pointer edits only). Then check your instance for the
+anti-pattern the doc exists to end: any operator-typed plaintext credential file (gitignored
+included) should migrate to `deploy/credential-store.ps1` + an operator-added
+`credential-bindings.yaml` line, and an instance backlog entry of the
+"credential storage defined only negatively" class can be resolved as fixed-upstream.
+Instances without the knowledge-os capability get the doctrine but not the broker scripts —
+the doc's "Honest limits" section covers that state.
+
+## v3.0.19 → v3.0.20 (compile correction cycle + isolated authoring)
+
+Knowledge-os instances take five files; others take only the last one.
+
+1. **Re-copy the engine trio** — `deploy/compile-driver.py` (new `--revert` mode; run
+   `py deploy/compile-driver.py --self-test` after copying, expect **156/156**),
+   `.claude/skills/compile/SKILL.md` (isolated per-view authoring, pre-dispatch self-check,
+   5-view batch cap, clone-sync guard, the `--revert` correction cycle), and
+   `docs/engine/OPERATIONS.md` (§7/§7a reconciled to the correction cycle).
+2. **If your instance holds corrected-but-unverified views from a rejected run** (the state
+   the old skill text produced): `--revert` the rejected seq, restore the corrected content
+   as staged answers, and re-run `--run` — the corrections finally get real verify verdicts.
+3. **All instances: re-copy `init-validate.sh` + `init-validate.ps1`** (core-skill list
+   reconciled to the v3.0-78 handoff collapse + the missing `reason` requirement). If your
+   adoption of v3.0.17+ turned the validator red while doctor sat green, this is the fix;
+   delete any local patch of the same lines in favor of the upstream files.
 
 One file, one decision. The shipped permission baseline no longer denies `git push`
 (operator ruling, backlog v3.0-90 — deny is for the unrecoverable or secret only).

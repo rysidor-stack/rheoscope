@@ -202,6 +202,8 @@ On exit 1, the summary names which case it was:
   3. **Re-absorb:** re-run 3a's staging script (fresh `emit_packets` + re-stamp — the old stamp died with the edit) and then `--run` again. The correction lands validated, journaled, and re-verified — the full road, same as any absorption.
 
   **Never hand-edit the written views to apply a verdict correction** — that routes around the engine and ends "corrected but unverified," the exact state the invariant forbids. A verdict-driven correction is never routed as a new raw event; genuinely new information is.
+
+  **Never self-adjudicate a verdict as a verifier defect.** The session that produced the absorption does not grade the grader — no tallying rejections as "false positives," no ruling the verifier broken, no closing verdicts on your own authority. If you believe a verdict itself is wrong (the absorption is faithful and the grader erred), stop at exit 1 and escalate: put the full verdict and your contrary evidence in front of the operator, who alone may set a verdict aside (rule's home: `docs/engine/OPERATIONS.md` §7). Correct through the cycle above, or stop and escalate — there is no third disposition.
 - **An auto-reverted run** (the verify leg did not complete — bridge error, timeout, refusal mid-run) — the run commit was reverted, the revert is journaled, and the staging dir is untouched. Diagnose the transport failure, then re-run the same staging dir.
 - **Startup reconciliation refused** — a prior run on this branch has no terminal verify disposition (a crashed run). Reconcile it first (`py deploy/compile-driver.py --reconcile --root .` explains which seq); no new run is accepted until you do.
 
@@ -323,6 +325,7 @@ The plan-time batch cap (Step 2, 5 views/run) is the normal bound; this breaker 
 - Never hand-write a `wiki/` article body to route around the engine. Article bodies land through Step 2.5's answers and the driver, so that every absorption is validated, journaled, and cross-vendor verified. Steps 4–11's frontmatter and projection edits are the documented exception (as is the engine-absent degradation mode above, which must always be named in its receipt).
 - Never loosen a gate. A `DispatchRefused`, a plan-precedence refusal, a validation error, a non-confirm verdict — each names exactly what is wrong. Fix the named thing.
 - Never hand-edit a written view to apply a verify verdict's correction. The correction cycle is `--revert` → fix the staged answers → re-run `--run` (Step 3b exit-1). Hand-edits end committed-but-unverified — the state invariant 4 exists to make impossible.
+- Never self-adjudicate a non-confirm verdict as a verifier defect. Correct through the cycle, or stop and escalate the verdict to the operator — the only party who may set one aside (`docs/engine/OPERATIONS.md` §7).
 - Never edit files in `raw/`. They are append-only.
 - Never delete articles. If one becomes obsolete, add a `## Deprecated` section and a REVIEW.md entry.
 - Never run /audit, /discover, or /preflight. Those are separate orchestrators.

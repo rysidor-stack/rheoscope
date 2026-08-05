@@ -308,6 +308,49 @@ def folder_date(name):
     return m.group(1) if m else None
 
 
+def _envelope_has_records(path):
+    """A handoff envelope 'has records' when at least one immediate
+    subdirectory carries a meta.yaml. Protocol DOCS living in the same
+    directory (core/handoffs/HANDOFF-*.md, README.md) are plain files and
+    never count."""
+    if not os.path.isdir(path):
+        return False
+    for entry in os.listdir(path):
+        if os.path.isfile(os.path.join(path, entry, "meta.yaml")):
+            return True
+    return False
+
+
+def handoffs_dir(root):
+    """Resolve the handoff envelope. Returns (path, ambiguous).
+
+    The fork this sensor grew up on keeps records at `handoffs/`; the shipped
+    template's protocol README instructs instances to create them at
+    `core/handoffs/<YYYY-MM-DD>-<slug>/`, and the /handoff skill names both
+    layouts ("the project's `handoffs/` directory -- `core/handoffs/` on
+    projects that keep it there"). This sensor hardwired the fork path, so on
+    every docs-following instance it scanned an empty location and went
+    INCONCLUSIVE (reported live 2026-08-04, a LAMPS T1 lock session).
+
+    Resolution is by CONTENT, not preference: the candidate holding at least
+    one record folder wins. Records in BOTH is a real defect state --
+    (first, True) so callers refuse loudly instead of silently scanning one
+    envelope of two. Records in NEITHER falls back to the first candidate
+    that exists on disk (empty-envelope reporting keeps its old shape), then
+    to the fork path."""
+    cands = [os.path.join(root, "handoffs"),
+             os.path.join(root, "core", "handoffs")]
+    with_records = [c for c in cands if _envelope_has_records(c)]
+    if len(with_records) == 2:
+        return with_records[0], True
+    if with_records:
+        return with_records[0], False
+    for c in cands:
+        if os.path.isdir(c):
+            return c, False
+    return cands[0], False
+
+
 def load_yaml_file(path, yaml):
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f.read())
@@ -379,6 +422,8 @@ def raw_informed_by(path, yaml):
 def normalize_handoff_ref(value):
     """'handoffs/<id>/' or '<id>' (quoted or not) -> '<id>'."""
     v = str(value).strip().strip("'\"")
+    if v.startswith("core/handoffs/"):
+        v = v[len("core/handoffs/"):]
     if v.startswith("handoffs/"):
         v = v[len("handoffs/"):]
     return v.rstrip("/")
@@ -566,7 +611,13 @@ def check_extension(root, yaml):
     # rule the base checks apply) with absent-key or unparseable meta, and
     # HARNESS_ERA_FOLDERS, are NOTEs -- named + counted, never violations;
     # post-protocol folders with the same defects STILL fire.
-    hdir = os.path.join(root, "handoffs")
+    hdir, env_ambiguous = handoffs_dir(root)
+    if env_ambiguous:
+        violations.append(
+            "handoff records found in BOTH handoffs/ and core/handoffs/ -- "
+            "two live envelopes is a defect state (records must live in "
+            "exactly one); consolidate before this check can be trusted"
+        )
     if os.path.isdir(hdir):
         for entry in sorted(os.listdir(hdir)):
             folder = os.path.join(hdir, entry)
@@ -991,9 +1042,18 @@ def run_live(yaml, root=None):
     notes = []         # informational (expected legacy state) -> no exit impact
     substrate_warnings = []  # P6: historical violations / unparseable identifiers
 
-    # handoffs/INDEX.md sections
+    # envelope INDEX.md sections (envelope resolved by content -- handoffs/
+    # or core/handoffs/, see handoffs_dir())
+    hdir, env_ambiguous = handoffs_dir(root)
+    env_rel = os.path.relpath(hdir, root).replace(os.sep, "/")
+    if env_ambiguous:
+        inconclusive.append(
+            "handoff records found in BOTH handoffs/ and core/handoffs/ -- "
+            "two live envelopes; consolidate to one before this sensor's "
+            "results can be trusted (scanning %s only for this run)" % env_rel
+        )
     index_active = index_archive = None
-    index_path = os.path.join(root, "handoffs", "INDEX.md")
+    index_path = os.path.join(hdir, "INDEX.md")
     try:
         with open(index_path, "r", encoding="utf-8") as f:
             text = f.read()
@@ -1001,11 +1061,10 @@ def run_live(yaml, root=None):
         index_active = parts[0]
         index_archive = parts[1] if len(parts) > 1 else ""
     except OSError as e:
-        inconclusive.append(f"handoffs/INDEX.md unreadable ({e}) -- INDEX cross-checks skipped")
+        inconclusive.append(f"{env_rel}/INDEX.md unreadable ({e}) -- INDEX cross-checks skipped")
 
     n_handoffs = 0
 
-    hdir = os.path.join(root, "handoffs")
     if os.path.isdir(hdir):
         for entry in sorted(os.listdir(hdir)):
             folder = os.path.join(hdir, entry)
@@ -1039,7 +1098,8 @@ def run_live(yaml, root=None):
             violations.extend(sub_violations)
             substrate_warnings.extend(sub_warnings)
     else:
-        notes.append("handoffs/ directory absent -- handoff checks vacuously clean")
+        notes.append(
+            f"{env_rel}/ directory absent -- handoff checks vacuously clean")
 
     # dispatches/ was TRIMMED from this port (see module header, trim #1) --
     # the fork has no such directory and no such vocabulary. Nothing to walk.
@@ -1104,7 +1164,7 @@ def _build_tree_copy(case_name, dest):
     import shutil
     import subprocess
     src = os.path.join(_TREE_SRC, case_name)
-    for sub in ("raw", "handoffs", "receipts"):
+    for sub in ("raw", "handoffs", "core", "receipts"):
         s = os.path.join(src, sub)
         if os.path.isdir(s):
             shutil.copytree(s, os.path.join(dest, sub))
@@ -1206,6 +1266,48 @@ def run_self_test(yaml):
                     f"close-park case {cname}: expected "
                     f"{'PASS' if expect_pass else 'FAIL'}, got "
                     f"{'PASS' if ok else 'FAIL'} ({cv[:3]})")
+
+    # ---- (1a3) envelope resolution (fork handoffs/ vs the template's
+    # documented core/handoffs/; the hardwired fork path went INCONCLUSIVE
+    # live on a docs-following instance, 2026-08-04).
+    def _env_case(layout):
+        d = tempfile.mkdtemp(prefix="cls-env-")
+        for rel, record in layout:
+            p = os.path.join(d, *rel.split("/"))
+            os.makedirs(p, exist_ok=True)
+            if record:
+                sub = os.path.join(p, "2026-08-01-x")
+                os.makedirs(sub, exist_ok=True)
+                with open(os.path.join(sub, "meta.yaml"), "w",
+                          encoding="utf-8") as fh:
+                    fh.write("status: open\n")
+            else:
+                with open(os.path.join(p, "HANDOFF-AUTHORING.md"), "w",
+                          encoding="utf-8") as fh:
+                    fh.write("protocol doc, not a record\n")
+        return d
+
+    env_cases = [
+        ("fork layout resolves handoffs/",
+         [("handoffs", True), ("core/handoffs", False)], "handoffs", False),
+        ("template layout resolves core/handoffs (doc files never count)",
+         [("core/handoffs", True)], "core/handoffs", False),
+        ("records in both envelopes -> ambiguous",
+         [("handoffs", True), ("core/handoffs", True)], "handoffs", True),
+        ("no records anywhere -> first existing dir",
+         [("core/handoffs", False)], "core/handoffs", False),
+    ]
+    for cname, layout, want_rel, want_amb in env_cases:
+        d = _env_case(layout)
+        try:
+            got, amb = handoffs_dir(d)
+            got_rel = os.path.relpath(got, d).replace(os.sep, "/")
+            if got_rel != want_rel or amb is not want_amb:
+                failures.append(
+                    f"envelope case '{cname}': got ({got_rel}, {amb}), "
+                    f"expected ({want_rel}, {want_amb})")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
     # ---- (1b) degraded-fallback fix cases (fork divergence, orchestrator
     # adjudication 2026-07-06): block-list form under YAML-hostile
@@ -1486,9 +1588,11 @@ def run_self_test(yaml):
         print(f"RESULT: FAIL -- self-test, {len(failures)} unexpected outcome(s)")
         return 1
     n_cases = (
-        len(base_cases) + len(tree_cases) + 8 + len(substrate_cases)
+        len(base_cases) + len(tree_cases) + 8 + len(env_cases)
+        + len(substrate_cases)
     )  # +2 fallback-fix, +2 harness-era, +1 receipts-population-parity (B-2),
        # +3 close-park marker cases (v3.0-78),
+       # +len(env_cases) envelope-resolution cases (handoffs/ vs core/handoffs/),
        # +len(substrate_cases) P6 substrate-separation unit cases
     print(f"RESULT: PASS -- self-test, {n_cases} fixture case(s) behaved as expected")
     return 0
@@ -1506,7 +1610,17 @@ def main():
         return 2
     if "--self-test" in sys.argv:
         return run_self_test(yaml)
-    return run_live(yaml)
+    root = None
+    if "--root" in sys.argv:
+        i = sys.argv.index("--root")
+        if i + 1 >= len(sys.argv):
+            print("RESULT: INCONCLUSIVE -- --root requires a directory")
+            return 2
+        root = os.path.abspath(sys.argv[i + 1])
+        if not os.path.isdir(root):
+            print(f"RESULT: INCONCLUSIVE -- --root is not a directory: {root}")
+            return 2
+    return run_live(yaml, root=root)
 
 
 if __name__ == "__main__":

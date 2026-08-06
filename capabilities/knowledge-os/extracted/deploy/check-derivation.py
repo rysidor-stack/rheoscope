@@ -116,6 +116,11 @@ import sys
 DERIV_START = "# --- derivation"
 DERIV_END = "# --- /derivation"
 
+# Regenerated projections are rebuilt wholesale by /compile, so they neither
+# carry nor need a derivation region -- same exclusion backfill-derivation.py
+# applies when minting (v3.0-69 region-presence check).
+PROJECTION_BASENAMES = {"INDEX.md", "HEALTH.md", "REVIEW.md"}
+
 # Family root standard (silence-sweep 2026-08-04; same pattern as check-loop-state.py):
 # the default scan root is the parent of the deploy/ dir holding this script -- never
 # the CWD. A caller may override with --root DIR.
@@ -329,6 +334,7 @@ def scan_stale(paths, repo=None):
 
 def scan(paths, gate=False, stale_only=False, repo=None):
     pending = []
+    regionless = []
     if not stale_only:
         for fp in _iter_files(paths):
             try:
@@ -338,6 +344,17 @@ def scan(paths, gate=False, stale_only=False, repo=None):
                 continue
             if audit_pending_t1(text):
                 pending.append(fp)
+            # v3.0-69: region PRESENCE, the blind spot this sensor carried.
+            # Every check above keys on a region's CONTENTS, so a view with
+            # no region at all was invisible: stale_verified_check returns
+            # SV_SKIP ("not in scope") and audit_pending_t1 returns False.
+            # A region-less view cannot record a verification at all --
+            # _stamp_verified_block writes strictly inside the region, so a
+            # confirmed cross-vendor verdict is produced and then discarded
+            # -- and this sensor reported the tree clean while that was true.
+            if (os.path.basename(fp) not in PROJECTION_BASENAMES
+                    and DERIV_START not in text):
+                regionless.append(fp)
 
     stale, inconclusive = scan_stale(paths, repo=repo)
 
@@ -352,6 +369,24 @@ def scan(paths, gate=False, stale_only=False, repo=None):
                 rc = 2
         else:
             print("check-derivation: no audit-pending T1 views.")
+
+        if regionless:
+            print("check-derivation: %d wiki view(s) carry NO derivation "
+                  "region -- these can never record a verification. A "
+                  "cross-vendor checker can approve them, but the approval "
+                  "has nowhere to be stamped, so it is produced and then "
+                  "discarded:" % len(regionless))
+            for fp in sorted(regionless):
+                print("  - %s" % fp)
+            print("  FIX: run `python deploy/backfill-derivation.py --root .` "
+                  "once (on a worktree or branch, per that script's own "
+                  "safety note) to mint a region for each. Views created by "
+                  "the engine from v3.0.29 on get one automatically.")
+            if gate:
+                rc = 2
+        else:
+            print("check-derivation: every wiki view carries a derivation "
+                  "region (verifications can be recorded).")
 
     if inconclusive:
         print("check-derivation: %d view(s) with an UNPARSEABLE derivation region -- INCONCLUSIVE (fail-closed):" % len(inconclusive))
@@ -462,7 +497,67 @@ def self_test():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
-    total = len(cases) + len(sv_cases) + len(root_cases) + len(empty_cases)
+    # ---- v3.0-69 region-PRESENCE cases -------------------------------------
+    # The blind spot: every other check here keys on a region's CONTENTS, so a
+    # view carrying no region at all was invisible and the tree reported clean
+    # while verification was impossible on it.
+    region_cases = []
+    d2 = tempfile.mkdtemp(prefix="cdv-region-")
+    try:
+        wiki2 = os.path.join(d2, "wiki")
+        os.makedirs(wiki2)
+        # a view with NO derivation region -- the engine-born shape
+        with open(os.path.join(wiki2, "regionless.md"), "w",
+                  encoding="utf-8", newline="\n") as fh:
+            fh.write(_NO_DERIV)
+        region_cases = [
+            ("regionless plain (reported, not a gate failure)",
+             ["check-derivation.py", "--root", d2], 0),
+            ("regionless --gate REFUSES",
+             ["check-derivation.py", "--gate", "--root", d2], 2),
+        ]
+        for name, argv, exp in region_cases:
+            got = main(argv)
+            ok = (got == exp)
+            if not ok:
+                failed += 1
+            print("  %s %-46s exit=%-4s exp=%s"
+                  % ("ok " if ok else "XX ", name, got, exp))
+        # a regenerated projection is NEVER expected to carry a region
+        os.remove(os.path.join(wiki2, "regionless.md"))
+        for proj in sorted(PROJECTION_BASENAMES):
+            with open(os.path.join(wiki2, proj), "w", encoding="utf-8",
+                      newline="\n") as fh:
+                fh.write(_NO_DERIV)
+        proj_case = ("projections exempt from the region check",
+                     ["check-derivation.py", "--gate", "--root", d2], 0)
+        got = main(proj_case[1])
+        ok = (got == proj_case[2])
+        if not ok:
+            failed += 1
+        print("  %s %-46s exit=%-4s exp=%s"
+              % ("ok " if ok else "XX ", proj_case[0], got, proj_case[2]))
+        region_cases.append(proj_case)
+        # a view WITH a region passes the presence check
+        for proj in PROJECTION_BASENAMES:
+            os.remove(os.path.join(wiki2, proj))
+        with open(os.path.join(wiki2, "regioned.md"), "w", encoding="utf-8",
+                  newline="\n") as fh:
+            fh.write("---\ntitle: x\n---\n" + _VERIFIED_T1 + "body\n")
+        ok_case = ("view WITH a region passes the presence check",
+                   ["check-derivation.py", "--gate", "--root", d2], 0)
+        got = main(ok_case[1])
+        ok = (got == ok_case[2])
+        if not ok:
+            failed += 1
+        print("  %s %-46s exit=%-4s exp=%s"
+              % ("ok " if ok else "XX ", ok_case[0], got, ok_case[2]))
+        region_cases.append(ok_case)
+    finally:
+        shutil.rmtree(d2, ignore_errors=True)
+
+    total = (len(cases) + len(sv_cases) + len(root_cases) + len(empty_cases)
+             + len(region_cases))
     if failed:
         print("check-derivation self-test: FAIL (%d/%d)" % (total - failed, total))
         return 1

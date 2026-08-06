@@ -15,9 +15,28 @@ over as files in `--staging`.
   compile-driver.py --run --root DIR --staging DIR --authorization PATH [--sections]
   compile-driver.py --reverify --root DIR --seq N --staging DIR --authorization PATH
   compile-driver.py --revert --root DIR --seq N [--reason TEXT]
+  compile-driver.py --set-aside --root DIR --seq N --view PATH --ruling TEXT
   compile-driver.py --reconcile --root DIR
   compile-driver.py --self-test
   Exit: 0 clean | 1 validation/gate failure | 2 inconclusive/usage | 3 lock held
+
+SET-ASIDE (v3.0.29, the operator's OTHER adjudication path -- OPERATIONS.md
+sec.7 names exactly two dispositions for a non-confirm verdict: correct
+through the cycle (--revert + corrected answers + --run), or the operator
+sets the verdict aside). --set-aside is the shipped form of the second:
+it journals the operator's ruling (their words, verbatim, via --ruling) as
+an absorption_adjudicated[] record for ONE view of ONE non-confirmed run,
+and that record ALSO advances the view's verify baseline -- pinned to the
+run commit's content the operator ruled on -- so the next update to the
+view diffs from the adjudicated state instead of from birth. The verify
+packet then names that baseline "adjudicated <date> by operator ruling,
+not machine-verified", in so many words: nothing is dropped, its status is
+named. A bare rejection with no operator ruling advances NOTHING. This
+mode never reverts, never edits a view, and refuses: a confirmed leg
+(nothing to adjudicate), a reverted run (nothing stands), a transport
+failure (that is --reverify's case, not an adjudication), and a missing
+--ruling (an unrecorded ruling is standing memory, which the HUMAN-GATE
+doctrine refuses).
 
 STAGING CONTRACT (what the skill must produce; see emit_packets()/stamp_dispatch()
 in compile-backends.py, which are the sanctioned way to produce it):
@@ -161,6 +180,8 @@ USAGE = (
     "compile-driver.py --reverify --root DIR --seq N --staging DIR "
     "--authorization PATH\n"
     "compile-driver.py --revert --root DIR --seq N [--reason TEXT]\n"
+    "compile-driver.py --set-aside --root DIR --seq N --view PATH "
+    "--ruling TEXT\n"
     "compile-driver.py --reconcile --root DIR\n"
     "compile-driver.py --self-test\n"
     "Exit: 0 clean | 1 validation/gate failure | 2 inconclusive | 3 lock held"
@@ -240,9 +261,10 @@ def _worktree_clean(repo):
 
 
 # --------------------------------------------------------------- argv parsing
-_VALUE_FLAGS = ("--root", "--staging", "--authorization", "--seq", "--reason")
-_BOOL_FLAGS = ("--run", "--reconcile", "--reverify", "--revert", "--self-test",
-               "--sections")
+_VALUE_FLAGS = ("--root", "--staging", "--authorization", "--seq", "--reason",
+                "--view", "--ruling")
+_BOOL_FLAGS = ("--run", "--reconcile", "--reverify", "--revert", "--set-aside",
+               "--self-test", "--sections")
 
 
 def parse_args(argv):
@@ -257,7 +279,8 @@ def parse_args(argv):
             "live absorption rides a cross-vendor verify leg (runbook standing "
             "invariant 4). Nothing was run.")
     out = {"mode": None, "root": None, "staging": None, "authorization": None,
-           "seq": None, "reason": None, "sections": False}
+           "seq": None, "reason": None, "view": None, "ruling": None,
+           "sections": False}
     i = 0
     modes = []
     while i < len(args):
@@ -313,6 +336,19 @@ def parse_args(argv):
                 "--revert requires %s (it reverts ONE named run commit; the "
                 "journal record is restored and the revert is journaled, so "
                 "the reverted run stays visible)"
+                % ", ".join("--" + m for m in missing))
+        try:
+            out["seq"] = int(out["seq"])
+        except (TypeError, ValueError):
+            raise UsageError("--seq must be an integer journal sequence number")
+    if out["mode"] == "set-aside":
+        missing = [f for f in ("root", "seq", "view", "ruling") if not out[f]]
+        if missing:
+            raise UsageError(
+                "--set-aside requires %s (it records the operator's ruling "
+                "on ONE flagged view of ONE non-confirmed run; --ruling is "
+                "the operator's own words, verbatim -- an unrecorded ruling "
+                "is standing memory, which the HUMAN-GATE doctrine refuses)"
                 % ", ".join("--" + m for m in missing))
         try:
             out["seq"] = int(out["seq"])
@@ -1194,6 +1230,16 @@ def execute_run(root, staging, auth_path, sections=False, engine=None,
         out("Nothing was written and nothing was committed.")
         return EXIT_FAIL
 
+    # v3.0-63: the plan's deferred claim rows ride every summary block, so
+    # the skill copies them into the receipt's pending_cascade.
+    deferred_claims = []
+    for erel, entry in (staged["plan"].get("claim_routing") or {}).items():
+        if isinstance(entry, dict):
+            for d in entry.get("deferred") or []:
+                deferred_claims.append((erel, d.get("id"), d.get("text"),
+                                        [str(t) for t in
+                                         (d.get("targets") or [])]))
+
     # ---- 4. side-effect-free dispatch_guard dry run over the pending verify
     try:
         guard = engine.dispatch_guard(repo, "verify", staged["events_views"],
@@ -1291,7 +1337,7 @@ def execute_run(root, staging, auth_path, sections=False, engine=None,
         out(_summary_block(run_seq, run_sha, absorbed_views, None,
                            {"census": (None, "not run -- verify incomplete"),
                             "diff": (None, "not run -- verify incomplete")},
-                           reverted=ok))
+                           reverted=ok, deferred_claims=deferred_claims))
         return EXIT_FAIL
 
     # ---- verdict grading (the leg COMPLETED)
@@ -1310,9 +1356,12 @@ def execute_run(root, staging, auth_path, sections=False, engine=None,
             "read them in receipts/verify/, then adjudicate: `--revert --seq "
             "N` this run, correct the answers in the (untouched) staging dir, "
             "and re-run `--run` so the correction lands validated and "
-            "re-verified. Never hand-edit the written views. NOT reverted "
-            "here: the absorption IS verified, it just did not pass."
-            % (confirmed, checked, noop_confirmed, noop_checked))
+            "re-verified. Never hand-edit the written views. If the OPERATOR "
+            "rules a verdict itself wrong, record their ruling per view: "
+            "`--set-aside --seq N --view <path> --ruling \"<their words>\"` "
+            "(operator-only; advances the view's baseline as adjudicated). "
+            "NOT reverted here: the absorption IS verified, it just did not "
+            "pass." % (confirmed, checked, noop_confirmed, noop_checked))
         # v3.0-84: name the failure CLASS per leg. "confirmed but stamp
         # refused" (e.g. no derivation region on a legacy view) is a different
         # repair than a verifier rejection, and the two used to print
@@ -1324,12 +1373,14 @@ def execute_run(root, staging, auth_path, sections=False, engine=None,
                        att.get("reason", "(no reason recorded)")))
         results = sensors(repo, run_sha, sections)
         out(_summary_block(run_seq, run_sha, absorbed_views, verify_result,
-                           results, reverted=False))
+                           results, reverted=False,
+                           deferred_claims=deferred_claims))
         return EXIT_FAIL
 
     results = sensors(repo, run_sha, sections)
     out(_summary_block(run_seq, run_sha, absorbed_views, verify_result,
-                       results, reverted=False))
+                       results, reverted=False,
+                       deferred_claims=deferred_claims))
     if results["diff"][0] not in (0, None):
         out("check-run-diff FAILED on the run commit -- merge bar 3 is red.")
         return EXIT_FAIL
@@ -1345,10 +1396,12 @@ def _absorbed_of(repo, seq):
 
 
 def _summary_block(seq, sha, absorbed_views, verify_result, results,
-                   reverted=False):
+                   reverted=False, deferred_claims=None):
     """ONE plain-English block: absorbed / no-ops / verify verdicts / census /
     diff-check, so the calling skill re-states results without re-deriving
-    them."""
+    them. `deferred_claims` (v3.0-63): the plan's deferred claim rows, listed
+    here so the skill copies them into the receipt's pending_cascade -- a
+    deferred claim that never reaches the receipt is a claim declared away."""
     lines = ["", "===== COMPILE RUN SUMMARY =====",
              "Journal seq:   %s" % seq,
              "Run commit:    %s%s" % ((sha or "?")[:12],
@@ -1359,6 +1412,13 @@ def _summary_block(seq, sha, absorbed_views, verify_result, results,
             lines.append("                 - %s" % v)
     else:
         lines.append("Absorbed:      nothing (all plan items were no-ops)")
+    if deferred_claims:
+        lines.append("Deferred:      %d claim(s) routed to a later run -- "
+                     "these MUST land in the receipt's pending_cascade:"
+                     % len(deferred_claims))
+        for erel, cid, text, targets in deferred_claims:
+            lines.append("                 - [%s / %s] %s -> %s"
+                         % (erel, cid, text, ", ".join(targets)))
     if verify_result is None:
         lines.append("Verify:        DID NOT COMPLETE -- see the reason above")
     else:
@@ -1640,6 +1700,150 @@ def execute_revert(root, seq, reason=None, out=print):
     out("REVERT CLEAN: %s. The staging dir (if kept) is untouched -- correct "
         "the answers there and re-run --run so the correction lands "
         "validated, journaled, and verified." % detail)
+    return EXIT_OK
+
+
+# --------------------------------------------------------------- set-aside mode
+def execute_set_aside(root, seq, view, ruling, out=print):
+    """Operator set-aside of a non-confirm verdict on ONE view (v3.0.29; see
+    the module docstring's SET-ASIDE section for the doctrine). Journals the
+    ruling as an absorption_adjudicated[] record whose baseline pin is the
+    RUN COMMIT's content for the view -- exactly what the verifier graded
+    and the operator ruled on -- so later verify passes diff updates from
+    the adjudicated state, named as such, never from birth and never from a
+    bare rejection."""
+    import hashlib
+    repo = os.path.abspath(root)
+    if not os.path.isdir(repo) or not _is_git_repo(repo):
+        out("REFUSED: --root %s is not a git repository." % root)
+        return EXIT_FAIL
+    if not str(ruling or "").strip():
+        out("REFUSED: --ruling is empty. The ruling is the operator's own "
+            "words, recorded verbatim; nothing was journaled.")
+        return EXIT_FAIL
+    if not _worktree_clean(repo):
+        out("REFUSED: the worktree is not clean. The adjudication record "
+            "must land as its own stage-only commit; commit or stash first. "
+            "Nothing was journaled.")
+        return EXIT_FAIL
+
+    recs = load_journal(repo)
+    rec = recs.get(seq)
+    if rec is None:
+        out("REFUSED: no journal record at seq %d." % seq)
+        return EXIT_FAIL
+    if str(rec.get("run_type", "")).lower() != "compile":
+        out("REFUSED: journal seq %d is a %r record, not a compile run."
+            % (seq, rec.get("run_type")))
+        return EXIT_FAIL
+    for r in recs.values():
+        dr = r.get("driver_revert")
+        if isinstance(dr, dict) and dr.get("reverts_seq") == seq \
+                and dr.get("status") == "reverted":
+            out("REFUSED: run seq %d was reverted -- its absorption no "
+                "longer stands, so there is no verdict left to set aside."
+                % seq)
+            return EXIT_FAIL
+    absorbed_views = {a.get("view") for a in rec.get("absorbed") or []}
+    if view not in absorbed_views:
+        out("REFUSED: run seq %d absorbed no view %r (absorbed: %s)."
+            % (seq, view, ", ".join(sorted(v for v in absorbed_views if v))
+               or "(none)"))
+        return EXIT_FAIL
+    for r in recs.values():
+        for aj in r.get("absorption_adjudicated") or []:
+            if aj.get("view") == view and aj.get("adjudicates_seq") == seq:
+                out("REFUSED: seq %d's absorption of %s already carries an "
+                    "operator adjudication (journal seq %s). One ruling per "
+                    "verdict." % (seq, view, r.get("seq")))
+                return EXIT_FAIL
+
+    # The verdict being set aside must EXIST, be COMPLETE, and be a
+    # NON-CONFIRM for this view. No verify record -> nothing to rule on;
+    # incomplete legs -> transport failure, which is --reverify's case;
+    # a confirmed leg -> nothing to adjudicate.
+    vrecs = [r for r in recs.values() if r.get("verifies_seq") == seq]
+    if not vrecs:
+        out("REFUSED: no verify record covers run seq %d -- there is no "
+            "verdict to set aside. (--set-aside adjudicates a real "
+            "non-confirm verdict, never the absence of one.)" % seq)
+        return EXIT_FAIL
+    newest = max(vrecs, key=lambda r: r.get("seq", 0))
+    legs = verify_record_legs(repo, newest)
+    if legs["incomplete"]:
+        out("REFUSED: %d verify leg(s) for run seq %d never completed -- a "
+            "transport failure is not a verdict, so there is nothing to set "
+            "aside. Re-fire the legs with --reverify instead."
+            % (len(legs["incomplete"]), seq))
+        return EXIT_FAIL
+    if any(av.get("view") == view
+           for av in newest.get("absorption_verified") or []):
+        out("REFUSED: the verify leg for %s CONFIRMED -- there is nothing "
+            "to adjudicate." % view)
+        return EXIT_FAIL
+    attempt = None
+    for at in newest.get("absorption_verify_attempts") or []:
+        if at.get("view") == view:
+            attempt = at
+            break
+    if attempt is None:
+        out("REFUSED: the covering verify record (seq %s) carries no "
+            "non-confirm absorption leg for %s." % (newest.get("seq"), view))
+        return EXIT_FAIL
+    art = attempt.get("artifact")
+    verdict = _load_verdict_artifact(repo, art) if art else None
+    completed, label = classify_verdict(verdict)
+    if not completed:
+        out("REFUSED: the verify leg for %s did not complete (%s) -- a "
+            "transport failure is not a verdict, so there is nothing to "
+            "set aside. Re-fire the legs with --reverify instead."
+            % (view, label))
+        return EXIT_FAIL
+    if "confirm" in label:
+        out("REFUSED: the verify leg for %s carries a CONFIRMED verdict -- "
+            "there is nothing to adjudicate." % view)
+        return EXIT_FAIL
+
+    run_sha = _find_run_commit(repo, seq)
+    if not run_sha:
+        out("REFUSED: could not locate the run commit that added "
+            "receipts/journal/%d.json. Nothing was journaled." % seq)
+        return EXIT_FAIL
+    p = subprocess.run(["git", "-C", repo, "show", "%s:%s" % (run_sha, view)],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace")
+    if p.returncode != 0:
+        out("REFUSED: git show %s:%s failed (%s) -- the adjudicated "
+            "baseline content could not be pinned. Nothing was journaled."
+            % (run_sha[:12], view, (p.stderr or "").strip()[-160:]))
+        return EXIT_FAIL
+    view_sha = hashlib.sha256(p.stdout.encode("utf-8")).hexdigest()
+
+    core = _core()
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    rc, head, _e = _git(repo, "rev-parse", "HEAD")
+    arec = core.minimal_record("verify-adjudication", head.strip())
+    arec["run_window"] = {"start": now, "end": now}
+    arec["absorption_adjudicated"] = [{
+        "view": view, "adjudicates_seq": seq, "at": now,
+        "ruling": ruling, "adjudicated_by": "operator",
+        "rejected_artifact": attempt.get("artifact"),
+        "baseline_commit": run_sha, "view_sha256": view_sha,
+        "driver": "deploy/compile-driver.py",
+    }]
+    aseq, jpath = core.append_record(repo, arec)
+    jrel = os.path.relpath(jpath, repo).replace(os.sep, "/")
+    core.stage_only_commit(
+        repo, [jrel],
+        "compile-driver: operator set-aside of seq %d verdict on %s "
+        "(adjudication journaled at seq %d)" % (seq, view, aseq))
+    out("SET-ASIDE RECORDED: the operator's ruling on %s (run seq %d) is "
+        "journaled at seq %d, with the rejected verdict kept on the record "
+        "(%s). The view's verify baseline now advances to this adjudicated "
+        "state -- future verify packets will name it 'adjudicated %s by "
+        "operator ruling, not machine-verified'."
+        % (view, seq, aseq, attempt.get("artifact") or "no artifact path",
+           now[:10]))
     return EXIT_OK
 
 
@@ -1933,6 +2137,7 @@ def self_test():                                            # noqa: C901
     case("valid --run argv parses (mode/root/staging/authorization/sections)",
          parsed == {"mode": "run", "root": "r", "staging": "s",
                     "authorization": "a", "seq": None, "reason": None,
+                    "view": None, "ruling": None,
                     "sections": True},
          parsed)
     case("--self-test parses as its own mode",
@@ -2626,6 +2831,128 @@ def self_test():                                            # noqa: C901
     except UsageError:
         case("--revert cannot smuggle --no-verify either", True)
 
+    # -------------------------------- O3. --set-aside (v3.0.29, v3.0-63/67)
+    try:
+        parse_args(["--set-aside", "--root", ".", "--seq", "7"])
+        case("--set-aside without --view/--ruling refuses", False)
+    except UsageError as e:
+        case("--set-aside without --view/--ruling refuses",
+             "--view" in str(e) and "--ruling" in str(e), str(e))
+    p = parse_args(["--set-aside", "--root", "r", "--seq", "7",
+                    "--view", "wiki/a.md", "--ruling", "let it stand"])
+    case("--set-aside argv parses (mode/seq/view/ruling)",
+         p["mode"] == "set-aside" and p["seq"] == 7
+         and p["view"] == "wiki/a.md" and p["ruling"] == "let it stand", p)
+    try:
+        parse_args(["--set-aside", "--root", ".", "--seq", "7",
+                    "--view", "v", "--ruling", "r", "--no-verify"])
+        case("--set-aside cannot smuggle --no-verify either", False)
+    except UsageError:
+        case("--set-aside cannot smuggle --no-verify either", True)
+
+    repo_sa = make_repo("cdrv-setaside-")
+    try:
+        _git(repo_sa, "add", "-A")
+        _git(repo_sa, "commit", "-qm", "fixtures")
+        case("--set-aside refuses an unknown seq",
+             execute_set_aside(repo_sa, 9999, "wiki/a.md", "let it stand",
+                               out=silent) == EXIT_FAIL)
+        # transport-failure record: nothing to set aside, --reverify's case
+        cseq_t = plant_seq103(repo_sa, "bridge-error")
+        case("--set-aside refuses a transport-failure record (that is "
+             "--reverify's case, not an adjudication)",
+             execute_set_aside(repo_sa, cseq_t, "wiki/a.md",
+                               "let it stand", out=silent) == EXIT_FAIL)
+    finally:
+        shutil.rmtree(repo_sa, ignore_errors=True)
+
+    repo_sb = make_repo("cdrv-setaside2-")
+    try:
+        _git(repo_sb, "add", "-A")
+        _git(repo_sb, "commit", "-qm", "fixtures")
+        cseq_r = plant_seq103(repo_sb, "rejected")
+        case("--set-aside refuses an empty ruling (unrecorded = standing "
+             "memory)",
+             execute_set_aside(repo_sb, cseq_r, "wiki/a.md", "   ",
+                               out=silent) == EXIT_FAIL)
+        case("--set-aside refuses a view the run never absorbed",
+             execute_set_aside(repo_sb, cseq_r, "wiki/nope.md",
+                               "let it stand", out=silent) == EXIT_FAIL)
+        rc = execute_set_aside(repo_sb, cseq_r, "wiki/a.md",
+                               "the checker misread the deprecation note; "
+                               "the article is right -- let it stand",
+                               out=silent)
+        case("--set-aside on a completed REJECTED leg records the "
+             "adjudication (exit 0)", rc == EXIT_OK)
+        adj_recs = [r for r in load_journal(repo_sb).values()
+                    if r.get("absorption_adjudicated")]
+        case("--set-aside journals absorption_adjudicated with the "
+             "ruling VERBATIM, the rejected artifact kept on record, and "
+             "a real baseline pin",
+             len(adj_recs) == 1
+             and adj_recs[0]["absorption_adjudicated"][0]["ruling"]
+             .startswith("the checker misread")
+             and adj_recs[0]["absorption_adjudicated"][0][
+                 "rejected_artifact"]
+             and adj_recs[0]["absorption_adjudicated"][0][
+                 "baseline_commit"]
+             and adj_recs[0]["absorption_adjudicated"][0]["view_sha256"],
+             adj_recs)
+        case("--set-aside baseline pin matches the run commit's actual "
+             "view content (git-show recomputed)",
+             __import__("hashlib").sha256(subprocess.run(
+                 ["git", "-C", repo_sb, "show",
+                  "%s:wiki/a.md" % adj_recs[0]["absorption_adjudicated"][0][
+                      "baseline_commit"]],
+                 capture_output=True, text=True, encoding="utf-8")
+                 .stdout.encode("utf-8")).hexdigest()
+             == adj_recs[0]["absorption_adjudicated"][0]["view_sha256"])
+        case("--set-aside refuses a SECOND ruling on the same view/seq "
+             "(one ruling per verdict)",
+             execute_set_aside(repo_sb, cseq_r, "wiki/a.md", "again",
+                               out=silent) == EXIT_FAIL)
+        case("reconciliation stays clean after --set-aside (the completed "
+             "non-confirm was already terminal; the adjudication adds no "
+             "blocking state)",
+             reconcile_state(repo_sb)["blocked"] is False)
+    finally:
+        shutil.rmtree(repo_sb, ignore_errors=True)
+
+    repo_sc = make_repo("cdrv-setaside3-")
+    try:
+        _git(repo_sc, "add", "-A")
+        _git(repo_sc, "commit", "-qm", "fixtures")
+        cseq_c = plant_seq103(repo_sc, "confirm")
+        case("--set-aside refuses a CONFIRMED leg (nothing to adjudicate)",
+             execute_set_aside(repo_sc, cseq_c, "wiki/a.md",
+                               "let it stand", out=silent) == EXIT_FAIL)
+        cseq_r2 = plant_seq103(repo_sc, "rejected")
+        rc = execute_revert(repo_sc, cseq_r2, out=silent)
+        case("--set-aside refuses a REVERTED run (nothing stands)",
+             rc == EXIT_OK
+             and execute_set_aside(repo_sc, cseq_r2, "wiki/a.md",
+                                   "let it stand",
+                                   out=silent) == EXIT_FAIL)
+    finally:
+        shutil.rmtree(repo_sc, ignore_errors=True)
+
+    # v3.0-63: deferred claims ride the summary block, named as
+    # pending_cascade-bound.
+    sm = _summary_block(7, "a" * 40, ["wiki/a.md"], None,
+                        {"census": (0, ""), "diff": (0, "")},
+                        deferred_claims=[("raw/wide.md", "c3",
+                                          "the gamma claim",
+                                          ["wiki/c.md"])])
+    case("v3.0-63: summary block lists deferred claims and names "
+         "pending_cascade as where they MUST land",
+         "Deferred:      1 claim(s)" in sm
+         and "MUST land in the receipt's pending_cascade" in sm
+         and "[raw/wide.md / c3] the gamma claim -> wiki/c.md" in sm)
+    sm2 = _summary_block(7, "a" * 40, ["wiki/a.md"], None,
+                         {"census": (0, ""), "diff": (0, "")})
+    case("v3.0-63: summary block without deferred claims is unchanged "
+         "(no Deferred band)", "Deferred:" not in sm2)
+
     # ------------------- P. codex resolution + bridge probe (backlog v3.0-68)
     NPM_TAIL = os.path.join(*_NPM_VENDOR_TAIL)
     APPDATA_EXE = os.path.join("C:\\ad", NPM_TAIL)
@@ -2875,6 +3202,9 @@ def main(argv):
     if opts["mode"] == "revert":
         return execute_revert(opts["root"], opts["seq"],
                               reason=opts["reason"])
+    if opts["mode"] == "set-aside":
+        return execute_set_aside(opts["root"], opts["seq"], opts["view"],
+                                 opts["ruling"])
     print(USAGE)
     return EXIT_INCONCLUSIVE
 

@@ -1147,12 +1147,25 @@ Rules (mechanically enforced, not advisory):
 
 def emit_packets(repo, plan, staging, routing_rules_text, event_class=None):
     """Compile a plan into ABSORB work packets + a dispatch manifest. Returns
-    the manifest dict (also written to <staging>/dispatch-manifest.json)."""
+    the manifest dict (also written to <staging>/dispatch-manifest.json).
+
+    v3.0-63: a plan carrying a `claim_routing` block is validated here first
+    (compile_v2.check_claim_routing -- the same check run() applies
+    pre-journal, pulled forward so a claim owned by nobody refuses at
+    staging time, before any authoring spend). Each packet then carries a
+    DECLARED CLAIM SCOPE section (what this view owns / what siblings own /
+    what is deferred) so authors write to declared scope instead of
+    guessing at totality, and each manifest entry records the same scope
+    under `claim_scope` (inside the F17 stamp, since stamping hashes the
+    whole manifest). Plans without the block emit byte-identical legacy
+    packets."""
+    compile_v2.check_claim_routing(plan)
     packets_dir = os.path.join(staging, "packets")
     answers_dir = os.path.join(staging, "answers")
     os.makedirs(packets_dir, exist_ok=True)
     os.makedirs(answers_dir, exist_ok=True)
 
+    claim_routing = plan.get("claim_routing")
     manifest_entries = []
     for idx, item in enumerate(plan["items"], start=1):
         view_rel = item["view"]
@@ -1214,6 +1227,39 @@ def emit_packets(repo, plan, staging, routing_rules_text, event_class=None):
         lines.append("## EVENT CLASSES")
         lines.extend(event_class_lines)
         lines.append("")
+        scope = compile_v2._view_claim_scope(claim_routing, view_rel,
+                                             item["events"])
+        if scope is not None:
+            lines.append("## DECLARED CLAIM SCOPE (plan-scoped, v3.0-63)")
+            lines.append(
+                "The plan deliberately split the routed events' load-bearing "
+                "claims across this run's views. Author THIS view to the "
+                "scope below: carry every claim this view OWNS; do NOT pull "
+                "in claims owned by sibling views or deferred to a later "
+                "run -- the verifier grades this view against exactly this "
+                "declared scope.")
+            lines.append("")
+            lines.append("Owned by this view:")
+            if scope["owned"]:
+                for erel, cid, text in scope["owned"]:
+                    lines.append("- [%s / %s] %s" % (erel, cid, text))
+            else:
+                lines.append("- (none -- every claim of these events is "
+                             "owned elsewhere or deferred)")
+            lines.append("Owned by sibling views this run:")
+            if scope["elsewhere"]:
+                for erel, cid, owner in scope["elsewhere"]:
+                    lines.append("- [%s / %s] -> %s" % (erel, cid, owner))
+            else:
+                lines.append("- (none)")
+            lines.append("Deferred to a later run:")
+            if scope["deferred"]:
+                for erel, cid, targets in scope["deferred"]:
+                    lines.append("- [%s / %s] -> %s"
+                                 % (erel, cid, ", ".join(targets)))
+            else:
+                lines.append("- (none)")
+            lines.append("")
         lines.append("## CURRENT VIEW: %s" % view_rel)
         lines.append(view_text if view_text is not None
                      else "(view does not exist yet)")
@@ -1229,11 +1275,24 @@ def emit_packets(repo, plan, staging, routing_rules_text, event_class=None):
                   encoding="utf-8", newline="\n") as fh:
             fh.write(packet_text)
 
-        manifest_entries.append({
+        entry = {
             "packet": packet_rel, "answer": answer_rel, "view": view_rel,
             "events": list(item["events"]), "lock_class": lock_class_any,
             "model": None, "vendor": None,
-        })
+        }
+        if scope is not None:
+            # v3.0-63: the view's declared scope rides the manifest (and so
+            # the F17 stamp -- stamp_dispatch hashes the whole manifest, so
+            # the scope is attested alongside everything else).
+            entry["claim_scope"] = {
+                "owned": [{"event": e, "id": i, "text": t}
+                          for e, i, t in scope["owned"]],
+                "elsewhere": [{"event": e, "id": i, "owner": o}
+                              for e, i, o in scope["elsewhere"]],
+                "deferred": [{"event": e, "id": i, "targets": list(ts)}
+                             for e, i, ts in scope["deferred"]],
+            }
+        manifest_entries.append(entry)
 
     manifest = {"packets": manifest_entries,
                "created": time.strftime("%Y-%m-%dT%H:%M:%S")}
@@ -1825,6 +1884,76 @@ def self_test():
                      for ln in packet_text.splitlines()))
         case("manifest entry lock_class true (one lock-class event present)",
              manifest["packets"][0]["lock_class"] is True)
+        case("legacy plan (no claim_routing): packet carries NO claim-scope "
+             "section (byte-compat)",
+             "DECLARED CLAIM SCOPE" not in packet_text)
+        case("legacy plan (no claim_routing): manifest entry carries no "
+             "claim_scope key",
+             "claim_scope" not in manifest["packets"][0])
+
+        # ------------------------------------- v3.0-63: declared claim scope
+        with open(os.path.join(repo, "wiki", "b.md"), "w", encoding="utf-8",
+                  newline="\n") as fh:
+            fh.write("# B\n\n## Intro\nworld\n")
+        scoped_plan = {"items": [
+            {"view": "wiki/a.md", "events": ["raw/e1.md"],
+             "event_class": {"raw/e1.md": {"class": "t3",
+                                           "origin": "explicit"}}},
+            {"view": "wiki/b.md", "events": ["raw/e1.md"],
+             "event_class": {"raw/e1.md": {"class": "t3",
+                                           "origin": "explicit"}}}],
+            "claim_routing": {"raw/e1.md": {
+                "claims": [{"id": "c1", "text": "the alpha claim",
+                            "owner": "wiki/a.md"},
+                           {"id": "c2", "text": "the beta claim",
+                            "owner": "wiki/b.md"}],
+                "deferred": [{"id": "c3", "text": "the gamma claim",
+                              "targets": ["wiki/c.md"]}]}}}
+        scoped_staging = os.path.join(tmp, "scoped-staging")
+        os.makedirs(scoped_staging)
+        scoped_manifest = emit_packets(repo, scoped_plan, scoped_staging,
+                                       routing_text)
+        sp_text = open(os.path.join(
+            scoped_staging,
+            scoped_manifest["packets"][0]["packet"].replace("/", os.sep)),
+            encoding="utf-8").read()
+        case("v3.0-63: routed plan's packet carries the DECLARED CLAIM "
+             "SCOPE section",
+             "## DECLARED CLAIM SCOPE (plan-scoped, v3.0-63)" in sp_text)
+        case("v3.0-63: owned claim listed for the owning view's packet",
+             "- [raw/e1.md / c1] the alpha claim" in sp_text)
+        case("v3.0-63: sibling-owned claim listed with its owner",
+             "- [raw/e1.md / c2] -> wiki/b.md" in sp_text)
+        case("v3.0-63: deferred claim listed with its future target",
+             "- [raw/e1.md / c3] -> wiki/c.md" in sp_text)
+        case("v3.0-63: manifest entries carry the per-view claim_scope",
+             scoped_manifest["packets"][0].get("claim_scope", {}).get(
+                 "owned") == [{"event": "raw/e1.md", "id": "c1",
+                              "text": "the alpha claim"}]
+             and scoped_manifest["packets"][1].get("claim_scope", {}).get(
+                 "owned") == [{"event": "raw/e1.md", "id": "c2",
+                              "text": "the beta claim"}])
+        scoped_manifest_path = os.path.join(scoped_staging,
+                                            "dispatch-manifest.json")
+        scoped_stamped = stamp_dispatch(
+            scoped_manifest_path, "gpt-5.5", "openai",
+            identity_source="attestation:self-test-fixture")
+        ok_scoped_stamp, _r = _verify_dispatch_stamp(scoped_stamped)
+        case("v3.0-63: F17 stamp covers a claim_scope-carrying manifest "
+             "(recomputed sha matches)", ok_scoped_stamp)
+        bad_plan = {"items": scoped_plan["items"],
+                    "claim_routing": {"raw/e1.md": {
+                        "claims": [{"id": "c1", "text": "the alpha claim",
+                                    "owner": ""}]}}}
+        bad_staging = os.path.join(tmp, "bad-scoped-staging")
+        os.makedirs(bad_staging)
+        try:
+            emit_packets(repo, bad_plan, bad_staging, routing_text)
+            case("v3.0-63: emit_packets refuses a claim owned by nobody "
+                 "(pulled forward from run())", False)
+        except compile_v2.ValidationError as e:
+            case("v3.0-63: emit_packets refuses a claim owned by nobody "
+                 "(pulled forward from run())", "full stop" in str(e))
 
         # --------------------------------------------------- stamp_dispatch (F17)
         manifest_path = os.path.join(pkg_staging, "dispatch-manifest.json")

@@ -102,6 +102,51 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.28 → v3.0.29 (plan-scoped verify, and the verify chain's last link)
+
+Knowledge-os instances only; no **[your call]** entries — everything here is session work,
+and nothing changes what runs unattended. After adoption, a compile plan that deliberately
+splits a wide source across articles DECLARES the split (`claim_routing` in `plan.json`),
+the second-vendor checker grades each article against its declared scope instead of the
+whole source, rejected-run re-rides stop reading updates as created-from-nothing, and —
+the one every knowledge-os instance needs regardless of routing — articles created by the
+engine can finally RECORD the checker's approval instead of having it discarded.
+
+1. **Re-copy the engine trio** into your `deploy/` and confirm the batteries:
+   `deploy/compile-v2.py` (**191/191**), `deploy/compile-backends.py` (**176/176**),
+   `deploy/compile-driver.py` (**172/172**). Behavior for plans without a `claim_routing`
+   block is byte-identical — staged runs and re-rides authored before this release run
+   exactly as before.
+1b. **Re-copy `deploy/check-derivation.py`** (**18/18**) — it gains the region-presence
+   check described in step 4.
+2. **Re-copy the doctrine + skill:** `docs/engine/OPERATIONS.md` (from
+   `capabilities/knowledge-os/extracted/engine/OPERATIONS.md` — §6 scoped totality, §7
+   two-question charge + the one-plan-defect rule + `--set-aside`),
+   `.claude/skills/compile/SKILL.md` (from `compile/SKILL.md.template`, hand-substituting
+   `{{...}}`: Step 2 claim routing, Step 2.5 scoped totality, Step 3 per-agent scratch
+   paths, Step 3b set-aside wiring, Step 10 pending_cascade citation), and
+   `docs/wiki-schema.md` § 7's `pending_cascade.claims_deferred` rows (from
+   `wiki-schema.md.template` — the shape's one home).
+3. **Re-riding previously rejected runs** (the whole point): the staging dirs your rejected
+   runs left behind predate claim routing, so author a FRESH plan per re-ride — same views
+   and events, plus the `claim_routing` table the old plan never had — then the normal
+   correction cycle (`--revert` if the run still stands → fresh `emit_packets` + re-stamp →
+   `--run`). If the operator has ALREADY ruled a specific rejection wrong, record it now:
+   `py deploy/compile-driver.py --set-aside --root . --seq <N> --view <article> --ruling
+   "<their words>"` — the ruling is journaled beside the verdict and the article's verify
+   baseline advances as adjudicated.
+4. **Mint derivation regions for articles you ALREADY have — do this BEFORE step 3.**
+   From this release the engine mints one for every article it creates, but articles
+   written before adoption may have none, and an article without one can never record a
+   verification: the checker approves it and the approval is discarded for lack of
+   anywhere to stamp it. Run `python deploy/check-derivation.py --root .` first — it now
+   names any article missing a region. If it lists any, run
+   `python deploy/backfill-derivation.py --root .` **on a worktree or branch, never
+   directly on a live tree** (that script's own safety rule), review the diff, then merge.
+   It is idempotent, skips regenerated INDEX/HEALTH/REVIEW files, validates every mint and
+   reverts any file that regresses. Re-riding before this step means spending paid
+   cross-vendor legs on approvals the engine will throw away.
+
 ## v3.0.27 → v3.0.28 (the prose scan learns what prose is)
 
 One file, no decisions: re-copy `deploy/check-briefing-format.py` (self-test **19/19**).

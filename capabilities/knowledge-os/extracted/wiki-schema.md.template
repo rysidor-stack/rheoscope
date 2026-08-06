@@ -275,6 +275,11 @@ pending_cascade:
   - raw_file: raw/<file>.md
     targets_remaining:
       - wiki/<domain>/<other>.md
+    claims_deferred:              # v3.0.29 (backlog v3.0-63); absent on runs
+      - id: <plan-local slug>     # whose plan declared no claim_routing
+        text: "<the claim, one sentence>"
+        targets:
+          - wiki/<domain>/<other>.md
 notes: |
   Free-form prose summary. Include any `[unresolved-term: <term>]`
   entries for /preflight to resolve in the next CONTEXT.md update pass.
@@ -283,7 +288,7 @@ notes: |
 
 `journal_seq` and `run_commit` (added 2026-07-28 with the compile↔engine wiring, backlog v3.0-65) tie the receipt to the memory engine's own append-only run record: `journal_seq` is the sequence number of `receipts/journal/<seq>.json` and `run_commit` is the stage-only commit that carries the absorbed views plus that record — both reported by `deploy/compile-driver.py`'s summary block. They are `null` on a run that never reached the engine (a pre-write refusal, a no-op run with nothing to absorb, or an engine-absent instance running /compile's degradation mode). The receipt is **not** displaced by the run journal: the receipt is skill bookkeeping consumed by the next `/compile` run's Step 1, the journal is the engine contract consumed by `check-run-diff.py`. Both continue.
 
-`meaningful_change` distinguishes productive runs from no-op runs. `pending_cascade` carries Tier-3 targets that didn't get reached in this run (circuit breaker, context limits) and re-enters the pipeline on the next /compile. `review_compacted` records the terminally-resolved REVIEW.md entries deleted by Step 6a in this run (count + titles) — present so the auto-sweep stays audited; git retains full history regardless. It is empty or absent when nothing was swept.
+`meaningful_change` distinguishes productive runs from no-op runs. `pending_cascade` carries Tier-3 targets that didn't get reached in this run (circuit breaker, context limits) and re-enters the pipeline on the next /compile; since v3.0.29 it also carries `claims_deferred` — the per-claim rows the plan's `claim_routing` deferred to later runs, copied verbatim from the compile summary's Deferred band. This section is the ONE home of that shape (the compile skill's Step 10 cites it); a deferred claim that never reaches `pending_cascade` is a claim declared away, which the whole v3.0-63 design exists to make impossible. `review_compacted` records the terminally-resolved REVIEW.md entries deleted by Step 6a in this run (count + titles) — present so the auto-sweep stays audited; git retains full history regardless. It is empty or absent when nothing was swept.
 
 **Authorized directory removal.** If an operator-authorized directory removal ever occurs (see § 6 Directory Preservation Rule), the receipt records it as an `articles_modified` entry with `operation: removed`, and quotes the operator's authorization in `notes`. That is the only path by which a receipt may report a removal.
 

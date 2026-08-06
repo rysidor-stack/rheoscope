@@ -121,6 +121,22 @@ CIRCUIT_BREAKER_REBUILDS = 15
 LOCK_CLASSES = {"t1", "correction", "lock", "informed_by"}
 VIEW_BYTE_CAP = 200_000
 
+# Shipped-state section detector -- ONE home for both the refusing site
+# (validate_absorb_output) and the flagging site (reconcile_flags), which
+# carried byte-identical copies of this expression.
+#
+# WORD-ANCHORED (v3.0-70, 2026-08-06). The unanchored form matched "live" as
+# a bare substring, so it fired on every heading merely CONTAINING those
+# letters: verified against a live heading set, "Deliverable Dates",
+# "Delivery Schedule", "Deliverables", "Olive oil sourcing", "Lively debate"
+# and "Livelihood" all matched on `live` -- LAMPS renamed accurate headings
+# twice to get past it. Anchoring loses NO coverage: "Shipped state",
+# "As-built notes" and "Currently live in production" all still match. This
+# closes the substring defect only; whether a heading using "live" as an
+# ordinary adjective ("Live lane") should trip the guard at all is the open
+# half of v3.0-70, held for an operator ruling -- it still matches here.
+_SHIPPED_STATE_RE = re.compile(r"\b(shipped|live|as-built)\b", re.I)
+
 
 class ValidationError(Exception):
     pass
@@ -251,6 +267,184 @@ def check_plan_precedence(plan, registrations_map):
                     "origin=explicit -- refused pre-journal"
                     % (erel, reg.get("event_class"),
                        reg.get("event_class_origin"), plan_class))
+
+
+# --------------------------------------------------------------- claim routing (v3.0-63)
+def check_claim_routing(plan):
+    """Plan-scoped totality, mechanical half (backlog v3.0-63), at plan-intake
+    time, pre-journal -- same refusal discipline as check_plan_precedence.
+
+    The plan MAY carry a top-level `claim_routing` block: per raw event, the
+    source's load-bearing claims and where each one goes --
+
+      "claim_routing": {
+        "raw/<file>.md": {
+          "claims":   [{"id": "<plan-local slug>", "text": "<one sentence>",
+                        "owner": "wiki/<view>.md"}],
+          "deferred": [{"id": "...", "text": "...",
+                        "targets": ["wiki/<other>.md", ...]}]}}
+
+    Rules (ValidationError on the first violation, deterministic order):
+      * every claim carries a non-empty id, text, and owner;
+      * ids are unique per event across claims + deferred (exactly-one-owner
+        is checked by identity, so a duplicated id would make it vacuous);
+      * every owner is a view of a plan item whose events list NAMES this
+        event (an owner that never receives the event cannot absorb it);
+      * every deferred claim carries a non-empty `targets` list naming its
+        future destination views (this is what the receipt's pending_cascade
+        carries forward -- a deferral to nowhere is a claim declared away);
+      * every event key resolves to an event named in some plan item.
+
+    A claim with NO owner and NO deferral cannot be expressed in this shape
+    at all (each claim lives in exactly one of the two lists) -- the refusals
+    above close the remaining declare-away shapes (empty owner, empty
+    targets, dangling event). Events absent from `claim_routing` -- and plans
+    with no block at all -- keep today's behavior exactly: the verifier
+    grades them against total event coverage (backward compatibility for
+    staged runs and re-rides authored before v3.0.29). Nothing here loosens:
+    routing is opt-in per event, and opting in only ADDS refusal surface and
+    verifier scope, never removes any."""
+    routing = plan.get("claim_routing")
+    if routing is None:
+        return
+    if not isinstance(routing, dict):
+        raise ValidationError("claim_routing must be an object keyed by "
+                              "event path")
+    plan_events = set()
+    views_by_event = {}
+    for item in plan.get("items", []):
+        for erel in item.get("events", []):
+            plan_events.add(erel)
+            views_by_event.setdefault(erel, set()).add(item.get("view"))
+    for erel in routing:
+        entry = routing[erel]
+        if erel not in plan_events:
+            raise ValidationError(
+                "claim_routing names event %r which no plan item's events "
+                "list carries -- routing for an event outside this run is "
+                "meaningless" % erel)
+        if not isinstance(entry, dict):
+            raise ValidationError(
+                "claim_routing[%r] must be an object with 'claims' and/or "
+                "'deferred' lists" % erel)
+        seen_ids = set()
+        for c in entry.get("claims") or []:
+            cid = str(c.get("id") or "").strip()
+            text = str(c.get("text") or "").strip()
+            owner = str(c.get("owner") or "").strip()
+            if not cid or not text:
+                raise ValidationError(
+                    "claim_routing[%r]: every claim needs a non-empty id "
+                    "and text (got id=%r)" % (erel, c.get("id")))
+            if cid in seen_ids:
+                raise ValidationError(
+                    "claim_routing[%r]: duplicate claim id %r -- ids must "
+                    "be unique per event so exactly-one-owner is checkable"
+                    % (erel, cid))
+            seen_ids.add(cid)
+            if not owner:
+                raise ValidationError(
+                    "claim_routing[%r]: claim %r has no owner and is not "
+                    "deferred -- a claim routed to no view in the run and "
+                    "absent from the deferral list is a refused plan, "
+                    "full stop" % (erel, cid))
+            if owner not in views_by_event.get(erel, set()):
+                raise ValidationError(
+                    "claim_routing[%r]: claim %r names owner %r, but no "
+                    "plan item routes this event to that view -- an owner "
+                    "that never receives the event cannot absorb its claim"
+                    % (erel, cid, owner))
+        for d in entry.get("deferred") or []:
+            did = str(d.get("id") or "").strip()
+            text = str(d.get("text") or "").strip()
+            targets = d.get("targets") or []
+            if not did or not text:
+                raise ValidationError(
+                    "claim_routing[%r]: every deferred claim needs a "
+                    "non-empty id and text (got id=%r)" % (erel, d.get("id")))
+            if did in seen_ids:
+                raise ValidationError(
+                    "claim_routing[%r]: id %r appears in both claims and "
+                    "deferred -- a claim is owned this run or deferred, "
+                    "never both" % (erel, did))
+            seen_ids.add(did)
+            if not isinstance(targets, list) or not [t for t in targets
+                                                     if str(t).strip()]:
+                raise ValidationError(
+                    "claim_routing[%r]: deferred claim %r names no target "
+                    "view(s) -- a deferral to nowhere is a claim declared "
+                    "away; name where it will land, and the receipt's "
+                    "pending_cascade carries it there" % (erel, did))
+
+
+def _view_claim_scope(routing, view, events):
+    """Derive one view's declared claim scope from the per-event routing
+    block: {"owned": [(event, id, text)], "elsewhere": [(event, id, owner)],
+    "deferred": [(event, id, targets)]} over exactly `events`. Returns None
+    when routing is absent or covers none of these events (the legacy-path
+    signal: callers must then change NOTHING about today's behavior)."""
+    if not isinstance(routing, dict):
+        return None
+    owned, elsewhere, deferred = [], [], []
+    covered = False
+    for erel in events:
+        entry = routing.get(erel)
+        if not isinstance(entry, dict):
+            continue
+        covered = True
+        for c in entry.get("claims") or []:
+            if c.get("owner") == view:
+                owned.append((erel, c.get("id"), c.get("text")))
+            else:
+                elsewhere.append((erel, c.get("id"), c.get("owner")))
+        for d in entry.get("deferred") or []:
+            deferred.append((erel, d.get("id"), d.get("targets") or []))
+    if not covered:
+        return None
+    return {"owned": owned, "elsewhere": elsewhere, "deferred": deferred}
+
+
+def _render_claim_routing_section(scope, view):
+    """Render the DECLARED CLAIM ROUTING packet section for one view's scope
+    (from _view_claim_scope, never None here). Additive-only: this section
+    is appended after the packet's legacy sections and appears ONLY when the
+    plan declared routing for the view's events (v3.0-63)."""
+    lines = ["## DECLARED CLAIM ROUTING (plan-scoped, v3.0-63)"]
+    lines.append(
+        "The compile plan deliberately split the routed events' load-bearing "
+        "claims across the run's views. This view is graded against the "
+        "scope declared below -- a claim listed as owned by a SIBLING view "
+        "or as deferred is declared scope, NOT an omission from this view. "
+        "A load-bearing claim of the events missing from this table "
+        "entirely IS a defect: reject with reason class "
+        "'enumeration-incomplete', naming the claim.")
+    lines.append("")
+    lines.append("Claims THIS VIEW OWNS (each must be represented or "
+                 "implied in the view; a missing one is a rejection):")
+    if scope["owned"]:
+        for erel, cid, text in scope["owned"]:
+            lines.append("- [%s / %s] %s" % (erel, cid, text))
+    else:
+        lines.append("- (none -- this view owns no claim of these events "
+                     "this run)")
+    lines.append("")
+    lines.append("Claims routed to SIBLING views this run (not this view's "
+                 "scope):")
+    if scope["elsewhere"]:
+        for erel, cid, owner in scope["elsewhere"]:
+            lines.append("- [%s / %s] -> %s" % (erel, cid, owner))
+    else:
+        lines.append("- (none)")
+    lines.append("")
+    lines.append("Claims DEFERRED to a later run (named in the run "
+                 "receipt's pending_cascade):")
+    if scope["deferred"]:
+        for erel, cid, targets in scope["deferred"]:
+            lines.append("- [%s / %s] -> %s" % (erel, cid,
+                                                ", ".join(targets)))
+    else:
+        lines.append("- (none)")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------- P5 pointer-class ceiling
@@ -429,8 +623,7 @@ def validate_absorb_output(repo, view_rel, old_text, out, events,
     # shipped-state prose REQUIRES corpus_support at emit time (spec sec.7 ABSORB);
     # the RECONCILE flag additionally catches prose-level cases post-hoc
     shippy = [m for m in out.get("manifest") or []
-              if re.search(r"(shipped|live|as-built)",
-                           str(m.get("section", "")), re.I)]
+              if _SHIPPED_STATE_RE.search(str(m.get("section", "")))]
     if shippy and not out.get("corpus_support"):
         raise ValidationError("shipped-state section(s) %s changed with no "
                               "corpus_support entry"
@@ -516,12 +709,84 @@ def reconcile_flags(absorbed_rows, entity_index=None, repo=None):
     # (e) shipped-state prose without corpus_support
     for r in changed:
         shippy = [m for m in r.get("manifest", [])
-                  if re.search(r"(shipped|live|as-built)",
-                               str(m.get("section", "")), re.I)]
+                  if _SHIPPED_STATE_RE.search(str(m.get("section", "")))]
         if shippy and not r.get("corpus_support"):
             flags.append({"kind": "shipped-state-no-support", "view": r["view"],
                           "sections": sorted({m["section"] for m in shippy})})
     return flags
+
+
+# ------------------------------------------- derivation minting (v3.0-69)
+# Regenerated projections are rebuilt wholesale by /compile, so a region there
+# would be destroyed on the next regeneration -- same exclusion backfill uses.
+_PROJECTION_BASENAMES = {"INDEX.md", "HEALTH.md", "REVIEW.md"}
+
+
+def _mint_derivation_region(repo, view_rel, text):
+    """Mint the engine-managed derivation region for a view this run CREATED
+    (backlog v3.0-69). Returns the text with the region inserted, or the text
+    UNCHANGED when it cannot be minted honestly.
+
+    WHY THIS EXISTS. `_stamp_verified_block` writes `verified:` strictly
+    inside DERIV_START..DERIV_END, so a view with no region can never record
+    a verification -- and the absorb path never created one (it only strips,
+    or writes into, an existing region; every region-writing site in this
+    file was a self-test fixture hand-authoring a view that already had one,
+    which is why the batteries never caught it). Reproduced 2026-08-06: a new
+    view whose author-supplied text carried no region drew a `confirmed`
+    verdict from the verify backend and the engine recorded ZERO
+    confirmations -- a paid cross-vendor approval produced and then discarded.
+    backfill-derivation.py closed this for LEGACY hand-era corpora; a project
+    born on the engine had no minter at all.
+
+    SINGLE-HOMED SHAPE: the region text, its conservative defaults, and the
+    origin_max computation are backfill-derivation.py's `render_region` /
+    `view_kind` / `compute_origin_max` -- called, never re-implemented, so
+    the two minters can never drift. `consumed_status` is therefore
+    `legacy-assumed`, deliberately: of the three legal values it is the only
+    one that closes this defect without side effects. `audit-pending` would
+    trip check-derivation's F12 gate on every engine-born view forever (a
+    permanent doctor FAIL), and `verified-consumed` would assert a
+    verification that has not happened yet -- the verify leg runs AFTER this
+    write. The honest residue (an engine-born view labelled "legacy") is
+    filed as v3.0-71: nothing today ever TRANSITIONS consumed_status, so
+    fixing the label properly is new machinery, not a value change here.
+
+    ORDERING: called from run() AFTER validate_absorb_output has passed, so
+    the manifest-vs-diff contract is graded against exactly what the author
+    wrote -- the engine's region is never a section the author must claim.
+    The caller recomputes post_blob over the minted text so the journal pins
+    what actually lands on disk.
+
+    UNMINTABLE CASES (text returned unchanged, no new refusal): a regenerated
+    projection basename, and a view whose leading frontmatter block does not
+    parse -- the latter is already a check-frontmatter finding and papering
+    over it with a guessed region would be worse than leaving it visible."""
+    if os.path.basename(view_rel) in _PROJECTION_BASENAMES:
+        return text
+    try:
+        bfd = _load("backfill-derivation.py", "backfill_derivation_v2")
+        cfm = _load("check-frontmatter.py", "check_frontmatter_v2")
+    except Exception:                                       # noqa: BLE001
+        return text
+    parsed = bfd.parse_view(text)
+    if parsed is None:
+        return text
+    fm_end, title, summary, sources = parsed
+    try:
+        omax, _counts = bfd.compute_origin_max(repo, sources)
+    except Exception:                                       # noqa: BLE001
+        omax = "unknown"        # most restrictive, matching backfill's rule
+    region = bfd.render_region(
+        cfm.SCHEMA_VERSION, bfd.view_kind(view_rel),
+        # A non-empty summary keeps render_region off its own legacy-view
+        # fallback string, which would be a false statement about a view the
+        # engine just created.
+        summary or title or "(engine-born view; summary pending)",
+        omax, view_rel)
+    lines = text.splitlines()
+    new_lines = lines[:fm_end + 1] + ["", region] + lines[fm_end + 1:]
+    return "\n".join(new_lines) + ("\n" if text.endswith("\n") else "")
 
 
 # --------------------------------------------------------------- the run
@@ -539,6 +804,11 @@ def run(repo, plan, absorb_backend, run_type="compile", break_stale=False,
         # lock on the way out.
         registrations_map = _load_registration_seam(repo)
         check_plan_precedence(plan, registrations_map)
+        # v3.0-63 plan-scoped totality, mechanical half: a declared claim
+        # routing is validated pre-journal (exactly-one-owner, owner in
+        # plan, deferrals carry named targets). Plans without the block
+        # behave exactly as before this check existed.
+        check_claim_routing(plan)
         # v3.0-22 structural refusal, plan-intake time, pre-journal (same
         # discipline as check_plan_precedence above): two plan items
         # resolving to the SAME view path would make the later item absorb
@@ -589,7 +859,8 @@ def run(repo, plan, absorb_backend, run_type="compile", break_stale=False,
                                       % CIRCUIT_BREAKER_REBUILDS)
             view = item["view"]
             vp = os.path.join(repo, view.replace("/", os.sep))
-            old = open(vp, encoding="utf-8").read() if os.path.isfile(vp) else ""
+            view_existed = os.path.isfile(vp)
+            old = open(vp, encoding="utf-8").read() if view_existed else ""
             events = {}
             for erel in item["events"]:
                 ep = os.path.join(repo, erel.replace("/", os.sep))
@@ -622,7 +893,20 @@ def run(repo, plan, absorb_backend, run_type="compile", break_stale=False,
             if blobs is None:
                 continue    # pure no-op item: nothing written, nothing rebuilt
             pre_blob, post_blob = blobs
-            pending_writes.append((vp, out["new_text"]))
+            final_text = out["new_text"]
+            # v3.0-69: a view this run CREATES gets its engine-managed
+            # derivation region minted now -- otherwise the cross-vendor
+            # confirm has nowhere to be stamped and is produced then
+            # discarded. Existing region-less views stay backfill's job
+            # (the migration path); this covers the born-on-the-engine case
+            # that had no minter at all. Minted AFTER validation, so the
+            # author's manifest contract is untouched.
+            if not view_existed and asm.DERIV_START not in final_text:
+                minted = _mint_derivation_region(repo, view, final_text)
+                if minted != final_text:
+                    final_text = minted
+                    post_blob = _blob_of_text(repo, final_text)
+            pending_writes.append((vp, final_text))
             rebuilds += 1
             touched_paths.append(view)
             absorbed.append({"view": view,
@@ -652,6 +936,13 @@ def run(repo, plan, absorb_backend, run_type="compile", break_stale=False,
                                   _git(repo, "rev-parse", "HEAD").strip())
         rec["absorbed"] = absorbed
         rec["noop_candidates"] = noop_candidates
+        # v3.0-63: journal the validated claim routing on the compile record
+        # itself, so verify passes (and any later re-verify) read the
+        # declared scope from the append-only journal -- never from the
+        # throwaway staging dir. Absent block -> absent key -> legacy
+        # packets, byte-identical.
+        if plan.get("claim_routing"):
+            rec["claim_routing"] = plan["claim_routing"]
         rec["run_window"] = {"start": t0,
                              "end": time.strftime("%Y-%m-%dT%H:%M:%S")}
         rec["reconcile_flags"] = flags
@@ -844,7 +1135,10 @@ def _absorption_trigger_state(repo, compile_seq):
 
     Returns {view: {"last_verified_seq": int|None,
     "last_verified_view_sha256": str|None, "last_verified_commit": str|None,
-    "first_pre_blob": str, "absorbed_seqs": [seq...] sorted}}.
+    "last_verified_kind": "machine-verified"|"adjudicated"|None,
+    "last_verified_at": str|None,
+    "first_pre_blob": str, "first_pre_seq": int|None,
+    "absorbed_seqs": [seq...] sorted}}.
 
     last_verified_commit (2026-07-06 recovery-fix amendment): the git commit
     sha of the verify record that produced the last_verified_seq stamp --
@@ -854,33 +1148,77 @@ def _absorption_trigger_state(repo, compile_seq):
     seq-keyed packet lookup silently mismatches; see verify_commit below).
     Older journal records written before this amendment carry no
     verify_commit field -- last_verified_commit is then None and recovery
-    fails honest (CUMULATIVE DIFF UNAVAILABLE), never a silent wrong guess."""
+    fails honest (CUMULATIVE DIFF UNAVAILABLE), never a silent wrong guess.
+
+    REVERTED-RUN EXCLUSION (v3.0-67, 2026-08-06). absorbed[] entries from a
+    compile record that a journaled driver revert names as reverted
+    (driver_revert.status == "reverted") are SKIPPED when deriving
+    first_pre_blob/absorbed_seqs: a reverted run's absorption never landed,
+    so its pre-absorb blob is a ghost. The live failure this closes: a
+    rejected run that CREATED a view was reverted (correctly), the journal
+    kept its record (correctly, append-only), and the empty-blob "created
+    from nothing" baseline then poisoned every later verify of that view --
+    each update-diff read as creating the whole article from an empty file
+    (Ultrapak 2026-08-05, mechanically confirmed instance-side).
+
+    ADJUDICATED BASELINES (v3.0.29 amendment). An operator set-aside ruling
+    (`compile-driver.py --set-aside`, journaled as absorption_adjudicated[])
+    ALSO advances the baseline: the operator is the only party who may set a
+    verdict aside, and once they have, the content they ruled on is the
+    honest diff base for the next update -- otherwise a set-aside view diffs
+    from birth forever. The stamp kind is carried ("adjudicated" vs
+    "machine-verified") so the verify packet names what the baseline is; a
+    bare rejection with no ruling advances NOTHING."""
+    reverted = set()
+    for _seq, rec in _iter_all_journal_records(repo):
+        dr = rec.get("driver_revert")
+        if isinstance(dr, dict) and dr.get("status") == "reverted" \
+                and isinstance(dr.get("reverts_seq"), int):
+            reverted.add(dr["reverts_seq"])
+
+    def _blank():
+        return {"last_verified_seq": None,
+                "last_verified_view_sha256": None,
+                "last_verified_commit": None,
+                "last_verified_kind": None,
+                "last_verified_at": None,
+                "first_pre_blob": "", "first_pre_seq": None,
+                "absorbed_seqs": []}
+
     state = {}
     for seq, rec in _iter_all_journal_records(repo):
-        if seq <= compile_seq:
+        if seq <= compile_seq and seq not in reverted:
             for a in rec.get("absorbed", []):
                 v = a.get("view")
                 if not v:
                     continue
-                st = state.setdefault(v, {"last_verified_seq": None,
-                                          "last_verified_view_sha256": None,
-                                          "last_verified_commit": None,
-                                          "first_pre_blob": a.get("pre_blob", ""),
-                                          "absorbed_seqs": []})
+                st = state.setdefault(v, _blank())
+                if st["first_pre_seq"] is None:
+                    st["first_pre_blob"] = a.get("pre_blob", "")
+                    st["first_pre_seq"] = seq
                 st["absorbed_seqs"].append(seq)
         for av in rec.get("absorption_verified", []):
             v = av.get("view")
             if not v:
                 continue
-            st = state.setdefault(v, {"last_verified_seq": None,
-                                      "last_verified_view_sha256": None,
-                                      "last_verified_commit": None,
-                                      "first_pre_blob": "",
-                                      "absorbed_seqs": []})
+            st = state.setdefault(v, _blank())
             if st["last_verified_seq"] is None or seq > st["last_verified_seq"]:
                 st["last_verified_seq"] = seq
                 st["last_verified_view_sha256"] = av.get("view_sha256")
                 st["last_verified_commit"] = av.get("verify_commit")
+                st["last_verified_kind"] = "machine-verified"
+                st["last_verified_at"] = av.get("verified_at")
+        for aj in rec.get("absorption_adjudicated", []):
+            v = aj.get("view")
+            if not v:
+                continue
+            st = state.setdefault(v, _blank())
+            if st["last_verified_seq"] is None or seq > st["last_verified_seq"]:
+                st["last_verified_seq"] = seq
+                st["last_verified_view_sha256"] = aj.get("view_sha256")
+                st["last_verified_commit"] = aj.get("baseline_commit")
+                st["last_verified_kind"] = "adjudicated"
+                st["last_verified_at"] = aj.get("at")
     for st in state.values():
         st["absorbed_seqs"].sort()
     return state
@@ -920,26 +1258,47 @@ def _absorbed_events_for_view(rec, view):
 def _cumulative_diff(repo, view, current_body, state):
     """Unified diff of view's BODY (derivation region stripped on both
     sides -- see _strip_derivation_region) from its diff-BASE to CURRENT.
-    Base = last-verified body, recovered via git-show against the journaled
-    verify_commit (see _recover_verified_body), if ever verified; else the
-    pre-first-absorb blob (a real git blob sha, diffable directly; also
-    stripped for symmetry with the verified-base branch). Fail-honest: if a
-    previously-verified base body cannot be recovered (no verify_commit on
-    record, commit unreachable, or recovered content disagrees with the
-    pinned hash), the diff section says so explicitly (UNAVAILABLE marker)
-    rather than silently diffing from empty or from the wrong base."""
+    Base = last-verified-or-adjudicated body, recovered via git-show against
+    the journaled commit (see _recover_verified_body), if any such stamp
+    exists; else the pre-first-SURVIVING-absorb blob (a real git blob sha,
+    diffable directly; also stripped for symmetry with the verified-base
+    branch -- reverted runs' ghosts are already excluded by
+    _absorption_trigger_state, v3.0-67). Fail-honest: if a stamped base body
+    cannot be recovered (no commit on record, commit unreachable, or
+    recovered content disagrees with the pinned hash), the diff section says
+    so explicitly (UNAVAILABLE marker) rather than silently diffing from
+    empty or from the wrong base.
+
+    BASELINE NAMING (v3.0-67): every return names its baseline in the first
+    line, in words -- the checker must never have to guess what the "before"
+    is. A genuinely NEW view says "NEW VIEW ... verifies from empty" out
+    loud; an operator-adjudicated baseline says "adjudicated <date> by
+    operator ruling, not machine-verified" out loud; an existing view can
+    never again silently diff from an empty file."""
     st = state.get(view) or {}
     lvs = st.get("last_verified_seq")
     if lvs is None:
         pre_blob = st.get("first_pre_blob", "")
         if not pre_blob:
-            return "(never-verified, no prior absorption on record -- "\
-                   "cumulative diff is the full body)\n" + current_body
+            return "(baseline: NEW VIEW -- never verified, no surviving "\
+                   "prior absorption on record; cumulative diff is the "\
+                   "full body)\n" + current_body
         pre_text = _git(repo, "cat-file", "-p", pre_blob)
+        if not pre_text:
+            base_line = ("(baseline: NEW VIEW -- this view was created by "
+                         "the run under verify, at journal seq %s; no "
+                         "pre-absorb content exists, so it legitimately "
+                         "verifies from empty)"
+                         % st.get("first_pre_seq"))
+        else:
+            base_line = ("(baseline: the view's real pre-absorb content "
+                         "before journal seq %s -- never machine-verified; "
+                         "reverted runs excluded)" % st.get("first_pre_seq"))
         cur_blob = _blob_of_text(repo, _strip_derivation_region(current_body))
         pre_stripped_blob = _blob_of_text(
             repo, _strip_derivation_region(pre_text))
-        return _git(repo, "diff", "--no-color", pre_stripped_blob, cur_blob)
+        return base_line + "\n" + _git(repo, "diff", "--no-color",
+                                       pre_stripped_blob, cur_blob)
     base_sha256 = st.get("last_verified_view_sha256")
     verify_commit = st.get("last_verified_commit")
     base_body, reason = _recover_verified_body(repo, view, verify_commit,
@@ -948,9 +1307,18 @@ def _cumulative_diff(repo, view, current_body, state):
         return ("(CUMULATIVE DIFF UNAVAILABLE: last-verified body at seq %d "
                 "could not be recovered -- %s; full current body follows)\n"
                 "%s" % (lvs, reason, current_body))
+    if st.get("last_verified_kind") == "adjudicated":
+        base_line = ("(baseline: adjudicated %s by operator ruling, not "
+                     "machine-verified -- journal seq %d)"
+                     % (st.get("last_verified_at") or "(date unrecorded)",
+                        lvs))
+    else:
+        base_line = ("(baseline: last machine-verified state, journal seq "
+                     "%d)" % lvs)
     pre_blob = _blob_of_text(repo, _strip_derivation_region(base_body))
     cur_blob = _blob_of_text(repo, _strip_derivation_region(current_body))
-    return _git(repo, "diff", "--no-color", pre_blob, cur_blob)
+    return base_line + "\n" + _git(repo, "diff", "--no-color", pre_blob,
+                                   cur_blob)
 
 
 def _recover_verified_body(repo, view, verify_commit, expected_sha256):
@@ -1255,16 +1623,44 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
             cumulative_diff = _cumulative_diff(repo, view, current_body,
                                                trigger_state)
 
-            claim = ("CLAIM: view %s at post-absorb state faithfully absorbs "
-                     "events %s: every manifest claim is supported by the "
-                     "absorbed events; every load-bearing claim in the "
-                     "events is represented or implied in the view "
-                     "(compression and paraphrase are permitted -- the "
-                     "represent-or-imply bar of the F13 precision "
-                     "amendment, NOT verbatim reproduction); and the "
-                     "cumulative diff shown contains no change unaccounted "
-                     "for by these events."
-                     % (view, ", ".join(abs_events)))
+            # v3.0-63: when the compile record journaled a claim routing
+            # covering this view's events, the charge is plan-scoped -- two
+            # graded questions (owned-claim fidelity; enumeration
+            # completeness). Records without routing (all history, and every
+            # plan that omits the block) keep the legacy total-coverage
+            # charge BYTE-IDENTICAL.
+            claim_scope = _view_claim_scope(rec.get("claim_routing"), view,
+                                            abs_events)
+            if claim_scope is not None:
+                claim = (
+                    "CLAIM: view %s at post-absorb state faithfully carries "
+                    "its DECLARED SCOPE of events %s, per the DECLARED "
+                    "CLAIM ROUTING section below: every manifest claim is "
+                    "supported by the absorbed events; every claim this "
+                    "view OWNS is represented or implied in the view "
+                    "(compression and paraphrase are permitted -- the "
+                    "represent-or-imply bar of the F13 precision "
+                    "amendment, NOT verbatim reproduction); the cumulative "
+                    "diff shown contains no change unaccounted for by "
+                    "these events; and no load-bearing claim of the events "
+                    "is absent from the declared routing altogether -- a "
+                    "claim routed to a sibling view or deferred is "
+                    "declared scope, not an omission from this view; a "
+                    "load-bearing claim missing from the routing entirely "
+                    "is a rejection (reason class: enumeration-incomplete)."
+                    % (view, ", ".join(abs_events)))
+            else:
+                claim = ("CLAIM: view %s at post-absorb state faithfully "
+                         "absorbs "
+                         "events %s: every manifest claim is supported by the "
+                         "absorbed events; every load-bearing claim in the "
+                         "events is represented or implied in the view "
+                         "(compression and paraphrase are permitted -- the "
+                         "represent-or-imply bar of the F13 precision "
+                         "amendment, NOT verbatim reproduction); and the "
+                         "cumulative diff shown contains no change unaccounted "
+                         "for by these events."
+                         % (view, ", ".join(abs_events)))
 
             event_sections = []
             for e in abs_events:
@@ -1329,6 +1725,13 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
                    "\n".join(event_sections), manifest_text))
             packet = packet + "\n\n" + excerpt_section
             packet = packet + "\n\n" + census_section
+            # v3.0-63: DECLARED CLAIM ROUTING, additive-only and LAST --
+            # every legacy section keeps its mandated 1-6 position, and the
+            # section exists only when the record journaled routing for
+            # this view's events.
+            if claim_scope is not None:
+                packet = packet + "\n\n" + _render_claim_routing_section(
+                    claim_scope, view)
 
             verdict = verify_backend.verify(packet)
             art_rel = "receipts/verify/absorb-seq%d-v%d.json" % (compile_seq,
@@ -3281,6 +3684,604 @@ def self_test():
                 shutil.rmtree(tamper_base, ignore_errors=True)
         finally:
             shutil.rmtree(reg_base, ignore_errors=True)
+
+        # ================================== v3.0-63 / v3.0-67 (v3.0.29)
+        # Plan-scoped totality + real pre-absorb baselines. The mechanical
+        # half (check_claim_routing) unit cases first, then the shipped
+        # ACCEPTANCE FIXTURE: (a) a correctly-narrowed view CONFIRMS while
+        # a sibling carries the rest; (b) a view missing an OWNED claim
+        # REJECTS; (c) a claim owned by nobody refuses the run pre-write;
+        # (d) an UPDATE to an existing view -- with a reverted creation
+        # ghost in journal history, the exact Ultrapak 2026-08-05 shape --
+        # gets its real substantial baseline in the packet and CONFIRMS
+        # with narrowed scope. Plus: NEW-view declared-from-empty, and the
+        # operator-adjudicated baseline (set-aside advances it, named).
+
+        def _cr_plan(routing):
+            return {"items": [
+                {"view": "wiki/a.md", "events": ["raw/e1.md"],
+                 "event_class": {"raw/e1.md": {"class": "t3",
+                                               "origin": "explicit"}}},
+                {"view": "wiki/b.md", "events": ["raw/e1.md"],
+                 "event_class": {"raw/e1.md": {"class": "t3",
+                                               "origin": "explicit"}}}],
+                "claim_routing": routing}
+
+        case("claim-routing: valid routing passes",
+             check_claim_routing(_cr_plan({"raw/e1.md": {
+                 "claims": [{"id": "c1", "text": "alpha", "owner": "wiki/a.md"},
+                            {"id": "c2", "text": "beta", "owner": "wiki/b.md"}],
+                 "deferred": [{"id": "c3", "text": "gamma",
+                               "targets": ["wiki/c.md"]}]}})) is None)
+        try:
+            check_claim_routing(_cr_plan({"raw/e1.md": {
+                "claims": [{"id": "c1", "text": "alpha", "owner": ""}]}}))
+            case("claim-routing: claim with NO owner refused, full stop", False)
+        except ValidationError as e:
+            case("claim-routing: claim with NO owner refused, full stop",
+                 "full stop" in str(e) and "c1" in str(e))
+        try:
+            check_claim_routing(_cr_plan({"raw/e1.md": {
+                "claims": [{"id": "c1", "text": "alpha", "owner": "wiki/a.md"},
+                           {"id": "c1", "text": "beta", "owner": "wiki/b.md"}]}}))
+            case("claim-routing: duplicate claim id refused", False)
+        except ValidationError as e:
+            case("claim-routing: duplicate claim id refused",
+                 "duplicate claim id" in str(e))
+        try:
+            check_claim_routing(_cr_plan({"raw/e1.md": {
+                "claims": [{"id": "c1", "text": "alpha",
+                            "owner": "wiki/never-planned.md"}]}}))
+            case("claim-routing: owner that never receives the event refused",
+                 False)
+        except ValidationError as e:
+            case("claim-routing: owner that never receives the event refused",
+                 "cannot absorb" in str(e))
+        try:
+            check_claim_routing(_cr_plan({"raw/e1.md": {
+                "deferred": [{"id": "c9", "text": "gamma", "targets": []}]}}))
+            case("claim-routing: deferral to nowhere refused (declared away)",
+                 False)
+        except ValidationError as e:
+            case("claim-routing: deferral to nowhere refused (declared away)",
+                 "declared away" in str(e))
+        try:
+            check_claim_routing(_cr_plan({"raw/phantom.md": {
+                "claims": [{"id": "c1", "text": "alpha",
+                            "owner": "wiki/a.md"}]}}))
+            case("claim-routing: routing for an event outside the plan "
+                 "refused", False)
+        except ValidationError as e:
+            case("claim-routing: routing for an event outside the plan "
+                 "refused", "no plan item" in str(e))
+        try:
+            check_claim_routing(_cr_plan({"raw/e1.md": {
+                "claims": [{"id": "c1", "text": "alpha",
+                            "owner": "wiki/a.md"}],
+                "deferred": [{"id": "c1", "text": "alpha again",
+                              "targets": ["wiki/c.md"]}]}}))
+            case("claim-routing: id in both claims and deferred refused",
+                 False)
+        except ValidationError as e:
+            case("claim-routing: id in both claims and deferred refused",
+                 "never both" in str(e))
+
+        # --- shared fixtures for the acceptance runs ---
+        DERIV = ("# --- derivation (engine-managed; strip region) ---\n"
+                 "schema_version: 3.2\nview: topic\nsummary: \"S\"\n"
+                 "entities: []\nstatus: active\ntier: T1\n"
+                 "consumed_status: legacy-assumed\norigin_max: human\n"
+                 "subscribes:\n  entities: []\n  corpus: []\nbundle: []\n"
+                 "verified: null\n"
+                 "# --- /derivation ---\n")
+
+        def _scoped_view(title, body):
+            return ("---\ntitle: %s\n---\n%s\n## Intro\n%s\n"
+                    % (title, DERIV, body))
+
+        class ScopedAbsorbBackend:
+            """Adds one 'Absorbed' section per view with the exact text the
+            fixture assigns it (None = leave the claim OUT, the case-(b)
+            defect)."""
+
+            def __init__(self, adds):
+                self.adds = adds
+
+            def absorb(self, view_rel, view_text, events):
+                add = self.adds[view_rel]
+                new = (view_text.rstrip("\n") + "\n\n## Absorbed\n"
+                       + (add if add is not None else "unrelated filler")
+                       + "\n")
+                return {"new_text": new,
+                        "manifest": [{"event": e, "section": "Absorbed"}
+                                     for e in sorted(events)],
+                        "corpus_support": [], "noops": []}
+
+        class ScopedClaimVerifyBackend:
+            """Deterministic scoped grader -- implements graded question 1
+            mechanically over the packet the engine built: every claim the
+            DECLARED CLAIM ROUTING section says THIS VIEW OWNS must appear
+            in the FULL VIEW BODY section. Confirms iff none is missing;
+            rejects naming the missing claim. Carries the F17 substrate
+            block so confirms can stamp."""
+
+            def __init__(self):
+                self.calls = []
+
+            def verify(self, packet):
+                self.calls.append(packet)
+                verdict = {"reason": "scoped-fixture",
+                           "uncertainty": "confident",
+                           "verifier": {"vendor": "openai",
+                                        "model": "fixture"},
+                           "substrate": {
+                               "verifier_vendor": "openai",
+                               "verifier_model_id": "gpt-5.5",
+                               "absorb_vendor": "anthropic",
+                               "absorb_model_id": "claude-fable-5",
+                               "substrate_source": "invocation-metadata"}}
+                if "## DECLARED CLAIM ROUTING" not in packet:
+                    verdict["verdict"] = "rejected"
+                    verdict["reason"] = "no declared claim routing section"
+                    return verdict
+                seg = packet.split("Claims THIS VIEW OWNS", 1)[1].split(
+                    "Claims routed to SIBLING", 1)[0]
+                owned = [ln.split("] ", 1)[1] for ln in seg.splitlines()
+                         if ln.startswith("- [") and "] " in ln]
+                body = packet.split("## FULL VIEW BODY (POST-ABSORB)",
+                                    1)[1].split("## ABSORBED EVENT", 1)[0]
+                missing = [t for t in owned if t not in body]
+                if missing:
+                    verdict["verdict"] = "rejected"
+                    verdict["reason"] = ("owned-claim-missing: %s"
+                                         % "; ".join(missing))
+                else:
+                    verdict["verdict"] = "confirmed"
+                return verdict
+
+        os.makedirs(os.path.join(base, "wiki", "scoped"), exist_ok=True)
+        os.makedirs(os.path.join(base, "raw", "scoped"), exist_ok=True)
+        for name in ("sa", "sb"):
+            open(os.path.join(base, "wiki", "scoped", "%s.md" % name), "w",
+                 newline="\n").write(_scoped_view(name.upper(),
+                                                  "original %s body" % name))
+        open(os.path.join(base, "raw", "scoped", "wide.md"), "w",
+             newline="\n").write(
+            "wide source: the alpha claim text, the beta claim text, and "
+            "the gamma claim text\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "scoped fixture"],
+                       capture_output=True)
+
+        def _scoped_plan(views, routing):
+            return {"items": [
+                {"view": v, "events": ["raw/scoped/wide.md"],
+                 "event_class": {"raw/scoped/wide.md": {
+                     "class": "t3", "origin": "explicit"}}} for v in views],
+                "claim_routing": routing}
+
+        ROUTING_AB = {"raw/scoped/wide.md": {
+            "claims": [{"id": "c1", "text": "the alpha claim text",
+                        "owner": "wiki/scoped/sa.md"},
+                       {"id": "c2", "text": "the beta claim text",
+                        "owner": "wiki/scoped/sb.md"}],
+            "deferred": [{"id": "c3", "text": "the gamma claim text",
+                          "targets": ["wiki/scoped/sc.md"]}]}}
+
+        # --- ACCEPTANCE (a): correctly-narrowed views CONFIRM ---
+        plan_a = _scoped_plan(["wiki/scoped/sa.md", "wiki/scoped/sb.md"],
+                              ROUTING_AB)
+        res_a = run(base, plan_a, ScopedAbsorbBackend({
+            "wiki/scoped/sa.md": "the alpha claim text",
+            "wiki/scoped/sb.md": "the beta claim text"}))
+        rec_a = json.load(open(os.path.join(core.journal_dir(base),
+                                            "%d.json" % res_a["seq"]),
+                               encoding="utf-8"))
+        case("v3.0-63: run() journals the claim routing on the compile "
+             "record", rec_a.get("claim_routing") == ROUTING_AB)
+        sv_backend = ScopedClaimVerifyBackend()
+        vres_a = verify_run(base, res_a["seq"], sv_backend)
+        case("ACCEPTANCE (a): both correctly-narrowed views CONFIRM while "
+             "the sibling carries the rest",
+             vres_a.get("absorption_checked") == 2
+             and vres_a.get("absorption_confirmed") == 2)
+        pk_a = [p for p in sv_backend.calls
+                if "view wiki/scoped/sa.md" in p][0]
+        case("v3.0-63: scoped packet carries the DECLARED CLAIM ROUTING "
+             "section", "## DECLARED CLAIM ROUTING (plan-scoped, "
+             "v3.0-63)" in pk_a)
+        case("v3.0-63: scoped CLAIM names DECLARED SCOPE and the "
+             "enumeration-incomplete reason class",
+             "faithfully carries its DECLARED SCOPE" in pk_a
+             and "enumeration-incomplete" in pk_a)
+        case("v3.0-63: scoped packet still has exactly one CLAIM line",
+             sum(1 for ln in pk_a.splitlines()
+                 if ln.startswith("CLAIM: ")) == 1)
+        case("v3.0-63: sibling-owned claim listed with its owner (declared "
+             "scope, not an omission)",
+             "[raw/scoped/wide.md / c2] -> wiki/scoped/sb.md" in pk_a)
+        case("v3.0-63: deferred claim listed with its pending_cascade "
+             "target", "[raw/scoped/wide.md / c3] -> wiki/scoped/sc.md"
+             in pk_a)
+        case("v3.0-63: legacy sections 1-6 keep their mandated order with "
+             "the routing section strictly LAST (additive-only)",
+             pk_a.index("## DECLARED CLAIM ROUTING")
+             > pk_a.index("## ROUTING CENSUS (F15)")
+             > pk_a.index("## CORPUS EXCERPTS")
+             > pk_a.index("## MANIFEST CLAIMS"))
+
+        # --- ACCEPTANCE (b): a view missing an OWNED claim REJECTS ---
+        for name in ("sa2", "sb2"):
+            open(os.path.join(base, "wiki", "scoped", "%s.md" % name), "w",
+                 newline="\n").write(_scoped_view(name.upper(),
+                                                  "original %s body" % name))
+        open(os.path.join(base, "raw", "scoped", "wide2.md"), "w",
+             newline="\n").write(
+            "second wide source: the alpha claim text and the beta claim "
+            "text\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "scoped b"],
+                       capture_output=True)
+        plan_b = {"items": [
+            {"view": v, "events": ["raw/scoped/wide2.md"],
+             "event_class": {"raw/scoped/wide2.md": {
+                 "class": "t3", "origin": "explicit"}}}
+            for v in ("wiki/scoped/sa2.md", "wiki/scoped/sb2.md")],
+            "claim_routing": {"raw/scoped/wide2.md": {
+                "claims": [{"id": "c1", "text": "the alpha claim text",
+                            "owner": "wiki/scoped/sa2.md"},
+                           {"id": "c2", "text": "the beta claim text",
+                            "owner": "wiki/scoped/sb2.md"}]}}}
+        res_b = run(base, plan_b, ScopedAbsorbBackend({
+            "wiki/scoped/sa2.md": None,        # the case-(b) defect
+            "wiki/scoped/sb2.md": "the beta claim text"}))
+        sv_backend_b = ScopedClaimVerifyBackend()
+        vres_b = verify_run(base, res_b["seq"], sv_backend_b)
+        case("ACCEPTANCE (b): the view missing its OWNED claim REJECTS; "
+             "the faithful sibling still CONFIRMS",
+             vres_b.get("absorption_checked") == 2
+             and vres_b.get("absorption_confirmed") == 1)
+        vrec_b = json.load(open(os.path.join(core.journal_dir(base),
+                                             "%d.json" % vres_b["seq"]),
+                                encoding="utf-8"))
+        case("ACCEPTANCE (b): the rejection names the missing owned claim",
+             any(a.get("view") == "wiki/scoped/sa2.md"
+                 and "owned-claim-missing" in a.get("reason", "")
+                 for a in vrec_b.get("absorption_verify_attempts", [])))
+
+        # --- ACCEPTANCE (c): a claim owned by nobody refuses pre-write ---
+        pre_chain_cr = core.check_chain(base)
+        before_sa = open(os.path.join(base, "wiki", "scoped", "sa.md"),
+                         encoding="utf-8").read()
+        plan_c = _scoped_plan(["wiki/scoped/sa.md", "wiki/scoped/sb.md"],
+                              {"raw/scoped/wide.md": {
+                                  "claims": [
+                                      {"id": "c1",
+                                       "text": "the alpha claim text",
+                                       "owner": "wiki/scoped/sa.md"},
+                                      {"id": "c2",
+                                       "text": "the beta claim text",
+                                       "owner": ""}]}})
+        try:
+            run(base, plan_c, ScopedAbsorbBackend({
+                "wiki/scoped/sa.md": "the alpha claim text",
+                "wiki/scoped/sb.md": "the beta claim text"}))
+            case("ACCEPTANCE (c): claim owned by nobody refuses the whole "
+                 "run", False)
+        except ValidationError as e:
+            case("ACCEPTANCE (c): claim owned by nobody refuses the whole "
+                 "run", "full stop" in str(e))
+        case("ACCEPTANCE (c): the refusal journaled NOTHING and wrote "
+             "NOTHING", core.check_chain(base) == pre_chain_cr
+             and open(os.path.join(base, "wiki", "scoped", "sa.md"),
+                      encoding="utf-8").read() == before_sa)
+
+        # --- ACCEPTANCE (d): UPDATE baseline survives a reverted creation
+        # ghost (v3.0-67, the Ultrapak shape) ---
+        open(os.path.join(base, "wiki", "scoped", "su.md"), "w",
+             newline="\n").write(_scoped_view(
+                 "SU", "substantial existing body that predates the ghost"))
+        open(os.path.join(base, "raw", "scoped", "eu.md"), "w",
+             newline="\n").write("update source: the delta claim text\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "su fixture"],
+                       capture_output=True)
+        # the ghost: a compile record that CREATED su.md from empty (the
+        # canonical empty blob), later named reverted by a driver revert.
+        empty_blob = _blob_of_text(base, "")
+        ghost = core.minimal_record("compile",
+                                    _git(base, "rev-parse", "HEAD").strip())
+        ghost["absorbed"] = [{"view": "wiki/scoped/su.md",
+                              "events": ["raw/scoped/eu.md"],
+                              "pre_blob": empty_blob, "post_blob": "x",
+                              "manifest": [], "corpus_support": []}]
+        ghost["run_window"] = {"start": "t0", "end": "t1"}
+        ghost_seq, _gp = core.append_record(base, ghost)
+        grev = core.minimal_record("driver-revert",
+                                   _git(base, "rev-parse", "HEAD").strip())
+        grev["run_window"] = {"start": "t0", "end": "t1"}
+        grev["driver_revert"] = {"reverts_seq": ghost_seq,
+                                 "reverts_commit": "0" * 40,
+                                 "status": "reverted",
+                                 "reason": "fixture ghost", "at": "t1",
+                                 "driver": "deploy/compile-driver.py"}
+        core.append_record(base, grev)
+        plan_d = {"items": [
+            {"view": "wiki/scoped/su.md", "events": ["raw/scoped/eu.md"],
+             "event_class": {"raw/scoped/eu.md": {
+                 "class": "t3", "origin": "explicit"}}}],
+            "claim_routing": {"raw/scoped/eu.md": {
+                "claims": [{"id": "u1", "text": "the delta claim text",
+                            "owner": "wiki/scoped/su.md"}]}}}
+        res_d = run(base, plan_d, ScopedAbsorbBackend(
+            {"wiki/scoped/su.md": "the delta claim text"}))
+        sv_backend_d = ScopedClaimVerifyBackend()
+        vres_d = verify_run(base, res_d["seq"], sv_backend_d)
+        pk_d = sv_backend_d.calls[-1]
+        diff_d = pk_d.split("## CUMULATIVE DIFF SINCE LAST VERIFIED",
+                            1)[1].split("## FULL VIEW BODY", 1)[0]
+        case("ACCEPTANCE (d): the packet baseline is the view's REAL "
+             "pre-absorb content, never the reverted ghost's empty blob",
+             "the view's real pre-absorb content" in diff_d
+             and "NEW VIEW" not in diff_d)
+        case("ACCEPTANCE (d): the diff base carries the substantial "
+             "existing body (an update-diff, not created-from-nothing)",
+             "substantial existing body that predates the ghost" in diff_d)
+        case("ACCEPTANCE (d): the update with correct baseline + narrowed "
+             "scope CONFIRMS",
+             vres_d.get("absorption_confirmed") == 1)
+
+        # --- NEW view: declared from-empty, in so many words ---
+        open(os.path.join(base, "raw", "scoped", "en.md"), "w",
+             newline="\n").write("new-view source: the nova claim text\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "en fixture"],
+                       capture_output=True)
+
+        class NewViewBackend:
+            def absorb(self, view_rel, view_text, events):
+                new = _scoped_view("SN", "the nova claim text")
+                secs = changed_sections(base,
+                                        _blob_of_text(base, view_text or ""),
+                                        _blob_of_text(base, new))
+                e0 = sorted(events)[0]
+                return {"new_text": new,
+                        "manifest": [{"event": e0, "section": s}
+                                     for s in sorted(secs)],
+                        "corpus_support": [], "noops": []}
+
+        plan_n = {"items": [
+            {"view": "wiki/scoped/sn.md", "events": ["raw/scoped/en.md"],
+             "event_class": {"raw/scoped/en.md": {
+                 "class": "t3", "origin": "explicit"}}}]}
+        res_n = run(base, plan_n, NewViewBackend())
+        sv_backend_n = _GoodAttestBackend(confirm=True)
+        verify_run(base, res_n["seq"], sv_backend_n)
+        pk_n = sv_backend_n.calls[-1]
+        case("v3.0-67: a genuinely NEW view's packet says so out loud "
+             "(verifies from empty, declared)",
+             "baseline: NEW VIEW" in pk_n
+             and "legitimately verifies from empty" in pk_n)
+
+        # --- adjudicated baseline: a set-aside record advances the base,
+        # and the packet names it (not machine-verified) ---
+        adj_content = open(os.path.join(base, "wiki", "scoped", "sa2.md"),
+                           encoding="utf-8").read()
+        adj_commit = _git(base, "rev-parse", "HEAD").strip()
+        adj = core.minimal_record("verify-adjudication", adj_commit)
+        adj["run_window"] = {"start": "t0", "end": "t1"}
+        adj["absorption_adjudicated"] = [{
+            "view": "wiki/scoped/sa2.md", "adjudicates_seq": res_b["seq"],
+            "at": "2026-08-06T12:00:00", "ruling": "fixture ruling",
+            "adjudicated_by": "operator",
+            "baseline_commit": adj_commit,
+            "view_sha256": _sha256(adj_content)}]
+        core.append_record(base, adj)
+        open(os.path.join(base, "raw", "scoped", "ej.md"), "w",
+             newline="\n").write("post-ruling source: the judged claim "
+                                 "text\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "ej fixture"],
+                       capture_output=True)
+        plan_j = {"items": [
+            {"view": "wiki/scoped/sa2.md", "events": ["raw/scoped/ej.md"],
+             "event_class": {"raw/scoped/ej.md": {
+                 "class": "t3", "origin": "explicit"}}}]}
+
+        class AdjUpdateBackend:
+            def absorb(self, view_rel, view_text, events):
+                new = (view_text.rstrip("\n")
+                       + "\n\n## Post Ruling\nthe judged claim text\n")
+                return {"new_text": new,
+                        "manifest": [{"event": e, "section": "Post Ruling"}
+                                     for e in sorted(events)],
+                        "corpus_support": [], "noops": []}
+
+        res_j = run(base, plan_j, AdjUpdateBackend())
+        sv_backend_j = _GoodAttestBackend(confirm=True)
+        verify_run(base, res_j["seq"], sv_backend_j)
+        pk_j = sv_backend_j.calls[-1]
+        diff_j = pk_j.split("## CUMULATIVE DIFF SINCE LAST VERIFIED",
+                            1)[1].split("## FULL VIEW BODY", 1)[0]
+        case("v3.0.29 set-aside: an operator adjudication ADVANCES the "
+             "baseline and the packet names it in so many words",
+             "baseline: adjudicated 2026-08-06T12:00:00 by operator "
+             "ruling, not machine-verified" in diff_j)
+        case("v3.0.29 set-aside: the adjudicated-base diff shows only the "
+             "post-ruling delta, not the whole view from birth",
+             "the judged claim text" in diff_j
+             and "original sa2 body" not in "".join(
+                 ln for ln in diff_j.splitlines()
+                 if ln.startswith("+")))
+
+        # ===================================== v3.0-69: derivation minting
+        # The defect: the absorb path never CREATED a region, so a view born
+        # on the engine could never record a verification -- the checker's
+        # confirm was produced and discarded. Note these fixtures author
+        # text with NO region (what a real author produces; the ANSWER
+        # CONTRACT never asks for one) -- authoring one is exactly the
+        # fixture habit that hid this defect from the batteries.
+        open(os.path.join(base, "raw", "scoped", "eb.md"), "w",
+             newline="\n").write("born-on-engine source: the borne claim\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "eb fixture"],
+                       capture_output=True)
+
+        BORN_TEXT = ("---\ntitle: Borne\ndomain: topic\nscope: domain\n"
+                     "confidence: medium\nsources:\n  - raw/scoped/eb.md\n"
+                     "---\n\n# Borne\n\n## Intro\nthe borne claim\n")
+
+        class RegionlessNewViewBackend:
+            def absorb(self, view_rel, view_text, events):
+                secs = changed_sections(
+                    base, _blob_of_text(base, view_text or ""),
+                    _blob_of_text(base, BORN_TEXT))
+                e0 = sorted(events)[0]
+                return {"new_text": BORN_TEXT,
+                        "manifest": [{"event": e0, "section": s}
+                                     for s in sorted(secs)],
+                        "corpus_support": [], "noops": []}
+
+        plan_born = {"items": [
+            {"view": "wiki/scoped/borne.md", "events": ["raw/scoped/eb.md"],
+             "event_class": {"raw/scoped/eb.md": {"class": "t3",
+                                                  "origin": "explicit"}}}]}
+        res_born = run(base, plan_born, RegionlessNewViewBackend())
+        born_disk = open(os.path.join(base, "wiki", "scoped", "borne.md"),
+                         encoding="utf-8").read()
+        case("v3.0-69: a view CREATED by the engine gets a derivation "
+             "region minted, though its author wrote none",
+             asm.DERIV_START in born_disk and asm.DERIV_END in born_disk)
+        case("v3.0-69: the minted region carries the conservative defaults "
+             "(tier T1, consumed_status legacy-assumed, verified null) and "
+             "is NOT labelled a legacy view in its summary",
+             "tier: T1" in born_disk
+             and "consumed_status: legacy-assumed" in born_disk
+             and "verified: null" in born_disk
+             and "(legacy view; summary pending)" not in born_disk)
+        case("v3.0-69: the author's own body survives the mint verbatim",
+             "the borne claim" in born_disk and "# Borne" in born_disk)
+        born_rec = json.load(open(os.path.join(core.journal_dir(base),
+                                               "%d.json" % res_born["seq"]),
+                                  encoding="utf-8"))
+        case("v3.0-69: the journal's post_blob pins the MINTED text (what "
+             "actually landed on disk), not the pre-mint author text",
+             _git(base, "cat-file", "-p",
+                  born_rec["absorbed"][0]["post_blob"]) == born_disk)
+        born_backend = _GoodAttestBackend(confirm=True)
+        born_vres = verify_run(base, res_born["seq"], born_backend)
+        case("v3.0-69 ACCEPTANCE: the confirm is now RECORDED -- an "
+             "engine-born view reaches verified state (this returned 0 "
+             "confirmed before the fix, with the verdict artifact saying "
+             "'confirmed')",
+             born_vres.get("absorption_checked") == 1
+             and born_vres.get("absorption_confirmed") == 1)
+        born_vrec = json.load(open(os.path.join(core.journal_dir(base),
+                                                "%d.json" % born_vres["seq"]),
+                                   encoding="utf-8"))
+        case("v3.0-69: the verification is stamped into the view and "
+             "journaled as an absorption_verified entry",
+             len(born_vrec.get("absorption_verified", [])) == 1
+             and "status: passed" in open(
+                 os.path.join(base, "wiki", "scoped", "borne.md"),
+                 encoding="utf-8").read())
+
+        # unmintable shapes: unchanged text, NO new refusal
+        NOFM_TEXT = "# No Frontmatter\n\n## Intro\nthe unfrontmattered claim\n"
+
+        class NoFrontmatterBackend:
+            def absorb(self, view_rel, view_text, events):
+                secs = changed_sections(
+                    base, _blob_of_text(base, view_text or ""),
+                    _blob_of_text(base, NOFM_TEXT))
+                e0 = sorted(events)[0]
+                return {"new_text": NOFM_TEXT,
+                        "manifest": [{"event": e0, "section": s}
+                                     for s in sorted(secs)],
+                        "corpus_support": [], "noops": []}
+
+        plan_nofm = {"items": [
+            {"view": "wiki/scoped/nofm.md", "events": ["raw/scoped/eb.md"],
+             "event_class": {"raw/scoped/eb.md": {"class": "t3",
+                                                  "origin": "explicit"}}}]}
+        try:
+            run(base, plan_nofm, NoFrontmatterBackend())
+            nofm_disk = open(os.path.join(base, "wiki", "scoped", "nofm.md"),
+                             encoding="utf-8").read()
+            case("v3.0-69: a view with no parseable frontmatter is left "
+                 "UNMINTED and raises no new refusal (already a "
+                 "check-frontmatter finding; a guessed region would be "
+                 "worse than a visible one)",
+                 asm.DERIV_START not in nofm_disk
+                 and "the unfrontmattered claim" in nofm_disk)
+        except ValidationError as e:
+            case("v3.0-69: a view with no parseable frontmatter is left "
+                 "UNMINTED and raises no new refusal (raised %r)" % (e,),
+                 False)
+
+        # ===================================== v3.0-70(a): word anchoring
+        _ship_events = {"raw/scoped/eb.md": "body"}
+        _ship_old = "# S\n\n## Deliverable Dates\nold\n"
+
+        def _ship_out(new_text, section):
+            return {"new_text": new_text,
+                    "manifest": [{"event": "raw/scoped/eb.md",
+                                  "section": section}],
+                    "corpus_support": [], "noops": []}
+
+        try:
+            r = validate_absorb_output(
+                base, "wiki/ship.md", _ship_old,
+                _ship_out("# S\n\n## Deliverable Dates\nnew dates\n",
+                          "Deliverable Dates"), _ship_events)
+            case("v3.0-70: 'Deliverable Dates' no longer trips the "
+                 "shipped-state guard (it only ever matched the letters "
+                 "l-i-v-e inside 'deliverable')", r is not None)
+        except ValidationError as e:
+            case("v3.0-70: 'Deliverable Dates' no longer trips the "
+                 "shipped-state guard (raised %r)" % (e,), False)
+        for heading in ("Delivery Schedule", "Olive oil sourcing",
+                        "Lively debate", "Livelihood"):
+            old_h = "# S\n\n## %s\nold\n" % heading
+            try:
+                validate_absorb_output(
+                    base, "wiki/ship.md", old_h,
+                    _ship_out("# S\n\n## %s\nnew\n" % heading, heading),
+                    _ship_events)
+                case("v3.0-70: %r passes the shipped-state guard" % heading,
+                     True)
+            except ValidationError:
+                case("v3.0-70: %r passes the shipped-state guard" % heading,
+                     False)
+        # coverage NOT lost: real shipped-state headings still refuse
+        for heading in ("Shipped state", "As-built notes",
+                        "Currently live in production"):
+            old_h = "# S\n\n## %s\nold\n" % heading
+            try:
+                validate_absorb_output(
+                    base, "wiki/ship.md", old_h,
+                    _ship_out("# S\n\n## %s\nnew\n" % heading, heading),
+                    _ship_events)
+                case("v3.0-70: %r STILL refuses without corpus_support "
+                     "(no coverage lost)" % heading, False)
+            except ValidationError as e:
+                case("v3.0-70: %r STILL refuses without corpus_support "
+                     "(no coverage lost)" % heading,
+                     "shipped-state" in str(e))
+        case("v3.0-70: the flagging site reads the SAME single-homed "
+             "expression as the refusing site",
+             not any(f["kind"] == "shipped-state-no-support" for f in
+                     reconcile_flags([{"view": "wiki/s.md", "post_blob": "x",
+                                       "events": [], "corpus_support": [],
+                                       "manifest": [{"event": "e",
+                                                     "section":
+                                                     "Deliverables"}]}]))
+             and any(f["kind"] == "shipped-state-no-support" for f in
+                     reconcile_flags([{"view": "wiki/s.md", "post_blob": "x",
+                                       "events": [], "corpus_support": [],
+                                       "manifest": [{"event": "e",
+                                                     "section":
+                                                     "Shipped state"}]}])))
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

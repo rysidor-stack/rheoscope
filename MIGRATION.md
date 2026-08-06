@@ -102,6 +102,13 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.27 → v3.0.28 (the prose scan learns what prose is)
+
+One file, no decisions: re-copy `deploy/check-briefing-format.py` (self-test **19/19**).
+Clears the standing "the decision list's own machine header trips the plain-language
+scan" Watching item every v3.0.27 instance sees — the scan now ignores invisible HTML
+comments and keeps the full ban on script names in sentences you can actually read.
+
 ## v3.0.26 → v3.0.27 (sensor voice + speed + onboarding)
 
 Every instance takes items 1–2; knowledge-os instances also take item 3.

@@ -1687,6 +1687,47 @@ def execute_revert(root, seq, reason=None, out=print):
             "branch's history. Nothing was reverted." % seq)
         return EXIT_FAIL
 
+    # COLLISION PRE-CHECK (v3.0-local-10, reported live 2026-08-06 and
+    # reproduced upstream the same day). The re-ride recipe assumes the
+    # rejected run is still the last word on its own articles. On a project
+    # that simply kept working it is not: normal commits may have modified --
+    # or split -- the same files since. `git revert` then conflicts, and the
+    # failure path is worse than a refusal would be: the conflict is aborted
+    # and journaled "revert-failed", which is NON-TERMINAL, so startup
+    # reconciliation blocks every later compile until a human untangles it
+    # (and in one reproduction the failure record could not be journaled at
+    # all, leaving a doubled git error and no record). Detected BEFORE
+    # anything is written, by blob comparison against the run commit --
+    # exact, side-effect-free, and fail-closed on any path git cannot resolve
+    # on either side.
+    moved_on = []
+    for path in _commit_files(repo, run_sha):
+        if re.match(r"receipts/journal/\d+\.json$", path):
+            continue        # restored by the revert itself, never a conflict
+        rc_a, then_blob, _ea = _git(repo, "rev-parse",
+                                    "%s:%s" % (run_sha, path))
+        rc_b, now_blob, _eb = _git(repo, "rev-parse", "HEAD:%s" % path)
+        if rc_a != 0 or rc_b != 0 or then_blob.strip() != now_blob.strip():
+            moved_on.append(path)
+    if moved_on:
+        out("REFUSED: run seq %d is no longer the last word on its own "
+            "articles -- %d of the file(s) it wrote have changed since "
+            "(normal work, a later compile, or an article split):"
+            % (seq, len(moved_on)))
+        for path in moved_on:
+            out("  - %s" % path)
+        out("Reverting would undo that later work too, and a conflicted "
+            "revert leaves a journaled failure that blocks every future "
+            "compile. Nothing was reverted and nothing was journaled.")
+        out("THE AGED CASE -- correct FORWARD instead of rewinding: the "
+            "rejected absorption is already superseded on disk, so take each "
+            "article's CURRENT text as the base, fix what the verdict named "
+            "in a fresh plan and staging dir, and --run that. The rejection "
+            "stays on the record as history, which is correct -- it did "
+            "happen. Use --revert only while the run is still the newest "
+            "thing to have touched its articles.")
+        return EXIT_FAIL
+
     reason = reason or ("operator adjudication via --revert: %s -- corrected "
                         "re-absorb to follow" % disposition)
     out("REVERT: run seq %d (%s) -- %s" % (seq, run_sha[:12], disposition))
@@ -2917,6 +2958,51 @@ def self_test():                                            # noqa: C901
              reconcile_state(repo_sb)["blocked"] is False)
     finally:
         shutil.rmtree(repo_sb, ignore_errors=True)
+
+    # ------------------ O4. --revert collision pre-check (v3.0-local-10)
+    repo_rc = make_repo("cdrv-revert-collision-")
+    try:
+        make_staging(repo_rc)
+        make_grant(repo_rc)
+        _git(repo_rc, "add", "-A")
+        _git(repo_rc, "commit", "-qm", "fixtures")
+        cseq_rc = plant_seq103(repo_rc, "rejected")
+        # NORMAL WORK: the project keeps going and edits the same article
+        write(os.path.join(repo_rc, "wiki", "a.md"),
+              "# View A\n\nbody\nabsorbed line\nlater normal edit\n")
+        _git(repo_rc, "add", "-A")
+        _git(repo_rc, "commit", "-qm", "normal work on the same article")
+        head_before = _git(repo_rc, "rev-parse", "HEAD")[1].strip()
+        rc = execute_revert(repo_rc, cseq_rc, out=silent)
+        case("--revert REFUSES when the run is no longer the last word on "
+             "its articles (v3.0-local-10: the re-ride recipe's step used "
+             "to conflict here)", rc == EXIT_FAIL)
+        case("...and the refusal wrote NOTHING -- no commit, no "
+             "driver_revert record, no blocking state",
+             _git(repo_rc, "rev-parse", "HEAD")[1].strip() == head_before
+             and not any(r.get("driver_revert")
+                         for r in load_journal(repo_rc).values())
+             and reconcile_state(repo_rc)["blocked"] is False)
+        case("...and the worktree is clean (no half-applied revert left "
+             "behind)", _worktree_clean(repo_rc))
+    finally:
+        shutil.rmtree(repo_rc, ignore_errors=True)
+
+    # the pre-check must NOT fire when the run IS still the last word
+    repo_rd = make_repo("cdrv-revert-nocollision-")
+    try:
+        make_staging(repo_rd)
+        make_grant(repo_rd)
+        _git(repo_rd, "add", "-A")
+        _git(repo_rd, "commit", "-qm", "fixtures")
+        cseq_rd = plant_seq103(repo_rd, "rejected")
+        rc = execute_revert(repo_rd, cseq_rd, out=silent)
+        case("--revert still WORKS on an untouched run (the pre-check is "
+             "not a blanket refusal)", rc == EXIT_OK
+             and any(r.get("driver_revert", {}).get("status") == "reverted"
+                     for r in load_journal(repo_rd).values()))
+    finally:
+        shutil.rmtree(repo_rd, ignore_errors=True)
 
     repo_sc = make_repo("cdrv-setaside3-")
     try:

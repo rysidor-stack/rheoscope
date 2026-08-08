@@ -102,6 +102,24 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.29 → v3.0.30 (the re-ride survives a project that kept working)
+
+Knowledge-os instances only; no **[your call]** entries. **If you have not yet adopted
+v3.0.29, take that recipe below and this one together — this release fixes a blocking
+defect in v3.0.29's own re-ride step, so adopting .29 without .30 walks you into it.**
+
+1. **Re-copy two files** and confirm each `--self-test` reports **PASS**:
+   `deploy/compile-driver.py` and `deploy/check-derivation.py`. (176 and 19 at this
+   template's HEAD — informational, not targets; see the note in the v3.0.29 recipe.)
+2. **Nothing else to do.** No data migration, no re-run, no re-verification. If you have
+   already adopted v3.0.29 and re-ridden successfully, you are unaffected; this only
+   changes what happens when a `--revert` would have collided.
+3. **What changed for you:** `--revert` now checks, before writing anything, whether the
+   run you are reverting is still the last word on its own articles. If ordinary work has
+   modified them since, it refuses cleanly and tells you to correct forward instead —
+   rather than conflicting, journaling a failure, and blocking every future compile. And
+   the derivation-region check no longer flags hand-written flight plans.
+
 ## v3.0.28 → v3.0.29 (plan-scoped verify, and the verify chain's last link)
 
 Knowledge-os instances only; no **[your call]** entries — everything here is session work,
@@ -112,13 +130,16 @@ whole source, rejected-run re-rides stop reading updates as created-from-nothing
 the one every knowledge-os instance needs regardless of routing — articles created by the
 engine can finally RECORD the checker's approval instead of having it discarded.
 
-1. **Re-copy the engine trio** into your `deploy/` and confirm the batteries:
-   `deploy/compile-v2.py` (**191/191**), `deploy/compile-backends.py` (**176/176**),
-   `deploy/compile-driver.py` (**172/172**). Behavior for plans without a `claim_routing`
-   block is byte-identical — staged runs and re-rides authored before this release run
-   exactly as before.
-1b. **Re-copy `deploy/check-derivation.py`** (**18/18**) — it gains the region-presence
-   check described in step 4.
+1. **Re-copy the engine trio** into your `deploy/` and confirm each `--self-test`
+   reports **PASS**: `deploy/compile-v2.py`, `deploy/compile-backends.py`,
+   `deploy/compile-driver.py`. (Counts at this template's HEAD are 191, 176 and 176 —
+   treat them as informational, not as a target: some cases are conditional on what a
+   project has installed, so a project with the cross-vendor bridge present will
+   legitimately report a different total. **PASS is the criterion; the number is not.**)
+   Behavior for plans without a `claim_routing` block is byte-identical — staged runs and
+   re-rides authored before this release run exactly as before.
+1b. **Re-copy `deploy/check-derivation.py`** (PASS; 19 at this template's HEAD) — it gains
+   the region-presence check described in step 4.
 2. **Re-copy the doctrine + skill:** `docs/engine/OPERATIONS.md` (from
    `capabilities/knowledge-os/extracted/engine/OPERATIONS.md` — §6 scoped totality, §7
    two-question charge + the one-plan-defect rule + `--set-aside`),
@@ -129,9 +150,22 @@ engine can finally RECORD the checker's approval instead of having it discarded.
    `wiki-schema.md.template` — the shape's one home).
 3. **Re-riding previously rejected runs** (the whole point): the staging dirs your rejected
    runs left behind predate claim routing, so author a FRESH plan per re-ride — same views
-   and events, plus the `claim_routing` table the old plan never had — then the normal
-   correction cycle (`--revert` if the run still stands → fresh `emit_packets` + re-stamp →
-   `--run`). If the operator has ALREADY ruled a specific rejection wrong, record it now:
+   and events, plus the `claim_routing` table the old plan never had.
+
+   **Which route depends on whether the rejected run is still the last word on its
+   articles** (found live 2026-08-06, backlog v3.0-73 — the original wording of this step
+   assumed it always is, and on a project that simply kept working it is not):
+   - *Still the last word* — nothing has touched those articles since. Rewind: `--revert
+     --seq <N>`, fresh `emit_packets` + re-stamp, then `--run`.
+   - *Moved on* — normal work, a later compile, or an article split has changed them since.
+     **Do not revert**; it would undo that later work too. Correct FORWARD instead: take
+     each article's current text as the base, fix what the verdict named in a fresh plan
+     and staging dir, and `--run` that. The rejection stays on the record as history, which
+     is right — it did happen.
+
+   You do not have to work out which case you are in: `--revert` now checks before it
+   writes anything and refuses with the forward route named if the articles have moved on.
+   If the operator has ALREADY ruled a specific rejection wrong, record it now:
    `py deploy/compile-driver.py --set-aside --root . --seq <N> --view <article> --ruling
    "<their words>"` — the ruling is journaled beside the verdict and the article's verify
    baseline advances as adjudicated.

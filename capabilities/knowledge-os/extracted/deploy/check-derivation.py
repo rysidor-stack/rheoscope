@@ -121,6 +121,17 @@ DERIV_END = "# --- /derivation"
 # applies when minting (v3.0-69 region-presence check).
 PROJECTION_BASENAMES = {"INDEX.md", "HEALTH.md", "REVIEW.md"}
 
+# Hand-authored, direct-editable wiki subtrees: never absorbed through the
+# engine, so they have nothing to verify and no region to carry. Flight plans
+# are named as the single-writer rule's documented exception
+# (core/governance/CLAUDE.md), which is exactly why /compile never writes
+# them. Reported live 2026-08-06 (v3.0-local-9): the region-presence check
+# listed both of a project's flight plans as unverifiable and pointed at
+# backfill-derivation.py to fix them -- a tool that then refuses them. A
+# check whose only remedy is a tool that declines the file is a loop, and a
+# permanent one on every sweep.
+NON_COMPILED_DIRS = ("flight-plans",)
+
 # Family root standard (silence-sweep 2026-08-04; same pattern as check-loop-state.py):
 # the default scan root is the parent of the deploy/ dir holding this script -- never
 # the CWD. A caller may override with --root DIR.
@@ -352,7 +363,9 @@ def scan(paths, gate=False, stale_only=False, repo=None):
             # _stamp_verified_block writes strictly inside the region, so a
             # confirmed cross-vendor verdict is produced and then discarded
             # -- and this sensor reported the tree clean while that was true.
+            parts = os.path.normpath(fp).replace("\\", "/").split("/")
             if (os.path.basename(fp) not in PROJECTION_BASENAMES
+                    and not any(d in parts for d in NON_COMPILED_DIRS)
                     and DERIV_START not in text):
                 regionless.append(fp)
 
@@ -538,9 +551,27 @@ def self_test():
         print("  %s %-46s exit=%-4s exp=%s"
               % ("ok " if ok else "XX ", proj_case[0], got, proj_case[2]))
         region_cases.append(proj_case)
-        # a view WITH a region passes the presence check
+        # hand-authored flight plans are never compiled -> never flagged
+        # (v3.0-local-9: they were listed as unverifiable, with a remedy
+        # tool that refuses them -- a permanent loop on every sweep)
         for proj in PROJECTION_BASENAMES:
             os.remove(os.path.join(wiki2, proj))
+        fp_dir = os.path.join(wiki2, "flight-plans")
+        os.makedirs(fp_dir)
+        with open(os.path.join(fp_dir, "plan-a.md"), "w", encoding="utf-8",
+                  newline="\n") as fh:
+            fh.write(_NO_DERIV)
+        fp_case = ("hand-authored flight plans exempt from the region check",
+                   ["check-derivation.py", "--gate", "--root", d2], 0)
+        got = main(fp_case[1])
+        ok = (got == fp_case[2])
+        if not ok:
+            failed += 1
+        print("  %s %-46s exit=%-4s exp=%s"
+              % ("ok " if ok else "XX ", fp_case[0], got, fp_case[2]))
+        region_cases.append(fp_case)
+        shutil.rmtree(fp_dir, ignore_errors=True)
+        # a view WITH a region passes the presence check
         with open(os.path.join(wiki2, "regioned.md"), "w", encoding="utf-8",
                   newline="\n") as fh:
             fh.write("---\ntitle: x\n---\n" + _VERIFIED_T1 + "body\n")

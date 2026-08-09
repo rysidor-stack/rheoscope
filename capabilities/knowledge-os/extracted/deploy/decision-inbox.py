@@ -42,7 +42,9 @@ required for this script to run clean):
      and is not exactly "None" -> "Flight-plan blocker (<file stem>): <value>".
   4. Any root-level *.md file or any wiki/*.md file (one level deep only, not
      wiki/flight-plans/) containing the literal marker "DECISION-PENDING:" on a
-     line -> "Flagged: <first 200 characters after the marker>". DECISIONS-
+     line -> "Flagged: <the full rest of the line>" (A3, 2026-08-09: was a
+     200-char clip, which deleted the consequence-and-fix sentences; identity
+     still hashes the first 200 chars so the widening reset no ages). DECISIONS-
      PENDING.md and SWEEP-BRIEFING.md are excluded from this scan even when they
      sit at the root -- both are projections/reports this script itself produces
      or consumes, never sources, and scanning either back would risk a
@@ -539,13 +541,20 @@ def _scan_marker_file(fpath, root, items):
             idx = raw.find(_MARKER_TOKEN)
             if idx == -1:
                 continue
-            text = raw[idx + len(_MARKER_TOKEN):][:200].strip()
+            # Full-line capture (A3, 2026-08-09): the old 200-char clip
+            # deleted exactly the consequence-and-fix sentences a decision
+            # needs -- the same defect A2 killed on the sweep source, hit
+            # here by the first contractual multi-sentence marker producer
+            # (the compile skill's Step 3c verify-signal items).
+            full = raw[idx + len(_MARKER_TOKEN):].strip()
             items.append((
-                "Flagged: %s" % text, rel_path,
-                # Identity: root-relative path + a hash of the flagged text --
-                # there is no other id, and a changed flagged text is
-                # legitimately a different item (its own first-seen date).
-                "marker:%s:%s" % (rel_path, _short_hash(text)),
+                "Flagged: %s" % full, rel_path,
+                # Identity: root-relative path + a hash of the flagged
+                # text's first 200 chars -- DELIBERATELY the old clip, so
+                # the A3 display widening reset no existing item's age
+                # (every pre-A3 item was <=200 chars: clip == full), and a
+                # reword past char 200 keeps the age honest (A2's Q8 rule).
+                "marker:%s:%s" % (rel_path, _short_hash(full[:200])),
             ))
 
 
@@ -1195,6 +1204,45 @@ def self_test():
              "stale note embedded in a report" not in content, content)
         case("(8d) SWEEP-BRIEFING.md marker exclusion: overall all-clear",
              _ALL_CLEAR_LINE in content, content)
+
+        # --- (8e) verifier demotion (2026-08-09): the compile skill's Step 3c
+        # verify-signal REVIEW entry lands through THIS existing marker
+        # pipeline -- full prose captured, checker quote verbatim, no new
+        # ingestion path, stable across regeneration.
+        root = mkroot()
+        sig = ("DECISION-PENDING: The second AI checker thinks "
+               "`wiki/ops/pricing.md` may be missing something its source "
+               "event covers -- its words: \"the beta claim text is not "
+               "represented\". Nothing false was flagged; the article is "
+               "live and this is a completeness question only. Say "
+               "**redo** -- a session reworks the article through the full "
+               "second-vendor check -- or **accept** -- your ruling is "
+               "recorded beside the checker's note. If you do nothing, the "
+               "article stays live with the checker's note on file, and "
+               "this item keeps aging. (details: journal seq 41, "
+               "receipts/verify/absorb-seq41-v0.json)")
+        write(os.path.join(root, "wiki", "REVIEW.md"),
+              "### verify-signal: pricing article\n"
+              "- **Details:** recorded signal from compile seq 41.\n"
+              "%s\n" % sig)
+        content, notes, _ = gen(root)
+        case("(8e) verify-signal marker captured, checker quote verbatim",
+             "the beta claim text is not represented" in content, content)
+        case("(8e) verify-signal: consequence-of-inaction prose survives "
+             "capture (the full-prose rule)",
+             "If you do nothing, the article stays live" in content, content)
+        content2, _, _ = gen(root)
+        case("(8e) verify-signal: regeneration stays ONE row (no accretion)",
+             content2.count("The second AI checker thinks") == 1, content2)
+        flagged_text = sig[len(_MARKER_TOKEN):].strip()
+        do_generate(root, "2026-07-20")
+        sidecar_p = os.path.join(root, "receipts", "desk",
+                                 "inbox-first-seen.json")
+        sidecar_8e = json.load(open(sidecar_p, encoding="utf-8"))
+        case("(8e) A3 identity stays the 200-char-clip hash (display "
+             "widened; no existing item's age reset)",
+             ("marker:wiki/REVIEW.md:%s" % _short_hash(flagged_text[:200]))
+             in sidecar_8e.get("items", {}), repr(sidecar_8e))
 
         # --- (9) --check current: exit 0 --------------------------------------------
         root = mkroot()

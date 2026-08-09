@@ -447,6 +447,105 @@ def _render_claim_routing_section(scope, view):
     return "\n".join(lines)
 
 
+# --------------------------------------------- verifier demotion (2026-08-09 design)
+# Reason-class vocabulary, CLOSED. The boundary principle (operator-ratified):
+# RECORDED = absence-shaped ("the article may say too little" -- missing
+# content can be added later without unwriting anything); BLOCKING =
+# falsity-shaped ("the article may say something false" -- poisons the wiki,
+# which is future context). over-certainty is blocking ON PURPOSE: an
+# overstated claim reads as false confidence to every future session.
+# Anything outside the vocabulary, absent, or malformed is `unclassified`
+# and BLOCKS (fail-closed). The class is the VERIFIER's to assign (inside
+# its verdict); this engine normalizes it exactly once, at record time, and
+# journals both the classes and the resulting disposition on the leg entry
+# -- after that moment no reader may re-derive either from the verdict
+# artifact (the v3.0-74 lesson made a rule: the journal is the engine's
+# record; the artifact is forensics).
+REASON_CLASSES_RECORDED = ("scope-omission", "enumeration-incomplete")
+REASON_CLASSES_BLOCKING = ("fabrication", "contradiction", "over-certainty")
+
+_REASON_CLASS_SECTION = """## REASON CLASS (verifier demotion, 2026-08-09)
+On a NON-CONFIRM verdict, include a `reason_classes` field (JSON list) naming
+every defect found, from exactly this vocabulary:
+- `scope-omission` -- a claim this view owns (or, absent a declared routing,
+  a load-bearing claim of the events) is absent from the view
+- `enumeration-incomplete` -- a load-bearing claim of the events is missing
+  from the declared claim routing altogether
+- `fabrication` -- the view asserts content the events do not support
+  (including any diff change unaccounted for by the events)
+- `contradiction` -- the view contradicts the events or retains stale
+  content the events supersede
+- `over-certainty` -- the view states a claim with materially more
+  confidence than the events carry
+Also name the token(s) in your reason sentence. A verdict without a
+recognizable class is treated as blocking."""
+
+_COMPLETED_VERDICTS = ("confirmed", "revised", "rejected")
+
+
+def classify_reason_classes(verdict):
+    """Normalize a non-confirm verdict's reason class at RECORD TIME.
+    Returns (verdict_label, reason_classes, disposition):
+      * verdict_label -- the completed verdict value ('revised'/'rejected';
+        'confirmed' never reaches here -- stamp refusals are classed at the
+        call site), or the raw non-completed value (transport classes keep
+        their string so the ledger can name them);
+      * reason_classes -- normalized closed-vocabulary list, or
+        ['unclassified'];
+      * disposition -- 'recorded' iff every named class is in the recorded
+        vocabulary, else 'blocking' (mixed verdicts: strictest wins).
+    Resolution order (fail-closed at every step): the structured
+    `reason_classes` list if present and EVERY member is recognized (one
+    unrecognized member poisons the whole list -- no cherry-picking a
+    parseable subset); else an exact-token scan of the reason sentence
+    (the v3.0.29 'reason class: enumeration-incomplete' prose convention,
+    generalized); else unclassified. On a substrate-gated outer verdict the
+    label AND the classes are read from the same object the usable inner
+    verdict came from (mirrors compile-driver's classify_verdict)."""
+    known = set(REASON_CLASSES_RECORDED) | set(REASON_CLASSES_BLOCKING)
+    label, src = None, None
+    if isinstance(verdict, dict):
+        v = str(verdict.get("verdict") or "").strip().lower()
+        if v in _COMPLETED_VERDICTS:
+            label, src = v, verdict
+        elif v == "substrate-gated":
+            inner = verdict.get("bridge_verdict")
+            if isinstance(inner, dict):
+                iv = str(inner.get("verdict") or "").strip().lower()
+                if iv in _COMPLETED_VERDICTS:
+                    label, src = iv, inner
+            else:
+                iv = str(verdict.get("gated_inner_verdict")
+                         or "").strip().lower()
+                if iv in _COMPLETED_VERDICTS:
+                    label, src = iv, verdict
+        if label is None:
+            label = v or "no-verdict-field"
+    else:
+        label = "no-verdict-artifact"
+    if src is None:
+        # not a completed verdict: transport-shaped. The driver's
+        # completeness classification (artifact-based, untouched) governs
+        # what happens to the RUN; these journaled fields exist so the
+        # ledger can still name the leg.
+        return label, ["unclassified"], "blocking"
+
+    classes = None
+    raw = src.get("reason_classes")
+    if isinstance(raw, list) and raw:
+        norm = [str(c).strip().lower() for c in raw]
+        classes = norm if all(c in known for c in norm) else ["unclassified"]
+    if classes is None:
+        reason = str(src.get("reason") or "")
+        found = [t for t in REASON_CLASSES_RECORDED + REASON_CLASSES_BLOCKING
+                 if t in reason]
+        classes = found or ["unclassified"]
+    recorded = set(REASON_CLASSES_RECORDED)
+    disposition = ("recorded"
+                   if all(c in recorded for c in classes) else "blocking")
+    return label, classes, disposition
+
+
 # --------------------------------------------------------------- P5 pointer-class ceiling
 # Conservative, line-level detectors (spec sec.10 / adjudication 3): a
 # changed line must POSITIVELY match one of these to be allowed on a
@@ -1559,6 +1658,9 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
             excerpt_section = _render_corpus_excerpt_section(excerpts)
             if excerpt_section:
                 packet = packet + "\n\n" + excerpt_section
+            # Verifier demotion (2026-08-09): same REASON CLASS instruction
+            # as the absorption packets, additive and last.
+            packet = packet + "\n\n" + _REASON_CLASS_SECTION
 
             verdict = verify_backend.verify(packet)
             art_rel = "%s/noop-seq%d-e%d.json" % (
@@ -1577,6 +1679,14 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
             confirm = str(verdict.get("verdict", "")).lower().startswith(
                 "confirm")
             verified_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+            # Verifier demotion (2026-08-09): non-confirm union legs journal
+            # the same record-time class fields as absorption legs. The
+            # verify disposition gets its OWN key here (`verify_disposition`)
+            # because `disposition` on a noop_candidates entry already means
+            # the CONSUMED lifecycle -- documented divergence, not drift.
+            if not confirm:
+                nv_label, nv_classes, nv_disp = classify_reason_classes(
+                    verdict)
 
             for i in pending_idx:
                 nc = ncs[i]
@@ -1595,6 +1705,10 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
                     nc2["verified_at"] = verified_at
                     nc2["disposition"] = "CONSUMED"
                     confirmed_candidates += 1
+                else:
+                    nc2["verdict_label"] = nv_label
+                    nc2["reason_classes"] = nv_classes
+                    nc2["verify_disposition"] = nv_disp
                 out_ncs[i] = nc2
             if confirm:
                 events_confirmed += 1
@@ -1732,6 +1846,11 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
             if claim_scope is not None:
                 packet = packet + "\n\n" + _render_claim_routing_section(
                     claim_scope, view)
+            # Verifier demotion (2026-08-09): the REASON CLASS instruction
+            # rides every absorption packet, additive and strictly LAST --
+            # legacy sections 1-6 and the routing section keep their
+            # mandated order and bytes.
+            packet = packet + "\n\n" + _REASON_CLASS_SECTION
 
             verdict = verify_backend.verify(packet)
             art_rel = "receipts/verify/absorb-seq%d-v%d.json" % (compile_seq,
@@ -1795,11 +1914,28 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
                     absorption_confirmed += 1
 
             if not confirm_v:
+                # Verifier demotion (2026-08-09): class + disposition are
+                # journaled HERE, once, at record time -- the lifecycle
+                # (driver exit split, --verify-ledger, adjudication guards)
+                # reads them from the journal alone, never re-derived from
+                # the artifact. A stamp refusal on a confirmed verdict is
+                # NOT a verifier rejection: classed `stamp-refused`,
+                # blocking (v3.0-84's distinction, kept), excluded from
+                # agreement stats by the ledger.
+                if stamp_refusal_reason is not None:
+                    v_label, r_classes, leg_disp = (
+                        "confirmed", ["stamp-refused"], "blocking")
+                else:
+                    v_label, r_classes, leg_disp = classify_reason_classes(
+                        verdict)
                 absorption_verify_attempts.append({
                     "view": view, "events": abs_events,
                     "artifact": art_rel, "packet_sha256": packet_sha,
                     "reason": stamp_refusal_reason or verdict.get(
-                        "reason", "")})
+                        "reason", ""),
+                    "verdict_label": v_label,
+                    "reason_classes": r_classes,
+                    "disposition": leg_disp})
 
         # F15: journal the standalone routing-census's input/output hashes for
         # this verify pass's own ledger slice (the events this pass checked) --
@@ -1885,7 +2021,14 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
                 # its diagnosis on 2026-07-31 (the verdict artifact said
                 # confirmed; the summary said non-confirm; nothing said why).
                 "absorption_attempts": [
-                    {"view": a.get("view", ""), "reason": a.get("reason", "")}
+                    {"view": a.get("view", ""), "reason": a.get("reason", ""),
+                     # verifier demotion (2026-08-09): surfaced for the
+                     # driver's per-leg lines and RECORDED SIGNALS band;
+                     # the journal record remains the authority the driver
+                     # partitions on.
+                     "verdict_label": a.get("verdict_label"),
+                     "reason_classes": a.get("reason_classes"),
+                     "disposition": a.get("disposition")}
                     for a in absorption_verify_attempts]}
     finally:
         core.release_lock(repo)
@@ -2514,6 +2657,19 @@ def self_test():
         case("hub union-verify: non-confirm events_confirmed == 0",
              hres2.get("events_confirmed") == 0
              and hres2.get("events_checked") == 2)
+        case("verifier demotion: a non-confirm union leg journals the "
+             "record-time class fields (classless fixture reason -> "
+             "unclassified/blocking; the CONSUMED-lifecycle `disposition` "
+             "key untouched)",
+             all(nc.get("verdict_label") == "rejected"
+                 and nc.get("reason_classes") == ["unclassified"]
+                 and nc.get("verify_disposition") == "blocking"
+                 and nc["disposition"] == "PENDING_NOOP_CANDIDATE"
+                 for nc in eh_ncs2))
+        case("verifier demotion: the union packet carries the REASON CLASS "
+             "instruction, additively",
+             "## REASON CLASS (verifier demotion, 2026-08-09)"
+             in reject_backend.calls[0])
 
         # (c) mixed-verdict -> per-event outcome: eh.md confirmed (both its
         # candidates flip), eh2.md rejected (its candidate stays PENDING)
@@ -4113,6 +4269,106 @@ def self_test():
              and "original sa2 body" not in "".join(
                  ln for ln in diff_j.splitlines()
                  if ln.startswith("+")))
+
+        # ===================================== verifier demotion (2026-08-09)
+        # Record-time class normalization (unit) + the journaled leg fields
+        # (integration) + the packet instruction. The engine's half of the
+        # design; the exit split and the ledger live in compile-driver.
+        crc = classify_reason_classes
+        case("demotion: structured recorded class -> recorded",
+             crc({"verdict": "rejected", "reason": "x",
+                  "reason_classes": ["scope-omission"]})
+             == ("rejected", ["scope-omission"], "recorded"))
+        case("demotion: mixed classes on one leg -> strictest wins "
+             "(blocking)",
+             crc({"verdict": "rejected", "reason": "x",
+                  "reason_classes": ["scope-omission", "fabrication"]})
+             == ("rejected", ["scope-omission", "fabrication"], "blocking"))
+        case("demotion: one unrecognized member poisons the whole list "
+             "(no cherry-picking) -> unclassified/blocking",
+             crc({"verdict": "rejected", "reason": "x",
+                  "reason_classes": ["scope-omission", "probably-fine"]})
+             == ("rejected", ["unclassified"], "blocking"))
+        case("demotion: prose-token fallback (the v3.0.29 convention, "
+             "generalized) -> enumeration-incomplete records",
+             crc({"verdict": "rejected",
+                  "reason": "reason class: enumeration-incomplete, claim "
+                            "c3 missing from the routing"})
+             == ("rejected", ["enumeration-incomplete"], "recorded"))
+        case("demotion: no parseable class anywhere -> unclassified/"
+             "blocking (fail-closed)",
+             crc({"verdict": "revised", "reason": "omission in section 2"})
+             == ("revised", ["unclassified"], "blocking"))
+        case("demotion: over-certainty is BLOCKING by design "
+             "(falsity-shaped)",
+             crc({"verdict": "revised", "reason": "x",
+                  "reason_classes": ["over-certainty"]})
+             == ("revised", ["over-certainty"], "blocking"))
+        case("demotion: substrate-gated outer reads label AND classes from "
+             "the same usable inner object",
+             crc({"verdict": "substrate-gated", "reason": "outer",
+                  "bridge_verdict": {"verdict": "rejected", "reason": "y",
+                                     "reason_classes": ["scope-omission"]}})
+             == ("rejected", ["scope-omission"], "recorded"))
+        case("demotion: an empty structured list falls through to the "
+             "prose scan",
+             crc({"verdict": "rejected", "reason": "fabrication found",
+                  "reason_classes": []})
+             == ("rejected", ["fabrication"], "blocking"))
+        case("demotion: a transport-class verdict is unclassified/blocking "
+             "(run completeness stays the driver's call, untouched)",
+             crc({"verdict": "bridge-error", "reason": "exit 7"})
+             == ("bridge-error", ["unclassified"], "blocking"))
+
+        # integration: a rejecting leg whose verdict carries a structured
+        # recorded class journals all three fields on the attempts entry.
+        open(os.path.join(base, "raw", "scoped", "er.md"), "w",
+             newline="\n").write("recorded-signal source: the rho claim "
+                                 "text\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "er fixture"],
+                       capture_output=True)
+
+        class _ClassingRejectBackend:
+            def __init__(self, classes):
+                self.calls = []
+                self.classes = classes
+
+            def verify(self, packet):
+                self.calls.append(packet)
+                return {"verdict": "rejected",
+                        "reason": "scope-omission: the rho claim text is "
+                                  "not represented",
+                        "reason_classes": list(self.classes),
+                        "uncertainty": "confident",
+                        "verifier": {"vendor": "openai", "model": "gpt-5.5"}}
+
+        plan_r = {"items": [
+            {"view": "wiki/scoped/sb.md", "events": ["raw/scoped/er.md"],
+             "event_class": {"raw/scoped/er.md": {
+                 "class": "t3", "origin": "explicit"}}}]}
+        res_r = run(base, plan_r, ScopedAbsorbBackend(
+            {"wiki/scoped/sb.md": "unrelated to rho"}))
+        rj_backend = _ClassingRejectBackend(["scope-omission"])
+        vres_r = verify_run(base, res_r["seq"], rj_backend)
+        vrec_r = json.load(open(os.path.join(core.journal_dir(base),
+                                             "%d.json" % vres_r["seq"]),
+                                encoding="utf-8"))
+        att_r = (vrec_r.get("absorption_verify_attempts") or [{}])[0]
+        case("demotion: the attempts entry journals verdict_label + "
+             "reason_classes + disposition at record time",
+             att_r.get("verdict_label") == "rejected"
+             and att_r.get("reason_classes") == ["scope-omission"]
+             and att_r.get("disposition") == "recorded")
+        case("demotion: verify_run's return surfaces the same fields for "
+             "the driver's band (journal stays the authority)",
+             (vres_r.get("absorption_attempts") or [{}])[0].get(
+                 "disposition") == "recorded")
+        pk_r = rj_backend.calls[-1]
+        case("demotion: the absorption packet carries the REASON CLASS "
+             "instruction, strictly last",
+             pk_r.rstrip().endswith("treated as blocking.")
+             and "## REASON CLASS (verifier demotion, 2026-08-09)" in pk_r)
 
         # ===================================== v3.0-69: derivation minting
         # The defect: the absorb path never CREATED a region, so a view born

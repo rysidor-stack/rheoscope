@@ -99,7 +99,21 @@ ATOMICITY RULE (build spec B-1, normative, added per the round-3 review). The
 absorb commit precedes verify -- verify_run() grades a COMMITTED run -- so the
 driver guarantees no run ever ENDS holding an unverified absorption:
   * verify leg COMPLETES with a non-confirm verdict (revised/rejected): that is
-    verified content; the verdict is journaled data. Exit 1, NO revert -- the run
+    verified content; the verdict is journaled data. What happens next splits by
+    the leg's RECORD-TIME disposition (verifier demotion, operator-approved
+    design 2026-08-09 -- the one sanctioned loosening, scoped to the
+    completeness/scope class; the class is journaled by the engine at record
+    time and this driver NEVER re-derives it from the verdict artifact):
+      - ANY leg journaled `blocking` (fabrication/contradiction/over-certainty,
+        `unclassified`, `stamp-refused`, every pre-demotion record): exit 1,
+        NO revert -- byte-identical to the pre-demotion behavior below.
+      - ALL non-confirm legs journaled `recorded` (scope-omission /
+        enumeration-incomplete): the run COMPLETES, exit 0, with a mandatory
+        RECORDED SIGNALS band naming each leg -- the articles stay absorbed
+        and live, the signals ride the compile skill's Step 3c into
+        DECISIONS-PENDING, and adjudication (`--revert` redo / `--set-aside`
+        accept) stays available at the operator's pace.
+    For the blocking case: exit 1, NO revert -- the run
     branch stays unmergeable until the non-confirm is adjudicated. The SHIPPED
     adjudication path is `--revert --seq N` (below): it reverts the run commit
     (journal record restored, revert journaled), after which the correction is
@@ -183,6 +197,9 @@ USAGE = (
     "compile-driver.py --set-aside --root DIR --seq N --view PATH "
     "--ruling TEXT\n"
     "compile-driver.py --reconcile --root DIR\n"
+    "compile-driver.py --verify-ledger --root DIR [--since YYYY-MM-DD]\n"
+    "                                        # read-only builder-verifier\n"
+    "                                        # agreement ledger, journal only\n"
     "compile-driver.py --self-test\n"
     "Exit: 0 clean | 1 validation/gate failure | 2 inconclusive | 3 lock held"
 )
@@ -262,9 +279,9 @@ def _worktree_clean(repo):
 
 # --------------------------------------------------------------- argv parsing
 _VALUE_FLAGS = ("--root", "--staging", "--authorization", "--seq", "--reason",
-                "--view", "--ruling")
+                "--view", "--ruling", "--since")
 _BOOL_FLAGS = ("--run", "--reconcile", "--reverify", "--revert", "--set-aside",
-               "--self-test", "--sections")
+               "--verify-ledger", "--self-test", "--sections")
 
 
 def parse_args(argv):
@@ -280,7 +297,7 @@ def parse_args(argv):
             "invariant 4). Nothing was run.")
     out = {"mode": None, "root": None, "staging": None, "authorization": None,
            "seq": None, "reason": None, "view": None, "ruling": None,
-           "sections": False}
+           "since": None, "sections": False}
     i = 0
     modes = []
     while i < len(args):
@@ -341,6 +358,12 @@ def parse_args(argv):
             out["seq"] = int(out["seq"])
         except (TypeError, ValueError):
             raise UsageError("--seq must be an integer journal sequence number")
+    if out["mode"] == "verify-ledger":
+        if not out["root"]:
+            raise UsageError("--verify-ledger requires --root")
+        if out["since"] is not None and not re.match(
+                r"^\d{4}-\d{2}-\d{2}$", out["since"]):
+            raise UsageError("--since takes YYYY-MM-DD")
     if out["mode"] == "set-aside":
         missing = [f for f in ("root", "seq", "view", "ruling") if not out[f]]
         if missing:
@@ -673,6 +696,180 @@ def verify_record_legs(repo, vrec):
         art = nc["artifact"]
         add(art, _load_verdict_artifact(repo, art), "no-op leg")
     return {"legs": legs, "incomplete": incomplete}
+
+
+def _partition_nonconfirm_legs(vrec):
+    """Verifier demotion (2026-08-09): partition a verify record's completed
+    non-confirm legs by their RECORD-TIME disposition, from the JOURNAL
+    ALONE -- the verdict artifact is forensics, never state (v3.0-74's
+    lesson). A leg with no journaled disposition (every pre-demotion record)
+    is BLOCKING: byte-identical to the semantics it had when written.
+    Only reached on runs whose legs all COMPLETED (the incomplete branch --
+    auto-revert -- is checked first and is untouched).
+    Returns (blocking, recorded): lists of
+    {"subject", "reason", "classes"}."""
+    blocking, recorded = [], []
+    for at in vrec.get("absorption_verify_attempts") or []:
+        leg = {"subject": at.get("view", "?"),
+               "reason": at.get("reason", ""),
+               "classes": at.get("reason_classes") or ["unclassified"]}
+        (recorded if at.get("disposition") == "recorded"
+         else blocking).append(leg)
+    seen_events = set()
+    for nc in vrec.get("noop_candidates") or []:
+        if nc.get("verified") or not nc.get("artifact"):
+            continue
+        ev = nc.get("event", "?")
+        if ev in seen_events:      # one union leg per event, not per candidate
+            continue
+        seen_events.add(ev)
+        leg = {"subject": "union:%s" % ev, "reason": "",
+               "classes": nc.get("reason_classes") or ["unclassified"]}
+        (recorded if nc.get("verify_disposition") == "recorded"
+         else blocking).append(leg)
+    return blocking, recorded
+
+
+_COMPLETED_LABELS = ("confirmed", "revised", "rejected")
+
+
+def execute_verify_ledger(root, since=None, out=print):
+    """Read-only builder-verifier agreement ledger (verifier demotion
+    2026-08-09, design sec.6): one row per verify leg, walked from the
+    JOURNAL ALONE -- this function never opens a verdict artifact, so it can
+    never contradict the engine's own record (v3.0-74). This is the
+    30/60/90-day check on the demotion: run with --since at each mark.
+    Reading the summary: the demotion was RIGHT if recorded-class signals
+    mostly end accepted (or age out untouched); WRONG -- re-promote the
+    class -- if a majority end redone with real content added. Blocking-class
+    volume is the control: the demotion should not move it."""
+    repo = os.path.abspath(root)
+    jd = os.path.join(repo, "receipts", "journal")
+    if not os.path.isdir(jd):
+        out("INCONCLUSIVE: no journal at %s -- is --root the project root?"
+            % jd)
+        return EXIT_INCONCLUSIVE
+    recs = load_journal(repo)
+
+    reverted_runs = set()
+    adjudicated = set()                    # (run seq, view)
+    absorbs_by_view = {}                   # view -> [run seq, ...]
+    for seq in sorted(recs):
+        rec = recs[seq]
+        dr = rec.get("driver_revert")
+        if isinstance(dr, dict) and dr.get("status") == "reverted" \
+                and isinstance(dr.get("reverts_seq"), int):
+            reverted_runs.add(dr["reverts_seq"])
+        for adj in rec.get("absorption_adjudicated") or []:
+            if isinstance(adj.get("adjudicates_seq"), int):
+                adjudicated.add((adj["adjudicates_seq"], adj.get("view")))
+        for ab in rec.get("absorbed") or []:
+            absorbs_by_view.setdefault(ab.get("view"), []).append(seq)
+
+    rows = []
+    for seq in sorted(recs):
+        vrec = recs[seq]
+        run_seq = vrec.get("verifies_seq")
+        if not isinstance(run_seq, int):
+            continue
+        started = str((vrec.get("run_window") or {}).get("start", ""))[:10]
+        if since and (not started or started < since):
+            continue
+
+        def _outcome(view, label, disposition):
+            if (run_seq, view) in adjudicated:
+                return "set-aside"
+            if run_seq in reverted_runs:
+                if label is not None and label not in _COMPLETED_LABELS:
+                    return "auto-reverted-transport"
+                later = any(s > run_seq for s in absorbs_by_view.get(view, []))
+                return "reverted-re-ridden" if later else "reverted"
+            if label == "confirmed" and disposition is None:
+                return "confirmed"
+            return "open-%s" % (disposition or "blocking")
+
+        for av in vrec.get("absorption_verified") or []:
+            rows.append({"seq": run_seq, "view": av.get("view", "?"),
+                         "label": "confirmed", "classes": [],
+                         "disposition": None,
+                         "outcome": _outcome(av.get("view"), "confirmed",
+                                             None)})
+        for at in vrec.get("absorption_verify_attempts") or []:
+            label = at.get("verdict_label")     # None on legacy records
+            rows.append({"seq": run_seq, "view": at.get("view", "?"),
+                         "label": label if label is not None else "(legacy)",
+                         "classes": at.get("reason_classes")
+                         or ["unclassified"],
+                         "disposition": at.get("disposition") or "blocking",
+                         "outcome": _outcome(at.get("view"), label,
+                                             at.get("disposition")
+                                             or "blocking")})
+        seen_ev = set()
+        for nc in vrec.get("noop_candidates") or []:
+            if nc.get("verified") or not nc.get("artifact"):
+                continue
+            ev = nc.get("event", "?")
+            if ev in seen_ev:
+                continue
+            seen_ev.add(ev)
+            label = nc.get("verdict_label")
+            rows.append({"seq": run_seq, "view": "union:%s" % ev,
+                         "label": label if label is not None else "(legacy)",
+                         "classes": nc.get("reason_classes")
+                         or ["unclassified"],
+                         "disposition": nc.get("verify_disposition")
+                         or "blocking",
+                         "outcome": _outcome(None, label,
+                                             nc.get("verify_disposition")
+                                             or "blocking")})
+
+    if not rows:
+        out("verify-ledger: no verify legs in the journal%s."
+            % (" since %s" % since if since else ""))
+        return EXIT_OK
+
+    out("VERIFY LEDGER%s -- %d leg(s), journal-derived only"
+        % (" since %s" % since if since else "", len(rows)))
+    for r in rows:
+        out("  seq %-4d %-40s %-10s %-28s %s"
+            % (r["seq"], r["view"], r["label"],
+               ",".join(r["classes"]) if r["classes"] else "-",
+               r["outcome"]))
+
+    # Agreement: confirmed vs CLASSIFIED completed non-confirm legs.
+    # Excluded and said so: legacy legs (no record-time fields),
+    # stamp-refused (engine defect class, not a verifier judgment),
+    # transport legs (no verdict happened).
+    confirmed = [r for r in rows if r["label"] == "confirmed"]
+    classified = [r for r in rows
+                  if r["label"] in ("revised", "rejected")
+                  and r["classes"] != ["unclassified"]
+                  and "stamp-refused" not in r["classes"]]
+    legacy = [r for r in rows if r["label"] == "(legacy)"]
+    denom = len(confirmed) + len(classified)
+    out("SUMMARY: %d confirmed / %d classified non-confirm -> agreement "
+        "%s%s" % (len(confirmed), len(classified),
+                  ("%d%%" % round(100.0 * len(confirmed) / denom))
+                  if denom else "n/a",
+                  "; %d legacy leg(s) excluded (no record-time class)"
+                  % len(legacy) if legacy else ""))
+    per_class = {}
+    for r in classified:
+        for c in r["classes"]:
+            per_class[c] = per_class.get(c, 0) + 1
+    if per_class:
+        out("  by class: " + ", ".join(
+            "%s=%d" % (c, n) for c, n in sorted(per_class.items())))
+    rec_rows = [r for r in rows if r["disposition"] == "recorded"]
+    if rec_rows:
+        acc = sum(1 for r in rec_rows if r["outcome"] == "set-aside")
+        redo = sum(1 for r in rec_rows
+                   if r["outcome"].startswith("reverted"))
+        opn = sum(1 for r in rec_rows if r["outcome"].startswith("open"))
+        out("  recorded-class outcomes: accepted=%d redone=%d open=%d "
+            "(mostly accepted -> demotion right; mostly redone -> "
+            "re-promote the class)" % (acc, redo, opn))
+    return EXIT_OK
 
 
 def _terminal_seqs(recs, repo=None):
@@ -1348,6 +1545,43 @@ def execute_run(root, staging, auth_path, sections=False, engine=None,
     non_confirm = (confirmed != checked) or (noop_confirmed != noop_checked)
 
     if non_confirm:
+        # Verifier demotion (2026-08-09): partition the completed non-confirm
+        # legs by the disposition the ENGINE journaled at record time --
+        # never re-derived from the verdict artifacts (v3.0-74). Any
+        # blocking leg (incl. unclassified, stamp-refused, and every
+        # pre-demotion record) keeps the exit-1 path below byte-identical.
+        vrec_j = load_journal(repo).get(verify_result.get("seq"), {})
+        blocking_legs, recorded_legs = _partition_nonconfirm_legs(vrec_j)
+
+        if recorded_legs and not blocking_legs:
+            # completeness/scope class only: the run COMPLETES. The articles
+            # are absorbed, live, and unverified-and-say-so (no stamp, no
+            # baseline advance -- a bare rejection still advances nothing).
+            out("VERIFY RECORDED SIGNALS (verifier demotion, completeness/"
+                "scope class): %d non-confirm leg(s), all recorded-class -- "
+                "the run completes; nothing blocks."
+                % len(recorded_legs))
+            for leg in recorded_legs:
+                out("  recorded signal: %s -- [%s] %s"
+                    % (leg["subject"], ",".join(leg["classes"]),
+                       leg["reason"]))
+            out("These articles are absorbed and live; the verdicts are "
+                "journaled data. Land each signal in the operator's inbox "
+                "(compile skill Step 3c) -- a recorded signal that never "
+                "reaches DECISIONS-PENDING is a signal declared away. "
+                "Adjudication stays available at the operator's pace: "
+                "`--revert --seq N` (redo through the correction cycle) or "
+                "`--set-aside` (their ruling recorded beside the verdict).")
+            results = sensors(repo, run_sha, sections)
+            out(_summary_block(run_seq, run_sha, absorbed_views,
+                               verify_result, results, reverted=False,
+                               deferred_claims=deferred_claims))
+            if results["diff"][0] not in (0, None):
+                out("check-run-diff FAILED on the run commit -- merge bar 3 "
+                    "is red.")
+                return EXIT_FAIL
+            return EXIT_OK
+
         # verified content with a non-confirm verdict: journaled data. NO
         # revert -- invariant 4 wanted a verify on every absorption and one
         # happened. The branch stays unmergeable until adjudicated.
@@ -1368,9 +1602,23 @@ def execute_run(root, staging, auth_path, sections=False, engine=None,
         # identically.
         for att in verify_result.get("absorption_attempts", []) or []:
             if att.get("view") or att.get("reason"):
-                out("  non-confirm leg: %s -- %s"
+                cls = att.get("reason_classes")
+                out("  non-confirm leg: %s -- %s%s"
                     % (att.get("view", "?"),
-                       att.get("reason", "(no reason recorded)")))
+                       att.get("reason", "(no reason recorded)"),
+                       " [class: %s]" % ",".join(cls) if cls else ""))
+        if recorded_legs:
+            # a mixed run blocks on its blocking legs, but the recorded
+            # sibling legs' signal is not swallowed: named here, and they
+            # still ride Step 3c into the operator's inbox.
+            out("Also on this run, %d recorded-class signal(s) (blocked from "
+                "completing by the leg(s) above; still land in the "
+                "operator's inbox via compile skill Step 3c):"
+                % len(recorded_legs))
+            for leg in recorded_legs:
+                out("  recorded signal: %s -- [%s] %s"
+                    % (leg["subject"], ",".join(leg["classes"]),
+                       leg["reason"]))
         results = sensors(repo, run_sha, sections)
         out(_summary_block(run_seq, run_sha, absorbed_views, verify_result,
                            results, reverted=False,
@@ -2031,6 +2279,29 @@ def self_test():                                            # noqa: C901
                           "gated_inner_verdict": "confirmed"},
         "gated-bare": {"verdict": "substrate-gated",
                        "reason": "F17 attestation gate"},
+        # verifier demotion (2026-08-09): post-demotion verdicts, as the
+        # ENGINE would journal them (compile-v2 classify_reason_classes is
+        # battery-tested there; the FakeEngine mirrors its record-time
+        # journaling below so THIS battery pins the driver's split).
+        "rejected-scope": {"verdict": "rejected",
+                           "reason": "scope-omission: the rho claim is "
+                                     "not represented",
+                           "reason_classes": ["scope-omission"]},
+        "rejected-enum": {"verdict": "rejected",
+                          "reason": "reason class: enumeration-incomplete",
+                          "reason_classes": ["enumeration-incomplete"]},
+        "rejected-fab": {"verdict": "rejected",
+                         "reason": "fabrication: asserts what no event "
+                                   "supports",
+                         "reason_classes": ["fabrication"]},
+        "rejected-mixed-leg": {"verdict": "rejected",
+                               "reason": "scope-omission and fabrication "
+                                         "on one leg",
+                               "reason_classes": ["scope-omission",
+                                                  "fabrication"]},
+        "rejected-classless-new": {"verdict": "rejected",
+                                   "reason": "no class token anywhere",
+                                   "reason_classes": []},
     }
 
     class FakeEngine:
@@ -2092,30 +2363,65 @@ def self_test():                                            # noqa: C901
             if self.verify == "raise":
                 raise RuntimeError("bridge timeout after 540000 ms")
             core = _core()
-            checked = 1 if self.absorption_checked is None \
+            # verifier demotion (2026-08-09): self.verify may be a LIST of
+            # fixture keys -> one leg per key (mixed-run fixtures). A single
+            # key keeps the original one-leg shape byte-identical.
+            keys = (list(self.verify)
+                    if isinstance(self.verify, (list, tuple))
+                    else [self.verify])
+            checked = len(keys) if self.absorption_checked is None \
                 else self.absorption_checked
-            verdict = VERDICTS[self.verify]
-            is_confirm = str(verdict.get("verdict", "")).startswith("confirm")
-            confirmed = checked if is_confirm else 0
             vrec = core.minimal_record("verify", "0" * 40)
             vrec["verifies_seq"] = seq
             vrec["run_window"] = {"start": "t0", "end": "t1"}
             artifacts = []
+            verified, attempts = [], []
+            confirmed = 0
             if checked:
-                art_rel = "receipts/verify/absorb-seq%d-v0.json" % seq
-                ap = os.path.join(repo, art_rel.replace("/", os.sep))
-                os.makedirs(os.path.dirname(ap), exist_ok=True)
-                with open(ap, "w", encoding="utf-8", newline="\n") as fh:
-                    json.dump(verdict, fh, indent=1, sort_keys=True)
-                artifacts.append(art_rel)
-                entry = {"view": self.view, "events": ["raw/e1.md"],
-                         "artifact": art_rel, "packet_sha256": "d" * 64}
-                if is_confirm:
-                    entry["verified_at"] = "t1"
-                    vrec["absorption_verified"] = [entry]
-                else:
-                    entry["reason"] = verdict.get("reason", "")
-                    vrec["absorption_verify_attempts"] = [entry]
+                for v_idx, key in enumerate(keys):
+                    verdict = VERDICTS[key]
+                    is_confirm = str(verdict.get("verdict", "")).startswith(
+                        "confirm")
+                    view = self.view if v_idx == 0 \
+                        else "wiki/leg%d.md" % v_idx
+                    art_rel = "receipts/verify/absorb-seq%d-v%d.json" % (
+                        seq, v_idx)
+                    ap = os.path.join(repo, art_rel.replace("/", os.sep))
+                    os.makedirs(os.path.dirname(ap), exist_ok=True)
+                    with open(ap, "w", encoding="utf-8",
+                              newline="\n") as fh:
+                        json.dump(verdict, fh, indent=1, sort_keys=True)
+                    artifacts.append(art_rel)
+                    entry = {"view": view, "events": ["raw/e1.md"],
+                             "artifact": art_rel, "packet_sha256": "d" * 64}
+                    if is_confirm:
+                        entry["verified_at"] = "t1"
+                        verified.append(entry)
+                        confirmed += 1
+                    else:
+                        entry["reason"] = verdict.get("reason", "")
+                        # Mirror the ENGINE's record-time journaling
+                        # (classify_reason_classes, battery-tested in
+                        # compile-v2) for post-demotion fixture keys: a
+                        # verdict carrying `reason_classes` journals the
+                        # three fields; the plain legacy keys journal none
+                        # (the pre-demotion record shape).
+                        rcs = verdict.get("reason_classes")
+                        if rcs is not None:
+                            norm = [str(c) for c in rcs] or ["unclassified"]
+                            entry["verdict_label"] = str(
+                                verdict.get("verdict"))
+                            entry["reason_classes"] = norm
+                            entry["disposition"] = (
+                                "recorded" if all(
+                                    c in ("scope-omission",
+                                          "enumeration-incomplete")
+                                    for c in norm) else "blocking")
+                        attempts.append(entry)
+                if verified:
+                    vrec["absorption_verified"] = verified
+                if attempts:
+                    vrec["absorption_verify_attempts"] = attempts
             vseq, jpath = core.append_record(repo, vrec)
             jrel = os.path.relpath(jpath, repo).replace(os.sep, "/")
             core.stage_only_commit(repo, artifacts + [jrel],
@@ -2123,7 +2429,14 @@ def self_test():                                            # noqa: C901
             return {"sha": "x", "seq": vseq, "confirmed": 0, "checked": 0,
                     "events_checked": 0, "events_confirmed": 0,
                     "absorption_checked": checked,
-                    "absorption_confirmed": confirmed}
+                    "absorption_confirmed": confirmed,
+                    "absorption_attempts": [
+                        {"view": a.get("view", ""),
+                         "reason": a.get("reason", ""),
+                         "verdict_label": a.get("verdict_label"),
+                         "reason_classes": a.get("reason_classes"),
+                         "disposition": a.get("disposition")}
+                        for a in attempts]}
 
     def quiet_sensors(repo, sha, sections):
         return {"census": (0, "census: problems: [] new_holes: []"),
@@ -2178,7 +2491,7 @@ def self_test():                                            # noqa: C901
     case("valid --run argv parses (mode/root/staging/authorization/sections)",
          parsed == {"mode": "run", "root": "r", "staging": "s",
                     "authorization": "a", "seq": None, "reason": None,
-                    "view": None, "ruling": None,
+                    "view": None, "ruling": None, "since": None,
                     "sections": True},
          parsed)
     case("--self-test parses as its own mode",
@@ -2621,6 +2934,172 @@ def self_test():                                            # noqa: C901
                          for r in load_journal(repo_m2).values()))
     finally:
         shutil.rmtree(repo_m2, ignore_errors=True)
+
+    # ------------- P. verifier demotion (2026-08-09): the exit split
+    # ACCEPTANCE (1): a scope-class rejection ABSORBS, journals `recorded`,
+    # and the run completes -- exit 0 with the mandatory band.
+    repo_p1 = make_repo("cdrv-demotion-rec-")
+    try:
+        st = make_staging(repo_p1)
+        good = make_grant(repo_p1)
+        _git(repo_p1, "add", "-A")
+        _git(repo_p1, "commit", "-qm", "fixtures")
+        buf = []
+        rc = run_driver(repo_p1, st, good,
+                         engine=FakeEngine(verify="rejected-scope"),
+                         sensors=quiet_sensors, out=buf.append)
+        text = "\n".join(str(b) for b in buf)
+        recs_p1 = load_journal(repo_p1)
+        att_p1 = [a for r in recs_p1.values()
+                  for a in r.get("absorption_verify_attempts") or []]
+        case("ACCEPTANCE (1): scope-class rejection -> exit 0, absorption "
+             "stands (no revert), disposition journaled `recorded`",
+             rc == EXIT_OK
+             and "absorbed line" in open(
+                 os.path.join(repo_p1, "wiki", "a.md"),
+                 encoding="utf-8").read()
+             and not any(r.get("driver_revert") for r in recs_p1.values())
+             and att_p1 and att_p1[0].get("disposition") == "recorded",
+             rc)
+        case("ACCEPTANCE (1): the RECORDED SIGNALS band is mandatory and "
+             "names the leg, its class, and Step 3c",
+             "VERIFY RECORDED SIGNALS" in text
+             and "recorded signal: wiki/a.md -- [scope-omission]" in text
+             and "Step 3c" in text
+             and "signal declared away" in text, text[:400])
+        case("ACCEPTANCE (1): no verified stamp -- the article is live but "
+             "NOT machine-verified (baseline advances on nothing)",
+             not any(r.get("absorption_verified")
+                     for r in recs_p1.values()))
+        # the redo verb: --revert accepts a recorded-only run unchanged
+        rc_rv = execute_revert(repo_p1, _run_seqs(recs_p1)[-1], out=silent)
+        case("recorded-only run: `--revert` (the operator's REDO) accepts "
+             "it -- semantics byte-identical",
+             rc_rv == EXIT_OK
+             and any(r.get("driver_revert")
+                     for r in load_journal(repo_p1).values()))
+    finally:
+        shutil.rmtree(repo_p1, ignore_errors=True)
+
+    # ACCEPTANCE (2): fabrication-class still refuses -- exit 1, no revert,
+    # the pre-demotion path byte-identical.
+    # ACCEPTANCE (3): a classless verdict BLOCKS (fail-closed) -- both the
+    # post-demotion `unclassified` record and the legacy no-fields record.
+    for key, why in (
+        ("rejected-fab", "fabrication-class: still refuses (exit 1)"),
+        ("rejected-mixed-leg", "mixed classes on one leg: blocking wins"),
+        ("rejected-classless-new",
+         "classless verdict journals unclassified and BLOCKS (fail-closed)"),
+        ("rejected", "legacy record shape (no class fields) still BLOCKS"),
+    ):
+        repo_p2 = make_repo("cdrv-demotion-blk-")
+        try:
+            st = make_staging(repo_p2)
+            good = make_grant(repo_p2)
+            _git(repo_p2, "add", "-A")
+            _git(repo_p2, "commit", "-qm", "fixtures")
+            buf = []
+            rc = run_driver(repo_p2, st, good, engine=FakeEngine(verify=key),
+                             sensors=quiet_sensors, out=buf.append)
+            text = "\n".join(str(b) for b in buf)
+            case("demotion: %s" % why,
+                 rc == EXIT_FAIL
+                 and "VERIFY NON-CONFIRM" in text
+                 and "VERIFY RECORDED SIGNALS" not in text
+                 and not any(r.get("driver_revert")
+                             for r in load_journal(repo_p2).values()), rc)
+        finally:
+            shutil.rmtree(repo_p2, ignore_errors=True)
+
+    # Mixed RUN: one blocking + one recorded leg -> blocks, but the recorded
+    # sibling's signal is named, not swallowed.
+    repo_p3 = make_repo("cdrv-demotion-mix-")
+    try:
+        st = make_staging(repo_p3)
+        good = make_grant(repo_p3)
+        _git(repo_p3, "add", "-A")
+        _git(repo_p3, "commit", "-qm", "fixtures")
+        buf = []
+        rc = run_driver(repo_p3, st, good,
+                         engine=FakeEngine(
+                             verify=["rejected-fab", "rejected-scope"]),
+                         sensors=quiet_sensors, out=buf.append)
+        text = "\n".join(str(b) for b in buf)
+        case("mixed run: blocking leg governs (exit 1); recorded sibling "
+             "still named for Step 3c",
+             rc == EXIT_FAIL and "VERIFY NON-CONFIRM" in text
+             and "recorded-class signal(s)" in text
+             and "recorded signal: wiki/leg1.md -- [scope-omission]" in text,
+             rc)
+    finally:
+        shutil.rmtree(repo_p3, ignore_errors=True)
+
+    # Recorded-only, multi-leg + the ACCEPT verb + the ledger.
+    repo_p4 = make_repo("cdrv-demotion-ledger-")
+    try:
+        st = make_staging(repo_p4)
+        good = make_grant(repo_p4)
+        _git(repo_p4, "add", "-A")
+        _git(repo_p4, "commit", "-qm", "fixtures")
+        rc = run_driver(repo_p4, st, good,
+                         engine=FakeEngine(
+                             verify=["rejected-scope", "rejected-enum"]),
+                         sensors=quiet_sensors, out=silent)
+        run_seq_p4 = _run_seqs(load_journal(repo_p4))[-1]
+        case("recorded-only multi-leg run completes (exit 0)",
+             rc == EXIT_OK, rc)
+        buf = []
+        rc_lg = execute_verify_ledger(repo_p4, out=buf.append)
+        text = "\n".join(str(b) for b in buf)
+        case("--verify-ledger: journal-only rows, both legs open-recorded",
+             rc_lg == EXIT_OK and text.count("open-recorded") == 2
+             and "scope-omission" in text
+             and "enumeration-incomplete" in text, text)
+        rc_sa = execute_set_aside(repo_p4, run_seq_p4, "wiki/a.md",
+                                  "operator fixture ruling", out=silent)
+        buf = []
+        execute_verify_ledger(repo_p4, out=buf.append)
+        text = "\n".join(str(b) for b in buf)
+        case("recorded leg: `--set-aside` (the operator's ACCEPT) works "
+             "unchanged, and the ledger's outcome flips to set-aside",
+             rc_sa == EXIT_OK and "set-aside" in text
+             and "accepted=1" in text and text.count("open-recorded") == 1,
+             text)
+        case("--verify-ledger --since after every record filters to "
+             "nothing, honestly",
+             execute_verify_ledger(repo_p4, since="2099-01-01",
+                                   out=silent) == EXIT_OK)
+    finally:
+        shutil.rmtree(repo_p4, ignore_errors=True)
+
+    # Legacy legs: listed, excluded from agreement, named as excluded.
+    repo_p5 = make_repo("cdrv-demotion-legacy-")
+    try:
+        st = make_staging(repo_p5)
+        good = make_grant(repo_p5)
+        _git(repo_p5, "add", "-A")
+        _git(repo_p5, "commit", "-qm", "fixtures")
+        run_driver(repo_p5, st, good, engine=FakeEngine(verify="rejected"),
+                    sensors=quiet_sensors, out=silent)
+        buf = []
+        execute_verify_ledger(repo_p5, out=buf.append)
+        text = "\n".join(str(b) for b in buf)
+        case("--verify-ledger: a legacy leg is listed as (legacy)/"
+             "unclassified and excluded from the agreement rate",
+             "(legacy)" in text and "legacy leg(s) excluded" in text, text)
+    finally:
+        shutil.rmtree(repo_p5, ignore_errors=True)
+
+    try:
+        parse_args(["--verify-ledger"])
+        case("--verify-ledger without --root refuses", False)
+    except UsageError:
+        case("--verify-ledger without --root refuses", True)
+    try:
+        parse_args(["--verify-ledger", "--root", ".", "--since", "yesterday"])
+        case("--since takes YYYY-MM-DD only", False)
+    except UsageError:
+        case("--since takes YYYY-MM-DD only", True)
 
     # ---------- N. the seq-103 state: verify record whose legs never completed
     def plant_seq103(repo, verdict_key="bridge-error"):
@@ -3254,6 +3733,8 @@ def self_test():                                            # noqa: C901
          "return execute_reconcile(" in main_src)
     case("main() dispatches --revert to execute_revert",
          "return execute_revert(" in main_src)
+    case("main() dispatches --verify-ledger to execute_verify_ledger",
+         "return execute_verify_ledger(" in main_src)
 
     # ------------------------------------------------------- K. exit mapping
     case("main() with no arguments is inconclusive (exit 2)",
@@ -3291,6 +3772,8 @@ def main(argv):
     if opts["mode"] == "set-aside":
         return execute_set_aside(opts["root"], opts["seq"], opts["view"],
                                  opts["ruling"])
+    if opts["mode"] == "verify-ledger":
+        return execute_verify_ledger(opts["root"], since=opts["since"])
     print(USAGE)
     return EXIT_INCONCLUSIVE
 

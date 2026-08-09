@@ -102,6 +102,32 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.31 → v3.0.32 (the verifier demotion)
+
+Knowledge-os instances only. **One [your call] entry, and it is the whole release:**
+
+1. **[your call] Adopt the demotion.** This release loosens exactly one thing, deliberately:
+   a second-vendor rejection whose ONLY complaint is completeness ("the article may say too
+   little" — `scope-omission` / `enumeration-incomplete`) stops blocking the run and becomes
+   a recorded signal in your DECISIONS-PENDING inbox, answered at your pace (*redo* or
+   *accept*). Everything falsity-shaped (`fabrication` / `contradiction` / `over-certainty`),
+   every unclassifiable verdict, and every pre-adoption record keeps blocking exactly as
+   today. If you say no, skip this whole section; nothing else in the release matters to you.
+2. **Take the updated surfaces:** `deploy/compile-v2.py`, `deploy/compile-driver.py`,
+   `deploy/decision-inbox.py`, the compile skill `SKILL.md` (exit table, Step 3c, Step 12),
+   `docs/engine/OPERATIONS.md` §7 (the state table + the blocking/recorded split), and the
+   decision-inbox `format-MANIFEST.md` (amendment A3 — the inbox marker scan now carries the
+   full item line; no identity/age churn).
+3. **Nothing to run against your journal.** Pre-adoption verify records read as blocking-class
+   under the new lifecycle — byte-identical to what they meant when written; nothing is
+   rewritten or backfilled (the journal is append-only, and classes are never re-derived from
+   verdict artifacts). The first recorded-class verdict AFTER adoption is the first behavior
+   change you will see.
+4. **Calendar the demotion's own review** (30/60/90 days from adoption):
+   `py deploy/compile-driver.py --verify-ledger --root . --since <adoption date>` — the
+   summary states its own reading (mostly *accepted* → the demotion was right; mostly
+   *redone* → tell a session to re-promote the class).
+
 ## v3.0.30 → v3.0.31 (the subtraction pass)
 
 Removal-heavy and safe to adopt in one sitting; nothing here changes gates, verdicts, or

@@ -125,6 +125,31 @@ A substrate-different model (the fork defaults to `gpt-5.6-sol` via the bridge; 
 on model-id difference, migration/design-gate work on vendor difference — spec §5) receives the
 full event + the current view body and answers whether the absorption is faithful.
 
+#### The verdict lifecycle — one state table (v3.0-92, 2026-08-09)
+
+**This table is the lifecycle authority.** Four releases of amendments (v3.0.22 no-self-
+adjudication, v3.0.25 escalation contract, v3.0.29 set-aside/baselines/scoped totality,
+v3.0.30 revert-vs-forward, and the 2026-08-09 verifier demotion) accreted as layered prose;
+a session answering "what happens to a leg in state X" reads this table first — the
+paragraphs below it carry the rationale and the grading doctrine, and where wording ever
+seems to diverge, the table wins. Standing rules the whole table inherits: the reason class
+is the VERIFIER's, journaled by the engine once at record time and **never re-derived from
+the verdict artifact** (v3.0-74); a mixed-class verdict takes the strictest class; at run
+level, one BLOCKED leg makes the whole run exit 1.
+
+| Leg state | The journal record that puts it here | Who may act | Actions → next state |
+|---|---|---|---|
+| **PENDING** | the run's `absorbed[]` entry; no verify record covers the run yet | engine | a verify leg fires on EVERY absorbed view (invariant 4) → one of the states below |
+| **VERIFIED** | `absorption_verified[]` entry — the only path to a `verified:` stamp; the baseline advances | nobody | terminal. A confirmed absorption later proven wrong is a NEW raw event, never a disposition rewrite |
+| **BLOCKED** | `absorption_verify_attempts[]` entry, completed verdict, `disposition: blocking` — `fabrication` / `contradiction` / `over-certainty`, `unclassified` (no parseable class, fail-closed), `stamp-refused`, and every pre-demotion record (no disposition field) | the session (correction) or the operator (ruling) — never the session ruling the verdict wrong | run exits 1, branch unmergeable. `--revert` → RUN-REVERTED (correct + re-ride, §7a); operator `--set-aside` → ADJUDICATED. There is no third disposition |
+| **RECORDED** | same entry shape, `disposition: recorded` — `scope-omission` / `enumeration-incomplete` (verifier demotion 2026-08-09) | the operator, at their own pace (inbox item, compile skill Step 3c) | the run COMPLETES (exit 0 + RECORDED SIGNALS band); the article stays live, unverified-and-named-so, baseline unmoved. Same two verbs, operator-paced: *redo* = `--revert` → RUN-REVERTED; *accept* = `--set-aside` → ADJUDICATED |
+| **ADJUDICATED** | `absorption_adjudicated[]` — the operator's verbatim ruling journaled beside the kept verdict | nobody (one ruling per verdict) | terminal for this verdict; the baseline advances as "adjudicated \<date\> by operator ruling, not machine-verified" |
+| **RUN-REVERTED** | `driver_revert{status: reverted}` — the rejection stays on the record | the session | corrected answers re-ride a fresh `--run` (full validate/absorb/verify road) → new legs, new record. On a collision (the run is no longer the last word on its articles) `--revert` refuses and writes nothing: correct FORWARD instead (v3.0.30) |
+| **RUN-AUTO-REVERTED** | transport-shaped legs (`bridge-error` / timeout / unparseable / gated-bare — judged by verdict VALUE, `classify_verdict`, never by verify_run() returning) + `driver_revert` | the session | diagnose the transport failure, re-run the same staging dir; `--reverify` covers the transport-failed-but-absorption-stands case |
+| *(failed revert)* | `driver_revert{status: revert-failed}` — NON-terminal | a human | startup reconciliation refuses every later run until resolved by hand |
+
+#### Rationale and grading doctrine (the table above is the lifecycle authority)
+
 **The verifier's charge is plan-scoped (v3.0.29, closing backlog v3.0-63).** When the compile
 record carries a claim routing, the packet embeds it (DECLARED CLAIM ROUTING section) and the
 checker grades **two questions**: (1) does this view faithfully carry every claim it OWNS under
@@ -173,6 +198,32 @@ message itself is spec'd in the compile skill's exit-1 section and follows
 `core/governance/CLAUDE.md` § Reporting to the operator (v3.0.25): plain words, the
 verifier's reason sentence quoted verbatim inside them, the full record via a details tail —
 a paraphrase alone is never the basis for the operator's ruling.
+
+**The blocking/recorded split (verifier demotion, 2026-08-09 — the one sanctioned loosening,
+operator-ratified and scoped to the completeness/scope class; nothing else loosens).** Every
+non-confirm verdict carries a **reason class**, assigned by the VERIFIER inside its verdict and
+normalized/journaled by the engine exactly once, at record time — a verdict with no parseable
+class is BLOCKING, fail-closed; a verdict naming classes from both families blocks (strictest
+wins); and the session whose absorption was graded never assigns, upgrades, or downgrades a
+class — re-classing a verdict is grading the grader, the same no-self-adjudication rule from
+the other side. The split:
+
+- **Falsity-shaped classes — `fabrication`, `contradiction`, `over-certainty` ("the article may
+  say something false", which poisons the wiki, i.e. future context) — KEEP everything above
+  unchanged**: exit 1, the two dispositions, the escalation contract, byte-identical.
+- **Absence-shaped classes — `scope-omission`, `enumeration-incomplete` ("the article may say
+  too little") — are RECORDED SIGNALS**: the verdict is journaled data, the article stays
+  absorbed and live (unverified and named so — a bare rejection still advances no baseline),
+  the run COMPLETES, and the decision rides the compile skill's Step 3c into the decision
+  inbox, where the operator answers at their own pace with the same two verbs as ever —
+  **redo** (the `--revert` correction cycle) or **accept** (`--set-aside`, ruling recorded).
+  An all-legs `enumeration-incomplete` wave stays ONE plan defect and lands as ONE inbox item
+  (fix the claim table, re-ride), never N article items.
+
+Builder–verifier agreement is measurable from the journal alone —
+`compile-driver.py --verify-ledger --root . [--since YYYY-MM-DD]` — and the demotion carries a
+standing 30/60/90-day review: recorded-class signals mostly **accepted** means the demotion was
+right; mostly **redone** with real content added means re-promote the class.
 
 **Co-absorption / joint citation for multi-event spans.** Absorption-verify grades **per run**. If
 a view accumulates content from several events across separate compile runs without an

@@ -727,6 +727,18 @@ try {
     Fail "ERROR: init completed but could not delete VERSION (file in use?). Delete it manually, then run init-validate.ps1."
 }
 
+# Consume RELEASE the same way (backlog v3.0-76): it was read above to stamp
+# project.yaml.template_release; leaving it makes a second version-bearing file that
+# nothing reads again and no recipe updates -- it goes permanently stale post-adoption.
+if (Test-Path $releaseTagPath) {
+    try {
+        Remove-Item $releaseTagPath -Force -ErrorAction Stop
+        Info "deleted: RELEASE (consumed; project.yaml template_release is the project's release source)"
+    } catch {
+        Fail "ERROR: init completed but could not delete RELEASE (file in use?). Delete it manually, then run init-validate.ps1."
+    }
+}
+
 # ---------- 9. Print next-steps ----------
 
 $capsList = if ($instantiatedCaps.Count -gt 0) { $instantiatedCaps -join ', ' } else { '(none)' }

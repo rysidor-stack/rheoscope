@@ -705,6 +705,15 @@ rm -f "$VERSION_FILE" \
     || fail "init completed but could not delete VERSION (file in use?). Delete it manually, then run init-validate.sh."
 info "deleted: VERSION (consumed; project.yaml template_version is the project's version source)"
 
+# Consume RELEASE the same way (backlog v3.0-76): it was read above to stamp
+# project.yaml.template_release; leaving it makes a second version-bearing file that
+# nothing reads again and no recipe updates -- it goes permanently stale post-adoption.
+if [[ -f "$SCRIPT_ROOT/RELEASE" ]]; then
+    rm -f "$SCRIPT_ROOT/RELEASE" \
+        || fail "init completed but could not delete RELEASE (file in use?). Delete it manually, then run init-validate.sh."
+    info "deleted: RELEASE (consumed; project.yaml template_release is the project's release source)"
+fi
+
 # ---------- 9. Print next-steps ----------
 
 if [[ ${#INSTANTIATED[@]} -gt 0 ]]; then

@@ -49,8 +49,9 @@ Checks (harness-v3.0/specs/template-self-truth-and-onboarding-brief-2026-07-10.m
                       ("version drift unwatched"), never FAIL; unreachable probe or drifted
                       version -> WARN naming both versions and the verified date (session-C
                       build decision D5 -- dev-repo design record, stated in full here).
-  12. sensor-reachability  every deploy/*.py reachable from an executable surface or listed
-                      in deploy/dormant-register.yaml (backlog v3.0-80).
+  12. sensor-reachability  every deploy/*.py reachable from an executable surface
+                      (backlog v3.0-80; the dormant register retired 2026-08-08 -- the
+                      dev-only drills it excused no longer ship).
   13. skill-adapters  deploy/gen-skill-adapters.py --check, when wired (backlog v3.0-79).
   14. corpus-reachability  (v3.0.18, backlog v3.0-88) every execution corpus declared in
                       project.yaml -- the corpus_sources list, or the legacy singular
@@ -659,24 +660,24 @@ def check_version_drift(ctx):
 # built-but-unwired defect class (v3.0-25 hooks, check-derivation pre-v3.0-26, the
 # v3.0-65 engine cluster, v3.0-79 skills) stayed invisible to /doctor by construction.
 #
-# Tri-state BY DESIGN (five-pass run 2026-07-29, pass 2): every deploy/*.py must be
-# (a) reachable from an executable surface, (b) listed in deploy/dormant-register.yaml
-# with a reason + decision-ref, or (c) UNACCOUNTED -> WARN demanding a disposition. The
-# WARN never prescribes wiring: orphaned code has two causes (needed-but-unwired vs
-# built-but-undemanded) and connecting a capability is a decision, not a fix. WARN tier
-# only -- a new sensor must spend zero operator attention beyond the report line.
+# Two-state since 2026-08-08: every deploy/*.py is either reachable from an executable
+# surface or UNACCOUNTED -> WARN demanding a disposition. The dormant register
+# (deploy/dormant-register.yaml, v3.0-80/v3.0.26) is RETIRED: its only rows were the
+# template author's own engine drills and test batteries, which no longer ship in the
+# release at all (make-release.py export exclusion, 2026-08-08 structural-audit
+# remediation) -- a register whose every row excused a file that no longer exists is
+# pure weight. The WARN never prescribes wiring: orphaned code has two causes
+# (needed-but-unwired vs built-but-undemanded) and connecting a capability is a
+# decision, not a fix. WARN tier only -- a new sensor must spend zero operator
+# attention beyond the report line.
 # --------------------------------------------------------------------------------------
-
-DORMANT_REGISTER = "dormant-register.yaml"
-_DORMANT_ROW_RE = re.compile(r'(?m)^\s*-\s*script:\s*"?([^"\s#]+)"?')
 
 def _reachability_surfaces(root):
     """Executable surfaces whose text counts as an invocation: skill protocols and their
     helper scripts, init scripts, scheduler .cmd wrappers, and deploy registers. Prose
     (evidence/, specs, receipts, wiki) is deliberately NOT a surface -- being described
     is not being invoked; the loose definition measured 0 orphans where the strict one
-    measured 17. The dormant register itself is excluded: listing a script there must
-    mean dormant-by-decision, never count as an invocation."""
+    measured 17."""
     surfaces = []
     skills_dir = root / ".claude" / "skills"
     if skills_dir.is_dir():
@@ -693,20 +694,8 @@ def _reachability_surfaces(root):
     deploy = root / "deploy"
     if deploy.is_dir():
         for pat in ("*.yaml", "*.yml"):
-            surfaces.extend(p for p in deploy.glob(pat) if p.name != DORMANT_REGISTER)
+            surfaces.extend(deploy.glob(pat))
     return surfaces
-
-def _read_dormant_register(root):
-    """Registered-dormant script names, or None if no register exists. Naive line-regex
-    parse of the flat `- script: <name>` rows (a schema this template owns), so PyYAML
-    stays optional here exactly as it is for check 11."""
-    path = root / "deploy" / DORMANT_REGISTER
-    if not path.is_file():
-        return None
-    try:
-        return set(_DORMANT_ROW_RE.findall(path.read_text(encoding="utf-8")))
-    except OSError:
-        return None
 
 def check_sensor_reachability(ctx):
     root = ctx["root"]
@@ -747,38 +736,23 @@ def check_sensor_reachability(ctx):
                 reach.add(t)
                 frontier.append(t)
 
-    registered = _read_dormant_register(root)
-    registered_set = registered or set()
-    unaccounted = sorted(s for s in scripts if s not in reach and s not in registered_set)
-    # Upward check on the register itself: a row is stale if its script no longer exists
-    # OR became reachable (dormant-by-decision that quietly woke up).
-    stale_rows = sorted((registered_set - set(scripts)) | (registered_set & reach))
+    unaccounted = sorted(s for s in scripts if s not in reach)
 
     def _cap(names, n=10):
         return ", ".join(names[:n]) + (" (+%d more)" % (len(names) - n)
                                         if len(names) > n else "")
 
-    problems = []
     if unaccounted:
-        problems.append("%d installed script(s) are used by nothing and not registered "
-                         "as parked on purpose. Nothing is broken -- they are dead "
-                         "weight until someone either wires them in or records why they "
-                         "are parked [UNACCOUNTED, absent from deploy/%s]: %s"
-                         % (len(unaccounted), DORMANT_REGISTER, _cap(unaccounted)))
-    if stale_rows:
-        problems.append("%d register row(s) are out of date -- the script is gone, or "
-                         "something now uses it [stale rows]: %s"
-                         % (len(stale_rows), _cap(stale_rows)))
-    if problems:
         return Result("WARN", "sensor-reachability",
-                       "; ".join(problems) + ". FIX: for each unaccounted script, either "
-                       "wire an invoker or add a dormant-register row (script, reason, "
-                       "decision-ref) -- connecting a capability is a decision, not a fix "
-                       "(v3.0-80); delete stale rows.")
+                       "%d installed script(s) are used by nothing. Nothing is broken -- "
+                       "they are dead weight until someone either wires them in or "
+                       "removes them [UNACCOUNTED]: %s. FIX: for each unaccounted "
+                       "script, wire an invoker or delete it -- connecting a capability "
+                       "is a decision, not a fix (v3.0-80)."
+                       % (len(unaccounted), _cap(unaccounted)))
     return Result("PASS", "sensor-reachability",
-                   "%d deploy script(s): %d reachable, %d dormant-registered, "
-                   "0 unaccounted" % (len(scripts), len(reach & set(scripts)),
-                                       len(registered_set)))
+                   "%d deploy script(s): %d reachable, 0 unaccounted"
+                   % (len(scripts), len(reach & set(scripts))))
 
 # --------------------------------------------------------------------------------------
 # Check 13: skill-adapters (backlog v3.0-79). Non-Claude agents (Codex et al.) discover
@@ -1371,10 +1345,9 @@ def self_test():
               r.status == "WARN" and "could not locate the wiki tree" in r.detail
               and "FIX:" in r.detail)
 
-    # Check 12: sensor-reachability -- the four states (skip / orphan-WARN with the
-    # transitive chain honored / registered-dormant PASS / stale-row WARN), plus the
-    # register-is-not-a-surface invariant (registering a script must yield PASS via the
-    # register branch, never via fake reachability).
+    # Check 12: sensor-reachability -- the three states (skip / orphan-WARN with the
+    # transitive chain honored / all-reachable PASS). Register cases retired 2026-08-08
+    # with the dormant register itself.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         ctx = {"root": root, "python": sys.executable}
@@ -1401,23 +1374,10 @@ def self_test():
               r.status == "WARN" and "orphan.py" in r.detail
               and "chained.py" not in r.detail and "FIX:" in r.detail)
 
-        (deploy_dir / DORMANT_REGISTER).write_text(
-            "rows:\n  - script: orphan.py\n    reason: fixture\n"
-            "    decision-ref: v3.0-80\n", encoding="utf-8")
+        (deploy_dir / "orphan.py").unlink()
         r = note(check_sensor_reachability(ctx))
-        check("sensor-reachability: registered dormant -> PASS (register is a record, "
-              "not a surface)", r.status == "PASS" and "1 dormant-registered" in r.detail)
-
-        (deploy_dir / DORMANT_REGISTER).write_text(
-            "rows:\n  - script: orphan.py\n    reason: fixture\n"
-            "    decision-ref: v3.0-80\n"
-            "  - script: wired.py\n    reason: stale -- actually reachable\n"
-            "    decision-ref: none\n"
-            "  - script: ghost.py\n    reason: stale -- deleted\n"
-            "    decision-ref: none\n", encoding="utf-8")
-        r = note(check_sensor_reachability(ctx))
-        check("sensor-reachability: stale rows (reachable + deleted) -> WARN naming both",
-              r.status == "WARN" and "wired.py" in r.detail and "ghost.py" in r.detail)
+        check("sensor-reachability: all reachable -> PASS with 0 unaccounted",
+              r.status == "PASS" and "0 unaccounted" in r.detail)
 
     # Check 13: skill-adapters -- absent-generator SKIP; stub-driven WARN (drift) with
     # FIX; stub-driven PASS. Same stub-script pattern as the derivation-gate cases.

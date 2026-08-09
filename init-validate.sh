@@ -155,6 +155,11 @@ done
 #    version source is project.yaml.template_version, per v2.0 #10a).
 [[ -f "$SCRIPT_ROOT/VERSION" ]] && add_fail "VERSION file still exists - init did not consume it (project.yaml.template_version is the project's version source)"
 
+# 8b. RELEASE must NOT exist post-init either (consumed at instantiation into
+#     project.yaml.template_release, per backlog v3.0-76 -- a leftover copy goes
+#     permanently stale post-adoption).
+[[ -f "$SCRIPT_ROOT/RELEASE" ]] && add_fail "RELEASE file still exists - init did not consume it (project.yaml.template_release is the project's release source)"
+
 if [[ ${#FAILURES[@]} -gt 0 ]]; then
     echo "init-validate: FAIL (${#FAILURES[@]} issue(s))"
     echo "Setup didn't finish cleanly. Easiest fix: paste this whole output into a Claude session opened in this folder and ask it to finish the setup, then run this check again."

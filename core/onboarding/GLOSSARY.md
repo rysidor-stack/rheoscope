@@ -65,15 +65,6 @@ each in plain English with what-happens-if-ignored and a yes/no framing. `/sweep
 for staleness (`--check`, read-only); regenerating it is a write-side act owned by
 `/standing-loop` or an interactive session. See `deploy/decision-inbox.py`.
 
-**Desk / empire desk** — the per-project desk (`SWEEP-BRIEFING.md`, the decision inbox, the
-deadline register, `deploy/desk-metrics.py`'s append-only trend history at
-`receipts/desk/metrics-history.jsonl`, and `deploy/gen-desk.py`'s static, actuator-free
-`DESK.html`) is one project's read-only status glass. The **empire desk**
-(`deploy/empire-desk.py`) rolls every project registered in the workspace's `projects.yaml` into
-a single cross-project `EMPIRE-DESK.md` — a generated projection, no daemon; built 2026-07-23,
-activation gated on at least two additional live instances. See `deploy/desk-metrics.py`,
-`deploy/gen-desk.py`, and `deploy/empire-desk.py`.
-
 **Dispatch manifest** — `dispatch-manifest.json`, the memory engine's compile-pipeline transport
 artifact (F17-attested — see the **F17 / attestation sidecar** entry). Says what a packet
 carried, not what a surface must do. See `core/methodology/manifest-format.md` § 1.

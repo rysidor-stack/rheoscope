@@ -615,11 +615,13 @@ contracts live in each script's own docstring; the operating detail lives in
 - **`deploy/check-derivation.py`** — reports every `audit-pending` **T1** view so the
   dispatch/build path refuses to act on an unaudited top-tier view (F12). `--gate` exits
   nonzero when any is found.
-- **Contract/conformance family** (`check-run-diff.py`, `check-phase-gate.py`, `check-golden.py`,
-  `check-eco2.py`, `check-caps.py`, `check-path-containment.py`, `check-split.py`,
-  `check-autonomy-disposition.py`, `check-journal-sidecar.py`) — per-gate conformance to the
-  frozen spec/test-plan; each is `--self-test`-first and gates a specific phase-boundary
-  acceptance criterion.
+- **Contract/conformance family** (`check-run-diff.py`, `check-caps.py`,
+  `check-path-containment.py`, `check-split.py`, `check-autonomy-disposition.py`) — per-gate
+  conformance to the frozen spec/test-plan; each is `--self-test`-first and gates a specific
+  acceptance criterion. `check-split.py` is the split-acceptance gate, invoked by `/compile`
+  Step 4 whenever a run splits a view. (The engine's own phase-boundary batteries —
+  check-phase-gate, check-golden, check-eco2, check-journal-sidecar and the drill-* family —
+  are harness-dev tools and no longer ship with instances, 2026-08-08.)
 - **Conservation census** (`staleness.py`) — the ACC-1/ACC-2 tripwire (§6): every ledger event
   resolves to exactly one of seven ordered classes; `problems`/`new_holes` is the honesty signal.
   Projects the compile-v2 run journal additively, gated by a chain-integrity check.
@@ -629,7 +631,7 @@ contracts live in each script's own docstring; the operating detail lives in
   incremental delta paths (`docs/engine/OPERATIONS.md`, step 2); the loop-envelope/typed-event
   validator.
 - **Verify substrate/reset sensors** (`check-substrate.py`, `check-verified-reset.py`,
-  `check-corpus-support.py`, `check-origin-propagation.py`, `routing-census.py`) — the F17/F18
+  `check-corpus-support.py`, `routing-census.py`) — the F17/F18
   substrate-gate policy, `verified:` staleness on a re-diverged view, F16 corpus-support
   re-verification at the pinned SHA, and the F15 standalone routing census.
 - **Read-path** (`catalog.py`, `assemble.py`, `tool_grant.py`) — ROUTE-1 vocabulary integrity, the

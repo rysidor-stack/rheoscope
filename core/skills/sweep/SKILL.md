@@ -180,18 +180,10 @@ health, report spot-check, and roadmap-vs-evidence all healthy.
 
 A nightly scheduled run is a recipe, not something this skill turns on by itself: a scheduled
 task or cron entry invokes a headless session whose entire prompt is "run /sweep and save the
-briefing to SWEEP-BRIEFING.md, overwriting; then append the metrics line and regenerate the
-desk." Two steps are appended after the briefing is saved, both writes, both `deploy/`
-scripts, if present:
-1. `python deploy/desk-metrics.py --append` — records one line in
-   `receipts/desk/metrics-history.jsonl` for today's run (counts + a spend line; see that
-   script's own docstring).
-2. `python deploy/gen-desk.py` — regenerates `DESK.html`, the static read-only desk
-   projection, from the briefing, the decision inbox, the deadline register, and the
-   metrics history just updated.
+briefing to SWEEP-BRIEFING.md, overwriting."
 
-That's the whole recipe — /sweep itself needs no changes to support it. These two appended
-writes belong to the WRITE-SIDE scheduled session, never to `/sweep` itself: a direct, manual
+That's the whole recipe — /sweep itself needs no changes to support it. The briefing save
+belongs to the WRITE-SIDE scheduled session, never to `/sweep` itself: a direct, manual
 `/sweep` invocation still performs zero writes — the read-only rule above stands unchanged.
 
 Turning this on is an **operator decision**, not a default. It creates standing automation and

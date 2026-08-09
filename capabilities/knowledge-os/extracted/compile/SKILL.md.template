@@ -242,6 +242,8 @@ After all articles are updated, scan for missing cross-links:
 - If a cross-link is uncertain, do NOT add it. Instead, create a REVIEW.md entry of type `connection`.
 - Remove any cross-links that point to articles that no longer exist.
 
+**Split acceptance (CONTENT-2).** If this run split an existing view into parts — leaving a `status: superseded` stub with a redirect map at the old path per `docs/wiki-schema.md` — run `python deploy/check-split.py <stub-path>` now, before moving on. A violation is a defect of THIS run (a dropped anchor is lost knowledge; a doubled one is an ambiguous citation): fix the stub or parts in-session and re-run the check. Splits are rare, so this is usually a no-op; it is the split's only acceptance gate, wired here since 2026-08-08 (previously invoked by hand from the schema doc's description alone).
+
 ## Step 5 — Roadmap Cascade
 
 For any article with `scope: build` or `scope: mixed`:

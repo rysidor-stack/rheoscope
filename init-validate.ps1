@@ -178,6 +178,14 @@ if (Test-Path $versionLeftover -PathType Leaf) {
     AddFailure "VERSION file still exists - init did not consume it (project.yaml.template_version is the project's version source)"
 }
 
+# 8b. RELEASE must NOT exist post-init either (consumed at instantiation into
+#     project.yaml.template_release, per backlog v3.0-76 -- a leftover copy goes
+#     permanently stale post-adoption).
+$releaseLeftover = Join-Path $scriptRoot 'RELEASE'
+if (Test-Path $releaseLeftover -PathType Leaf) {
+    AddFailure "RELEASE file still exists - init did not consume it (project.yaml.template_release is the project's release source)"
+}
+
 # Result
 if ($failures.Count -gt 0) {
     Write-Output "init-validate: FAIL ($($failures.Count) issue(s))"

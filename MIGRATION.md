@@ -68,13 +68,13 @@ This recipe was first executed against the Rheoscope dogfood fork (the template'
 
 The v3.0 finishing-plan wave (`harness-v3.0/V3-FINISHING-PLAN.md`; `HARNESS-CHANGELOG.md` Theme J, sessions A–D, 2026-07-22/23) adds several independent surfaces to `capabilities/knowledge-os/extracted/deploy/` and `core/governance/`. Each is opt-in and per-surface, same provenance rule as above — adopting one does not change `project.yaml.template_version`; record what you adopt in your project's decision log.
 
-1. **R-1 — the session-loop intake-and-promotion pipeline** (closes backlog `v3.0-21`'s "never built" residual). Copy `candidates.py`, `harvest-candidates.py`, `register-candidates.py`, `check-candidates.py`, `promote-candidate.py`, `signing-config.yaml.example` into your `deploy/`, and fold the `decision-inbox.py` candidate section + the `assemble.py`/`origin.py`/`registrations.py`/`tool_grant.py` deltas from the same commits (template `9146c10`, `ae52693`, `b433d4b`, `9071df4`). Ships **UNARMED by design** — no fingerprint is pinned in `signing-config.yaml.example`; promotion to an operator-authored event refuses until *you* generate a dedicated SSH signing key in your own hands and pin its `SHA256:` fingerprint (do this only when you're actually ready to run the pipeline — the absence is the fail-safe, same doctrine as `origin-config`). Run `python deploy/drill-r1-acceptance.py --self-test` to confirm (70/70 at this template's HEAD) and wire the census step into your `/sweep`.
+1. **R-1 — the session-loop intake-and-promotion pipeline** (closes backlog `v3.0-21`'s "never built" residual). Copy `candidates.py`, `harvest-candidates.py`, `register-candidates.py`, `check-candidates.py`, `promote-candidate.py`, `signing-config.yaml.example` into your `deploy/`, and fold the `decision-inbox.py` candidate section + the `assemble.py`/`origin.py`/`registrations.py`/`tool_grant.py` deltas from the same commits (template `9146c10`, `ae52693`, `b433d4b`, `9071df4`). Ships **UNARMED by design** — no fingerprint is pinned in `signing-config.yaml.example`; promotion to an operator-authored event refuses until *you* generate a dedicated SSH signing key in your own hands and pin its `SHA256:` fingerprint (do this only when you're actually ready to run the pipeline — the absence is the fail-safe, same doctrine as `origin-config`). Wire the census step into your `/sweep`. (2026-08-08 note: the acceptance drill this item used to have you run, drill-r1-acceptance, is a harness-dev tool and no longer ships; the pipeline's own scripts carry their `--self-test` modes.)
 2. **Credential broker.** Copy `credential-store.ps1`, `credential-use.ps1`, `credential-remove.ps1`, `credential-bindings.yaml.example` into your `deploy/`; add the broker entries to your `safe-allowlist.yaml` (credential-class). Bindings start empty (fail-safe) — add one binding per credential name + destination as you adopt each. Run `credential-selftest.ps1` to confirm (24/24 at this template's HEAD, incl. the redirect-refusal and universal leak-scan cases). Windows-only (Windows Credential Manager via P/Invoke); no recipe exists yet for other platforms.
-3. **Workspace governance.** Copy `core/governance/WORKSPACE.md.template` (instantiate with your own zone names if you don't use the four defaults) + `core/governance/projects.yaml.example` (the workspace registry — also the empire-desk rollup's input, see item 6) + `deploy/check-workspace.py` into your project; wire it as a `/sweep` step (this template runs it as step 9). Report-only by design — it never deletes; adoption on a live machine starts with a classify-everything reap report, never a machine reorganization.
+3. **Workspace governance.** Copy `core/governance/WORKSPACE.md.template` (instantiate with your own zone names if you don't use the four defaults) + `core/governance/projects.yaml.example` (the workspace registry) + `deploy/check-workspace.py` into your project; wire it as a `/sweep` step (this template runs it as step 9). Report-only by design — it never deletes; adoption on a live machine starts with a classify-everything reap report, never a machine reorganization.
 4. **Deadline-and-trigger register.** Copy `deploy/check-deadlines.py` + `deadline-register.yaml.example`; seed the register with your own project's real clocks (cert rotations, token expiries, if-triggers) rather than carrying the fork's example rows across. Wire as a `/sweep` step (step 10 here).
 5. **Environment manifest + doctor version-drift.** Copy `environment-manifest.yaml.example` into your project and seed it with your own toolchain's live-probed versions; `/doctor`'s `check_version_drift` (already core, no copy needed if you're on this template's `/doctor`) picks it up automatically and WARNs on drift, never fails.
 6. **Mirror/instance parity.** Copy `deploy/check-parity.py` and wire it as a `/sweep` step (step 11 here) **only if** your project maintains a fork/mirror relationship to a template or another instance — it SHA-256-compares your engine mirror + skill inventory against that source. Not applicable to a project with no such relationship.
-7. **Desk enrichment + the empire desk.** Copy `deploy/desk-metrics.py` (append-only per-run metrics history — appends belong to WRITE-SIDE sessions only; `/sweep` itself stays read-only) + the `decision-inbox.py` first-seen-age sidecar logic + `deploy/gen-desk.py` (static `DESK.html`, actuator-free by design — never wire a form, button, or script into it). If you run ≥2 harness-instantiated projects sharing one `projects.yaml` registry (item 3), also copy `deploy/empire-desk.py` to generate one cross-project `EMPIRE-DESK.md` rollup; it is a read-only projection over each project's own `DECISIONS-PENDING.md` + `SWEEP-BRIEFING.md`, never a daemon.
+7. **Desk enrichment + the empire desk — REMOVED from the template 2026-08-08 (operator decision).** The three desk scripts this item used to name were deleted: never used on any instance, never live-tested, and the empire desk's ≥3-instance activation trigger never fired. Do not adopt them; the design survives only in the template's git history (last present at tag `v3.0.30`). The `decision-inbox.py` first-seen-age sidecar mentioned here is NOT part of the removal — it is live and ships with the decision inbox itself.
 8. **Harness-surface behavioral manifests.** If you've adopted the behavioral-manifest layer above (§ "v3.0 → v3.0 + behavioral manifests") and you also run `/sweep`'s briefing, the decision inbox, or `/compile`'s receipts, the certified/extracted manifest sets under `capabilities/knowledge-os/extracted/manifests/{sweep-briefing,decision-inbox,compile-receipt}/` plus `deploy/check-briefing-format.py` are copyable per manifest-format.md's own per-surface, on-touch convention (doctrine §6) — do not retrofit manifests for a surface you haven't touched. Note the `compile-receipt` surface's `scope_tags`/`cross_links_changed` fields have two competing live shapes in the corpus this template's own dogfood is drawn from (61 vs. 15 files, held OPEN) — resolve that fork against your own corpus before certifying, don't assume either shape.
 9. **MDD hand-over fold-in (2026-07-24), if you've adopted the behavioral-manifest layer above.** Purely additive to what you already copied — no existing manifest needs editing. Re-copy `core/methodology/manifest-driven-builds.md` (now carrying v2.2 Addendum entries 14–18) and `deploy/manifest-layers.yaml` (two new RESERVED entries: `rendering-fit`, `config` — name-and-rationale only, no row schema yet) + `deploy/check-manifest.py` (checks 9–10: bidirectional amendment↔row linkage, cross-surface row-ID uniqueness, plus `CONFLICT`-marker counting/gating — `manifest-format.md` §4's new `OPEN` sibling, opt-in on any manifest, never required). Run `python deploy/check-manifest.py --self-test` (76/76 at this template's HEAD) and your own live sweep to confirm nothing regresses.
 
@@ -101,6 +101,37 @@ The 2026-07-25 patch (`HARNESS-CHANGELOG.md` v3.0.1 entry) is narrow and securit
 Adjudicated from an external Opus-5 skills assessment of a sibling repo; first executed against the Rheoscope dogfood fork, cross-vendor leg at the fork's `receipts/verify/opus5-assessment-2026-07-25/`.
 
 ---
+
+## v3.0.30 → v3.0.31 (the subtraction pass)
+
+Removal-heavy and safe to adopt in one sitting; nothing here changes gates, verdicts, or
+schema. Per-surface as always.
+
+1. **Delete your stale root `RELEASE` file [one command].** It was consumed into
+   `project.yaml.template_release` the day you instantiated (or should have been); the copy at
+   your root has been frozen at that day's tag ever since and nothing reads it (backlog
+   v3.0-76). New instances never see one — init now consumes it like VERSION, and
+   init-validate refuses a leftover.
+2. **If your `deploy/` carries the desk scripts** (`desk-metrics.py`, `gen-desk.py`,
+   `empire-desk.py`) **or the harness-dev drills** (check-eco2/golden/journal-sidecar/
+   origin-propagation/phase-gate, drill-concurrency/crash-absorb/formatter/lock-common-dir/
+   planted-defects/r1-acceptance/stage-only/workload-bench) **or
+   `dormant-register.yaml`:** delete them. The desk was removed from the template outright
+   (operator decision — never used anywhere); the drills are harness-dev tools that no longer
+   ship; the register's only job was excusing them. None of these is load-bearing on any
+   instance. KEEP `check-split.py` and `audit-content.py` — both still ship (the first is the
+   split-acceptance gate, the second is a library v2 imports).
+3. **Take the updated skills + sensors:** `doctor.py` + doctor `SKILL.md` (check 12 loses the
+   register machinery; self-test 62/62), `sweep/SKILL.md` (scheduled-run recipe shrinks to the
+   briefing save), `orient/SKILL.md`, the compile skill (Step 4 gains the split-acceptance
+   step wiring `check-split.py`), `check-reference-integrity.py`, the sweep-briefing
+   `format-MANIFEST.md` (amendment A3, re-hashed pin), `wiki-schema` §sensors, GLOSSARY, TOUR,
+   ARCHITECTURE (standing refresh step).
+4. **Backlog convention (optional but recommended):** adopt the closure-convention section of
+   `harness-backlog.md` and add a `- **Status:** OPEN` / `CLOSED <date> — <disposition>` line
+   to your own entries; your numbering and existing text are untouched.
+
+Instances that skip this release keep working and merely keep carrying dead files.
 
 ## v3.0.29 → v3.0.30 (the re-ride survives a project that kept working)
 
@@ -319,7 +350,9 @@ take everything.
 1. **Re-copy the sensor family** — `deploy/`: `staleness.py`, `check-loop-state.py`,
    `check-derivation.py`, `check-frontmatter.py`, `routing-census.py`, `check-split.py`,
    `compile-backends.py`, `compile-driver.py`, `drill-planted-defects.py`,
-   `drill-workload-bench.py`. Run each `--self-test`; expected: staleness **113/113**,
+   `drill-workload-bench.py` (2026-08-08 note: the two drill-* files are harness-dev tools
+   and no longer ship — skip them if your release doesn't carry them). Run each
+   `--self-test`; expected: staleness **113/113**,
    check-loop-state **36/36**, check-derivation **14/14**, check-frontmatter **33/33**,
    routing-census **19/19**, check-split **20/20**, compile-backends **167/167**,
    compile-driver **156/156**. Then run each sensor live once with `--root .` — an

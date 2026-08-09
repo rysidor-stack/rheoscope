@@ -262,6 +262,7 @@ SWEEP_ILLUSTRATIVE_TARGETS = {
     # out of the first baseline by hand; the machine knows them now:
     'Next.js',        # a technology name the extension regex mistook for a file
     'chained.py',     # doctor.py self-test fixture string, not a citation
+    'orphan.py',      # doctor.py self-test fixture sibling (2026-08-08), same class
     '0001-slug.md',   # ADR filename PATTERN illustration
     '007.json',       # candidate-seq fixture pattern (drill docstring)
     'x.py', 'spec-x.md',  # this sensor's own docstring placeholders

@@ -80,7 +80,6 @@ rows resolve to their `capabilities/knowledge-os/extracted/...` source instead â
 | The one-command janitorial health briefing (doctor + census + sensors + smoke + audit spot check) | `.claude/skills/sweep/SKILL.md` |
 | The scheduled write-side autopilot (compile-on-branch, human-merged) | `.claude/skills/standing-loop/SKILL.md` |
 | What's waiting on the operator (the decision inbox) | `deploy/decision-inbox.py` (writes `DECISIONS-PENDING.md`; `/sweep` only checks it for staleness) |
-| The per-project desk and the cross-project empire desk | `deploy/desk-metrics.py`, `deploy/gen-desk.py` (`DESK.html`), `deploy/empire-desk.py` (`EMPIRE-DESK.md`, reads the workspace's `projects.yaml`) |
 | Where credentials live â€” the positive convention (vault-only, broker-delivered, never a plaintext file) | `core/security/CREDENTIALS.md` |
 | Storing, using, or removing a Windows-vault credential | `deploy/credential-store.ps1`, `deploy/credential-use.ps1`, `deploy/credential-remove.ps1` |
 | Workspace zones, birth certificates, and the reaper | `core/governance/WORKSPACE.md.template` and `deploy/check-workspace.py` |

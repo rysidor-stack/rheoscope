@@ -34,43 +34,53 @@ referenced somewhere in the file — see `core/skills/doctor/doctor.py`.
 
 ## Hooks in this perimeter
 
-| Hook | Matchers required | Blocks | Risk |
+| Hook | Matchers required | Behavior | Risk |
 |------|--------------------|--------|------|
-| block-dangerous-bash.sh | `Bash`, `PowerShell` (both) | Network egress — `curl`/`wget`/`nc`/`netcat`, PowerShell `Invoke-WebRequest`/`Invoke-RestMethod`/`irm`/`iwr`/`Start-BitsTransfer`, and interpreter one-liners (`py`/`python`/`python3 -c`, `node -e`) — and destructive commands (`rm -rf /`, `git reset --hard`, and the PowerShell analog `Remove-Item -Recurse -Force <bare drive/POSIX root>`). Matched case-insensitively. | Defense in depth — egress can exfiltrate, including the cmdlet and inline-interpreter bypasses of the named-tool curl/wget match; destructive commands can wipe state. Inline `-c`/`-e` only (scripts like `python build.py` are allowed); the root-targeting rule matches only a bare root token (`C:\`, `/`, ...) with nothing after it, so scratchpad-scoped `Remove-Item -Recurse -Force` calls are deliberately left alone — inert-unless-real-risk. |
-| block-env-writes.sh | `Edit\|Write` | Edit/Write operations on `.env*` files **except `.env.example` and `.env.sample`** | Defense in depth — `.env` should be gitignored but belt-and-suspenders prevents accidental commits or AI-generated overwrites. |
+| block-dangerous-bash.sh | `Bash`, `PowerShell` (both) | **Two tiers (v3.0.33, backlog v3.0-95 — the v3.0.19 deny-only-the-unrecoverable doctrine applied to the hook layer).** **DENY (exit 2):** destructive commands — `rm -rf /`, `git reset --hard`, and the PowerShell analog `Remove-Item -Recurse -Force <bare drive/POSIX root>`. No allowlist, no ask — there is no legitimate unattended "yes" to these. **ASK (exit 0 + PreToolUse `"ask"` JSON):** network egress — `curl`/`wget`/`nc`/`netcat`, PowerShell `Invoke-WebRequest`/`Invoke-RestMethod`/`Start-BitsTransfer`/`irm`/`iwr`, and interpreter one-liners (`py`/`python`/`python3 -c`, `node -e`). The operator reviews the exact command and approves or declines that one call; **an unanswered ask fails closed**, so unattended runs stay fully perimetered. Standing allowances live in `egress-allowlist.txt` beside the script (one extended regex per line, consulted by the ASK tier only, matched-command allowed silently) — **operator-edited only**, same doctrine as `credential-bindings.yaml`; the path is fixed relative to the script on purpose (an env-settable path would let a session point the hook at its own permissive file). A command matching both tiers is DENIED (deny checked first). All matching case-insensitive. | Egress can exfiltrate — including the cmdlet and inline-interpreter bypasses of the named-tool curl/wget match — but it is reviewable-before-run, so it asks instead of dead-ending authorized work into "disable the hook and restart" (the v3.0-95 incident). Destructive commands can wipe state and are unrecoverable, so they stay denied. Inline `-c`/`-e` only (scripts like `python build.py` are allowed); the root-targeting rule matches only a bare root token (`C:\`, `/`, ...) with nothing after it — inert-unless-real-risk. |
+| block-env-writes.sh | `Edit\|Write` | Blocks Edit/Write operations on `.env*` files **except `.env.example` and `.env.sample`** (exit 2) | Defense in depth — `.env` should be gitignored but belt-and-suspenders prevents accidental commits or AI-generated overwrites. |
 
 ## How to test a hook
 
-Hooks are pure stdin → exit-code functions. Pipe a JSON payload and check the exit code:
+Hooks are pure stdin → (exit code + stdout) functions. Three observable outcomes for
+`block-dangerous-bash.sh` since v3.0.33: **DENY** = exit 2, refusal on stderr; **ASK** = exit 0
+with the PreToolUse `"ask"` JSON on stdout; **allow-silent** = exit 0, empty stdout.
 
 ```bash
+# Egress family: ASK since v3.0.33 (was DENY) -- exit 0 + ask JSON on stdout
 ./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-a-curl.json
-echo "Exit: $?"  # expect 2 (blocked)
+# expect: {"hookSpecificOutput":{...,"permissionDecision":"ask",...}} ; Exit 0
 
-# Named network-egress tools, each its own DENY_PATTERNS entry (round-2 fixture-count
-# reconciliation, 2026-07-25): these three had no committed fixture before this session --
-# verified only by regex reasoning during development, never captured as reproducible cases.
-./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-wget.json
-echo "Exit: $?"  # expect 2 (blocked)
-
-./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-nc.json
-echo "Exit: $?"  # expect 2 (blocked)
-
-./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-netcat.json
-echo "Exit: $?"  # expect 2 (blocked -- distinct DENY_PATTERNS entry from nc above; a command
-                  # naming only "nc" does not exercise this pattern and vice versa)
+./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-wget.json      # ASK
+./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-nc.json        # ASK
+./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-netcat.json    # ASK (distinct
+                  # pattern entry from nc above; a command naming only "nc" does not
+                  # exercise this pattern and vice versa)
 
 ./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-passing.json
-echo "Exit: $?"  # expect 0 (allowed)
+echo "Exit: $?"  # expect 0, empty stdout (allow-silent)
 
 # PowerShell-tool coverage (matcher scope, see above) -- same script, PowerShell command forms
-./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-ps-invoke-webrequest.json
-echo "Exit: $?"  # expect 2 (blocked -- Invoke-WebRequest full cmdlet name; distinct
-                  # DENY_PATTERNS entry from the irm/iwr alias pattern below -- also had no
-                  # committed fixture before this session, same reconciliation as above)
+./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-ps-invoke-webrequest.json  # ASK
+./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-ps-iwr.json                # ASK (alias)
 
-./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-ps-iwr.json
-echo "Exit: $?"  # expect 2 (blocked -- Invoke-WebRequest alias)
+# Standing allowance (ASK tier only): copy the hook into a scratch dir with an
+# egress-allowlist.txt beside it -- the path is fixed relative to the script by design,
+# so testing an allowlist never means planting one in the real perimeter dir:
+#   T=$(mktemp -d); cp hooks/block-dangerous-bash.sh "$T/"
+#   printf 'curl[[:space:]]+-s[[:space:]]+https://api\\.replicate\\.com/\n' > "$T/egress-allowlist.txt"
+#   echo '{"tool_input":{"command":"curl -s https://api.replicate.com/v1/models"}}' | "$T/block-dangerous-bash.sh"
+#   # expect: exit 0, EMPTY stdout (allowed silently); any other curl still ASKs
+
+# Destructive family: DENY, unchanged -- exit 2, no allowlist, no ask
+./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-rm-rf.json
+echo "Exit: $?"  # expect 2 (blocked)
+
+./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-git-reset-hard.json
+echo "Exit: $?"  # expect 2 (blocked)
+
+# A command matching BOTH tiers is denied, never asked:
+echo '{"tool_input":{"command":"curl -s http://x/ && rm -rf /"}}' | ./hooks/block-dangerous-bash.sh
+echo "Exit: $?"  # expect 2 (deny checked first)
 
 ./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-ps-removeitem-root.json
 echo "Exit: $?"  # expect 2 (blocked -- Remove-Item -Recurse -Force C:\)

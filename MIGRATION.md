@@ -102,6 +102,27 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.32 → v3.0.33 (the egress hook learns to ask)
+
+Every instance with the security hooks wired. **One [your call] entry, and it is the whole
+release:**
+
+1. **[your call] Adopt the two-tier hook.** Network commands (curl/wget/nc, the PowerShell
+   web cmdlets, inline `python -c`/`node -e`) stop being hard-blocked and instead **ask you**
+   — you see the exact command and click allow or decline, per call. Unattended runs have
+   nobody to answer, so they stay exactly as protected as today (an unanswered ask fails
+   closed). Destructive commands stay hard-blocked, unchanged. This is a loosening of the
+   attended-session egress posture from "impossible" to "your one click away" — if you'd
+   rather keep the hard block, skip this section.
+2. **Copy the new files:** `core/security/hooks/block-dangerous-bash.sh` over your instance's
+   copy (wherever your `settings.local.json` points), and the hooks `README.md`. No wiring
+   changes — matchers, settings entries, and `/doctor` check 7 are untouched.
+3. **Optional, per workflow:** create `egress-allowlist.txt` beside the hook with one extended
+   regex per line for destinations you've decided are standing-approved (e.g. a line matching
+   your `curl -s https://api.yourservice.com/` probes). Matching commands run without asking.
+   **You edit this file, never a session** — treat it like `credential-bindings.yaml`.
+4. **Restart Claude Code** — hooks load at session start.
+
 ## v3.0.31 → v3.0.32 (the verifier demotion)
 
 Knowledge-os instances only. **One [your call] entry, and it is the whole release:**

@@ -120,6 +120,29 @@ entries beyond it.
    derived from the release diff instead of asserted from memory. You see the effect as
    better-tested releases, not as a file in your tree.
 
+## v3.0.35 → v3.0.36 (the commit scanner — every commit checked for secrets)
+
+**One [your call] entry, and it is the whole release.**
+
+1. **[your call] Adopt the commit scanner.** Every `git commit` in your project — yours and
+   any session's — gets scanned for secret-shaped content (key files, API tokens, passwords
+   in URLs) and refused if any is found, with the file and pattern named. Your bypass for a
+   false alarm is `git commit --no-verify` (AI sessions are mechanically barred from using
+   it). If you'd rather commits stay unscanned, skip this whole section.
+2. **Copy the new files** (shell copy from the new template clone, not in-session editing —
+   the perimeter dir is now write-guarded): `core/security/hooks/scan-staged-secrets.sh`,
+   the updated `block-dangerous-bash.sh` and `block-env-writes.sh`, the new `test-inputs/`
+   fixtures, and the hooks `README.md`. Then install the scanner:
+   `cp core/security/hooks/scan-staged-secrets.sh .git/hooks/pre-commit` (if you already
+   have a pre-commit hook, chain it instead). Run
+   `bash core/security/hooks/scan-staged-secrets.sh --self-test` — expect 27/27.
+3. **Sweep step:** copy the new `/sweep` skill (step 17 surfaces any egress-allowlist change
+   to you once per sweep). No other wiring changes; restart Claude Code so hooks reload.
+4. **Also in this release (no action):** the v3.0.35 release-integrity gate and audits/
+   packaging fix ride any adoption of `make-release`-era tooling automatically; instances
+   that pulled a v3.0.22–v3.0.34 zip may delete any `audits/` directory that arrived with
+   it — it was the template maintainer's own record, shipped by mistake (v3.0-103).
+
 ## v3.0.33 → v3.0.34 (housekeeping + the trajectory guard)
 
 Small, all opt-in, nothing changes behavior on its own. No **[your call]** entries.

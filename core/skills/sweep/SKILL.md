@@ -110,6 +110,19 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     prose, and placeholder tokens are findings — a session wrote engineer output into an
     operator file, and the fix is a rewrite of that file by the session that owns it.
 
+17. **Egress-allowlist surfacing** (v3.0.36, backlog v3.0-98(b)) — if
+    `core/security/hooks/egress-allowlist.txt` exists: report its row count (non-comment,
+    non-blank lines), and if the file changed since the previous sweep (compare
+    `git log -1 --format=%ci -- core/security/hooks/egress-allowlist.txt` against the last
+    sweep receipt's timestamp; no prior receipt = report all rows), quote each added or
+    removed row verbatim in the briefing. Every standing egress allowance is the operator's
+    own grant — this line makes sure they SEE each one at least once, which is the backstop
+    for the write-guard's honest limit (a shell-redirection write rides a path the Edit/Write
+    guard cannot see). A row the operator does not recognize is a NEEDS-YOU item, phrased per
+    the reporting contract: what the row allows, what removing it costs, and that the fix is
+    theirs to apply (the file is operator-edited only). File absent = one silent line skipped,
+    never a finding (absent means every egress asks — the tightest state).
+
 This ordering follows the engine's own loop doctrine (`docs/engine/OPERATIONS.md` § "The
 loop"): readiness before content, structural sensors before behavioral ones, deterministic
 checks before anything judgment-based — cheapest, most-foundational signal first, so a reader

@@ -666,6 +666,24 @@ else
         else
             info "NOTE: jq not found on PATH — the wired hooks require jq at runtime. Install jq before they will run correctly; this does not affect init."
         fi
+        # Pre-commit secret scanner (v3.0.36, backlog v3.0-12): installed under the SAME
+        # consent as the PreToolUse hooks -- one hooks decision, one perimeter. Copies into
+        # the repo's own pre-commit slot; an EXISTING pre-commit hook is never overwritten
+        # (warn instead -- composing with someone's hook is their call, not init's).
+        SCANNER_SRC="$SCRIPT_ROOT/core/security/hooks/scan-staged-secrets.sh"
+        PRECOMMIT_DST="$SCRIPT_ROOT/.git/hooks/pre-commit"
+        if [[ ! -f "$SCANNER_SRC" ]]; then
+            info "skip (source absent): core/security/hooks/scan-staged-secrets.sh"
+        elif [[ ! -d "$SCRIPT_ROOT/.git" ]]; then
+            echo "WARNING: commit scanning NOT installed — this folder is not a git repository yet. After 'git init', copy core/security/hooks/scan-staged-secrets.sh to .git/hooks/pre-commit (and make it executable) to turn it on." >&2
+        elif [[ -e "$PRECOMMIT_DST" ]]; then
+            echo "WARNING: commit scanning NOT installed — a pre-commit hook already exists at .git/hooks/pre-commit. To add secret scanning, chain core/security/hooks/scan-staged-secrets.sh from your existing hook, or replace it if it's not yours on purpose." >&2
+        else
+            mkdir -p "$(dirname "$PRECOMMIT_DST")"
+            cp "$SCANNER_SRC" "$PRECOMMIT_DST"
+            chmod +x "$PRECOMMIT_DST" 2>/dev/null || true
+            info "installed: core/security/hooks/scan-staged-secrets.sh -> .git/hooks/pre-commit (every commit is scanned for secret-shaped content; operator bypass: git commit --no-verify)"
+        fi
     else
         info "skipped: security hooks not wired (.claude/settings.local.json not created)"
     fi

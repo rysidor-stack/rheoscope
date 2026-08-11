@@ -37,7 +37,8 @@ referenced somewhere in the file — see `core/skills/doctor/doctor.py`.
 | Hook | Matchers required | Behavior | Risk |
 |------|--------------------|--------|------|
 | block-dangerous-bash.sh | `Bash`, `PowerShell` (both) | **Two tiers (v3.0.33, backlog v3.0-95 — the v3.0.19 deny-only-the-unrecoverable doctrine applied to the hook layer).** **DENY (exit 2):** destructive commands — `rm -rf /`, `git reset --hard`, and the PowerShell analog `Remove-Item -Recurse -Force <bare drive/POSIX root>`. No allowlist, no ask — there is no legitimate unattended "yes" to these. **ASK (exit 0 + PreToolUse `"ask"` JSON):** network egress — `curl`/`wget`/`nc`/`netcat`, PowerShell `Invoke-WebRequest`/`Invoke-RestMethod`/`Start-BitsTransfer`/`irm`/`iwr`, and interpreter one-liners (`py`/`python`/`python3 -c`, `node -e`). The operator reviews the exact command and approves or declines that one call; **an unanswered ask fails closed**, so unattended runs stay fully perimetered. Standing allowances live in `egress-allowlist.txt` beside the script (one extended regex per line, consulted by the ASK tier only, matched-command allowed silently) — **operator-edited only**, same doctrine as `credential-bindings.yaml`; the path is fixed relative to the script on purpose (an env-settable path would let a session point the hook at its own permissive file). A command matching both tiers is DENIED (deny checked first). All matching case-insensitive. | Egress can exfiltrate — including the cmdlet and inline-interpreter bypasses of the named-tool curl/wget match — but it is reviewable-before-run, so it asks instead of dead-ending authorized work into "disable the hook and restart" (the v3.0-95 incident). Destructive commands can wipe state and are unrecoverable, so they stay denied. Inline `-c`/`-e` only (scripts like `python build.py` are allowed); the root-targeting rule matches only a bare root token (`C:\`, `/`, ...) with nothing after it — inert-unless-real-risk. |
-| block-env-writes.sh | `Edit\|Write` | Blocks Edit/Write operations on `.env*` files **except `.env.example` and `.env.sample`** (exit 2) | Defense in depth — `.env` should be gitignored but belt-and-suspenders prevents accidental commits or AI-generated overwrites. |
+| block-env-writes.sh | `Edit\|Write` | Blocks Edit/Write operations on `.env*` files **except `.env.example` and `.env.sample`** (exit 2), and — since v3.0.36 (backlog v3.0-98(a)) — **every path under `core/security/hooks/`** (the hook scripts, fixtures, and `egress-allowlist.txt`): the perimeter's own files are operator-edited only; a session proposes, the operator applies. **Honest limit:** this guards the Edit/Write tool path; a shell-redirection write (`echo >> …`) rides Bash/PowerShell instead — the sweep's allowlist-surfacing line (sweep SKILL step 17) is the backstop that shows the operator any allowlist change once. Adoption sessions copying UPDATED hook files from a newer template do it via shell `cp` (upstream-authored bytes, visible in the diff), never by authoring hook content in-session. | Defense in depth on `.env`; perimeter-integrity on the hooks dir — one appended allowlist regex would convert the ask tier back to silent-allow for a chosen destination (the session contract's "enforce mechanically" doctrine, applied to the perimeter itself). |
+| scan-staged-secrets.sh | **none — a real `git` pre-commit hook**, installed by init's hooks step into `.git/hooks/pre-commit` | **Fails any commit (exit 1) whose staged diff adds secret-shaped content** — key-material blocks (PEM/PPK), known-prefix tokens with length/charset teeth (AWS/GitHub/Anthropic/OpenAI/Slack/Stripe/Google/JWT), embedded-credential URLs, and credential files by path (`.env*` except example/sample, `*.pem`/`*.key`/`*.ppk`, `credentials.json`; `credential-bindings.yaml` deliberately passes — destinations, never values). Placeholder-shaped values (`REDACTED`, `<angle-bracket>`, mustache-style double-brace markers, `xxx…`, …) pass, checked against the matched value only; the perimeter's own `test-inputs/` dir is exempt by hard-coded path. Gates EVERY commit — the operator's own included (ratified option 1, 2026-08-11). **Bypass:** `git commit --no-verify` is git's own and stays in the operator's hands; agent sessions are barred from it mechanically (the DENY tier above). Battery: `bash scan-staged-secrets.sh --self-test` (29 cases, both directions per class; fixtures GENERATED at run time — committed secret-shaped bytes would trip GitHub push protection on the public mirror and read as a real leak, so the fixture-commitment rule is satisfied by the embedded battery here, deliberately). | Closes the last unguarded exfiltration lane: since v3.0.33 egress asks and push is sanctioned (v3.0.19), secret-in-commit-then-push was the one silent path off-machine. |
 
 ## How to test a hook
 
@@ -111,6 +112,20 @@ echo "Exit: $?"  # expect 0 (allowed — .env.example is exempt)
 
 ./hooks/block-env-writes.sh < hooks/test-inputs/test-env-edit.json
 echo "Exit: $?"  # expect 2 (blocked)
+
+# Agent --no-verify bar (v3.0.36): commit-scoped DENY; push -n is a dry-run and passes
+./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-git-commit-no-verify.json   # DENY (2)
+./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-git-commit-n-alias.json     # DENY (2)
+./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-git-commit-passing.json     # allow (0)
+./hooks/block-dangerous-bash.sh < hooks/test-inputs/test-git-push-dry-run-passing.json # allow (0)
+
+# Perimeter write-guard (v3.0.36, v3.0-98(a)): the hooks dir is operator-owned
+./hooks/block-env-writes.sh < hooks/test-inputs/test-hooks-allowlist-write.json        # DENY (2)
+./hooks/block-env-writes.sh < hooks/test-inputs/test-hooks-script-write-winpath.json   # DENY (2)
+./hooks/block-env-writes.sh < hooks/test-inputs/test-write-elsewhere-passing.json      # allow (0)
+
+# Pre-commit secret scanner (v3.0.36): full battery, scratch repos, both directions
+bash hooks/scan-staged-secrets.sh --self-test   # expect PASS (29/29)
 ```
 
 ## Adding a new hook

@@ -38,6 +38,13 @@ ALLOWLIST="$HOOK_DIR/egress-allowlist.txt"
 DENY_PATTERNS=(
   'rm[[:space:]]+-rf[[:space:]]+/'
   'git[[:space:]]+reset[[:space:]]+--hard'
+  # Agent bypass of the pre-commit secret scanner (v3.0.36, backlog v3.0-12): git's
+  # own --no-verify (and commit's -n alias) stays available to the OPERATOR's hands;
+  # a session never reaches it. Commit-scoped on purpose -- `git push -n` is a
+  # dry-run, not a bypass, and stays untouched. The space after `commit` is
+  # load-bearing: `git commit-tree -n` / `git commitment -n` are different words
+  # and must not match (cross-vendor review catch, 2026-08-11).
+  'git[[:space:]]+commit[[:space:]]([^|;&]*[[:space:]])?(--no-verify|-n)([[:space:]]|$)'
 )
 
 for pat in "${DENY_PATTERNS[@]}"; do

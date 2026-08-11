@@ -696,6 +696,24 @@ if (Test-Path $hooksDst) {
         } else {
             Info "NOTE: jq not found on PATH -- the wired hooks require jq at runtime. Install jq before they will run correctly; this does not affect init."
         }
+        # Pre-commit secret scanner (v3.0.36, backlog v3.0-12): installed under the SAME
+        # consent as the PreToolUse hooks -- one hooks decision, one perimeter. Copies into
+        # the repo's own pre-commit slot; an EXISTING pre-commit hook is never overwritten
+        # (warn instead -- composing with someone's hook is their call, not init's).
+        $scannerSrc = Join-Path $scriptRoot 'core/security/hooks/scan-staged-secrets.sh'
+        $precommitDst = Join-Path $scriptRoot '.git/hooks/pre-commit'
+        if (-not (Test-Path $scannerSrc)) {
+            Info "skip (source absent): core/security/hooks/scan-staged-secrets.sh"
+        } elseif (-not (Test-Path (Join-Path $scriptRoot '.git'))) {
+            Write-Warning "commit scanning NOT installed -- this folder is not a git repository yet. After 'git init', copy core/security/hooks/scan-staged-secrets.sh to .git/hooks/pre-commit to turn it on."
+        } elseif (Test-Path $precommitDst) {
+            Write-Warning "commit scanning NOT installed -- a pre-commit hook already exists at .git/hooks/pre-commit. To add secret scanning, chain core/security/hooks/scan-staged-secrets.sh from your existing hook, or replace it if it's not yours on purpose."
+        } else {
+            $precommitParent = Split-Path $precommitDst -Parent
+            if (-not (Test-Path $precommitParent)) { New-Item -ItemType Directory -Path $precommitParent -Force | Out-Null }
+            Copy-Item -Path $scannerSrc -Destination $precommitDst -Force
+            Info "installed: core/security/hooks/scan-staged-secrets.sh -> .git/hooks/pre-commit (every commit is scanned for secret-shaped content; operator bypass: git commit --no-verify)"
+        }
     } else {
         Info "skipped: security hooks not wired (.claude/settings.local.json not created)"
     }

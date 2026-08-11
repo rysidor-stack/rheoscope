@@ -5,7 +5,7 @@ version: "1.0"
 status: EXTRACTED
 source_artifacts:
   - path: docs/wiki-schema.md
-    sha256: d3d76d217c727eb8c00f987e833c7457329518e8e5a7010c9d6219a66f53a623
+    sha256: 5c27d6ce1ea66f92eda13ce792bb6305b1ccbbdd617af794ae990ac0d7777f38
   - path: deploy/check-frontmatter.py
     sha256: 56367ffa90d0cb6b9384f30f891db0f4dac7f7aa76000e50b7588d4f60e8886b
 extracted: 2026-07-23
@@ -59,4 +59,10 @@ particular instance already diverges from the canonical shape on two fields).
 
 ## Amendments
 
-*(none yet — this manifest was authored fresh at EXTRACTED, session D 2026-07-23)*
+- 2026-08-09 — the `docs/wiki-schema.md` source pin re-hashed to the current
+  `capabilities/knowledge-os/extracted/wiki-schema.md.template` bytes (backlog v3.0-94:
+  the pin's meaning is now DEFINED as the sha256 of the harness-shipped template source,
+  resolved dev-layout by `check-manifest.py`'s sha256-pins check — the recorded
+  `d3d76d21…` value had gone stale unverifiably across the v3.0.29+ wiki-schema edits
+  because the sensor could only SKIP an instance-form path in the dev tree). No row
+  content changed.

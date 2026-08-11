@@ -102,6 +102,26 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.33 → v3.0.34 (housekeeping + the trajectory guard)
+
+Small, all opt-in, nothing changes behavior on its own. No **[your call]** entries.
+
+1. **If you run the knowledge-os engine:** copy the new
+   `deploy/register-candidates.py` (its self-test was date-dependent and began
+   failing everywhere on 2026-08-05 — your `/doctor` python-sensors line clears),
+   `deploy/check-manifest.py` (sha256 pins gain dev-layout resolution; no
+   behavior change on an instance), and the compile skill (one added sentence in
+   the engine-absent degradation path). All three are drop-over copies.
+2. **If you adopted the trigger register (v3.0.15):** add the new
+   `verifier-demotion-review` row from `deploy/trigger-register.yaml.example`
+   to your live register — it watches the verifier demotion's standing
+   30/60/90-day review (v3.0.32's one sanctioned loosening) instead of leaving
+   it as a prose promise. First firing walks you through the reading; recording
+   a dated `demotion-review` receipt re-arms it.
+3. **Nothing else travels.** The trajectory-replay battery (v3.0-91) is
+   dev-only by design and is refused from the release artifact; the
+   MAINTENANCE.md mirror ritual is a dev-repo doc.
+
 ## v3.0.32 → v3.0.33 (the egress hook learns to ask)
 
 Every instance with the security hooks wired. **One [your call] entry, and it is the whole

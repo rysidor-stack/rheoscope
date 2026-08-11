@@ -600,6 +600,52 @@ def _to_os_path(root, rel):
 
 
 # ---------------------------------------------------------------------------
+# CHECK 6 dev-layout pin resolution (backlog v3.0-94).
+#
+# A source_artifacts pin records an INSTANCE-form path (docs/wiki-schema.md,
+# .claude/skills/sweep/SKILL.md). In the template dev repo those files live at
+# their template homes (the extracted capability dir for docs/*, with a
+# .template/.example suffix where the shipped file is rendered at init;
+# core/skills/ for skills). The pin's sha256 MEANS the harness-shipped source
+# bytes -- the dev-tree file the release edits -- so a release that edits the
+# template must see the stale pin FAIL in dev. Resolution fires ONLY when the
+# literal pinned path is absent under root, so instance behavior is unchanged
+# (an instance has the literal file; a project without the template tree still
+# SKIPs). The mapping mirrors core/governance/check-reference-integrity.py's
+# LAYOUT_MAPS, scoped to the shapes manifest pins actually use.
+# ---------------------------------------------------------------------------
+
+_DEV_ROOT_SUFFIX = os.path.join("capabilities", "knowledge-os", "extracted")
+
+
+def _resolve_dev_layout_pin(root, rel):
+    """The dev-tree file a pinned instance-form path refers to, or None.
+    Only meaningful when root is the extracted capability dir of a template
+    dev repo (the dev invocation, --root capabilities/knowledge-os/extracted);
+    everywhere else the structural test fails and this returns None."""
+    norm_root = os.path.normpath(os.path.abspath(root))
+    if not norm_root.endswith(os.sep + _DEV_ROOT_SUFFIX):
+        return None
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(norm_root)))
+    rel = rel.replace("\\", "/")
+    bases = []
+    if rel.startswith("docs/engine/"):
+        bases.append(os.path.join(norm_root, "engine",
+                                   *rel[len("docs/engine/"):].split("/")))
+    elif rel.startswith("docs/"):
+        bases.append(os.path.join(norm_root, *rel[len("docs/"):].split("/")))
+    for prefix in (".claude/skills/", ".agents/skills/"):
+        if rel.startswith(prefix):
+            bases.append(os.path.join(repo_root, "core", "skills",
+                                       *rel[len(prefix):].split("/")))
+    for base in bases:
+        for cand in (base, base + ".template", base + ".example"):
+            if os.path.isfile(cand):
+                return cand
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Per-manifest-file checks (1 frontmatter-complete, 2 layer-valid, 3 row-count,
 # 4 id-unique, 5 flags-vocab, 6 sha256-pins).
 # ---------------------------------------------------------------------------
@@ -766,6 +812,20 @@ def check_manifest_file(fpath, surface, layer_keys, root, out, global_row_index=
             continue
         full = _to_os_path(root, spath)
         if not os.path.isfile(full):
+            resolved = _resolve_dev_layout_pin(root, spath)
+            if resolved is not None:
+                actual = _sha256_file(resolved)
+                if actual.lower() != sha.lower():
+                    out.append(Finding("FAIL", "sha256-pins", fpath,
+                                        "sha256 mismatch for %s (resolved via dev layout: %s): "
+                                        "declared=%s actual=%s -- the pinned source moved and "
+                                        "the pin was not re-hashed (v3.0-94)"
+                                        % (spath, resolved, sha, actual)))
+                else:
+                    out.append(Finding("PASS", "sha256-pins", fpath,
+                                        "sha256 verified for %s (resolved via dev layout: %s)"
+                                        % (spath, resolved)))
+                continue
             out.append(Finding("SKIP", "sha256-pins", fpath,
                                 "pinned file absent (may be by design): %s" % spath))
             continue
@@ -1629,6 +1689,52 @@ declared_rows: %d
              "(no cross-contamination between the two marker counts)",
              any("[PASS] open-markers" in ln and ln.strip().endswith(": none")
                  for ln in out.splitlines()), out)
+
+        # --- (33) dev-layout pin resolution (v3.0-94): a pinned instance-form path absent
+        # at root but present at its template home is VERIFIED, not SKIPped -- matching
+        # hash passes; a stale hash FAILs in dev. Outside the dev-layout root shape the
+        # absent-file SKIP of case (9) is unchanged. -------------------------------------------
+        def dev_layout_root(wiki_schema_content, skill_content):
+            """A fixture template repo: <repo>/capabilities/knowledge-os/extracted is the
+            check root (holding manifests/ + wiki-schema.md.template), core/skills/ holds
+            the skill. Returns (check_root, template_sha, skill_sha)."""
+            repo = mkroot()
+            check_root = os.path.join(repo, "capabilities", "knowledge-os", "extracted")
+            tmpl = os.path.join(check_root, "wiki-schema.md.template")
+            write(tmpl, wiki_schema_content)
+            skill = os.path.join(repo, "core", "skills", "sweep", "SKILL.md")
+            write(skill, skill_content)
+            return check_root, _sha256_file(tmpl), _sha256_file(skill)
+
+        check_root, tmpl_sha, skill_sha = dev_layout_root(
+            "# wiki schema template fixture\n", "# sweep skill fixture\n")
+        layers = mk_layers(check_root, ["interaction"])
+        source_block = ("\n  - path: docs/wiki-schema.md\n    sha256: %s"
+                         "\n  - path: .claude/skills/sweep/SKILL.md\n    sha256: %s"
+                         % (tmpl_sha, skill_sha))
+        write(os.path.join(check_root, "manifests", "acme", "interaction-MANIFEST.md"),
+              table_manifest(2, source_block=source_block))
+        code, out = run(check_root, layers)
+        case("(33) dev-layout pin, fresh hashes: exit 0", code == 0, out)
+        case("(33) dev-layout pin resolves docs/ to the .template home and verifies",
+             "sha256 verified for docs/wiki-schema.md (resolved via dev layout" in out, out)
+        case("(33) dev-layout pin resolves .claude/skills/ to core/skills/ and verifies",
+             "sha256 verified for .claude/skills/sweep/SKILL.md (resolved via dev layout"
+             in out, out)
+        case("(33) dev-layout pin: no absent-file SKIP for either resolved pin",
+             "pinned file absent" not in out, out)
+
+        check_root, tmpl_sha, _skill_sha = dev_layout_root(
+            "# wiki schema template fixture EDITED SINCE THE PIN\n", "# sweep skill fixture\n")
+        layers = mk_layers(check_root, ["interaction"])
+        source_block = ("\n  - path: docs/wiki-schema.md\n    sha256: %s" % ("b" * 64))
+        write(os.path.join(check_root, "manifests", "acme", "interaction-MANIFEST.md"),
+              table_manifest(2, source_block=source_block))
+        code, out = run(check_root, layers)
+        case("(33) dev-layout STALE pin: exit 1 (a stale pin fails in dev, not on an "
+             "instance)", code == 1, out)
+        case("(33) dev-layout STALE pin: FAIL names the resolved path and the re-hash duty",
+             "resolved via dev layout" in out and "was not re-hashed" in out, out)
 
         # --- Parser unit checks (in-memory, no disk) -----------------------------------------
         case("tokenize_flags strips bracketed pointer",

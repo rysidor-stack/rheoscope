@@ -393,7 +393,16 @@ def is_runtime_target(t):
 
 
 def _extract_tokens(scope):
-    found = [pm.group(1) for pm in SLASHED_PATH_RE.finditer(scope)]
+    found = []
+    for pm in SLASHED_PATH_RE.finditer(scope):
+        # `"$T/block-dangerous-bash.sh"` in a quoted shell recipe: the leading
+        # segment is a shell VARIABLE, not a directory -- after the `$` strips,
+        # the remainder parses as a plausible path and lands as a permanent
+        # phantom (backlog v3.0-100; any doc quoting a shell recipe re-creates
+        # the shape, so this is the general fix, not a per-file reword).
+        if pm.start() > 0 and scope[pm.start() - 1] == '$':
+            continue
+        found.append(pm.group(1))
     found.extend(pm.group(1) for pm in BARE_FILE_RE.finditer(scope))
     return found
 
@@ -615,6 +624,13 @@ def run_sweep_self_test():
                       'MISSING-DOC.md is the one that dangles.\n',
             'core/onboarding/GUIDE.md': '# guide\n',
         }, 1, {'MISSING-DOC.md'}),
+        ('shell-variable-prefixed token is illustrative, unprefixed twin still '
+         'dangles (v3.0-100)', {
+            'doc.md': 'Test recipe: `T=$(mktemp -d); cp hook.sh "$T/ghost-hook.sh"; '
+                      'echo hi | "$T/ghost-hook.sh"`. The real citation '
+                      '`missing-dir/ghost-hook.sh` must still be caught.\n',
+            'hook.sh': '#!/bin/sh\n',
+        }, 1, {'missing-dir/ghost-hook.sh'}),
     ]
     import io
     from contextlib import redirect_stdout

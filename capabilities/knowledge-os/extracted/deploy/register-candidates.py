@@ -439,6 +439,15 @@ def self_test():
             candidates.append_candidate_record(root, rec)
         return candidate_id, event_rel, path
 
+    # Every non-expiry case pins `now` to the fixtures' own harvested_at date.
+    # Without the pin, run_register_candidates defaults now to the REAL today,
+    # and once 14 calendar days passed the fixture date (2026-08-05 onward)
+    # cases A/B/F silently grew `expired` transitions and failed -- a date-
+    # dependence defect misread as a Windows one (backlog v3.0-93). Case E
+    # remains the expiry pin in the other direction (15 days expires, 13
+    # does not), so no coverage moves.
+    _FIXTURE_NOW = datetime.date(2026, 7, 22)
+
     # ============================================================ (A)/(D):
     # staged -> registered, then idempotence on the SAME root
     baseA = tempfile.mkdtemp(prefix="register-cand-A-")
@@ -448,7 +457,7 @@ def self_test():
                                             "span for registration test")
         case("(A) setup: candidate is 'staged' before the run",
              candidates.effective_state(baseA, cidA) == "staged")
-        rc = run_register_candidates(baseA, dry_run=False)
+        rc = run_register_candidates(baseA, dry_run=False, now=_FIXTURE_NOW)
         case("(A) register-candidates exits 0", rc == 0)
         case("(A) the staged candidate is now 'registered'",
              candidates.effective_state(baseA, cidA) == "registered")
@@ -456,7 +465,8 @@ def self_test():
         n_before_idem = candidates.check_candidate_chain(baseA)
         buf_idem = io.StringIO()
         with contextlib.redirect_stdout(buf_idem):
-            rc_idem = run_register_candidates(baseA, dry_run=False)
+            rc_idem = run_register_candidates(baseA, dry_run=False,
+                                              now=_FIXTURE_NOW)
         out_idem = buf_idem.getvalue()
         case("(D) second immediate run exits 0", rc_idem == 0)
         case("(D) second immediate run appends ZERO records",
@@ -476,7 +486,7 @@ def self_test():
                                             append_record=False)
         case("(B) setup: orphan file has NO chain entry at all",
              candidates.effective_state(baseB, cidB) is None)
-        rc = run_register_candidates(baseB, dry_run=False)
+        rc = run_register_candidates(baseB, dry_run=False, now=_FIXTURE_NOW)
         case("(B) register-candidates over an orphan exits 0", rc == 0)
         hist_states = [r["state"] for r in candidates.ledger_history(baseB)
                        if r["candidate_id"] == cidB]
@@ -579,7 +589,7 @@ def self_test():
         candidates.append_candidate_record = _flaky
         try:
             try:
-                run_register_candidates(baseF, dry_run=False)
+                run_register_candidates(baseF, dry_run=False, now=_FIXTURE_NOW)
                 case("(F) a write failure after 1 success stops immediately "
                      "and reports (never silently continues)", False)
             except ReconcileViolation as e:
@@ -603,7 +613,8 @@ def self_test():
         n_before_g = candidates.check_candidate_chain(baseG)
         buf_g = io.StringIO()
         with contextlib.redirect_stdout(buf_g):
-            rc_g = run_register_candidates(baseG, dry_run=True)
+            rc_g = run_register_candidates(baseG, dry_run=True,
+                                           now=_FIXTURE_NOW)
         out_g = buf_g.getvalue()
         case("--dry-run exits 0", rc_g == 0)
         case("--dry-run writes NOTHING (chain count unchanged)",

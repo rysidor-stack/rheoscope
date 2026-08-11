@@ -102,6 +102,24 @@ Adjudicated from an external Opus-5 skills assessment of a sibling repo; first e
 
 ---
 
+## v3.0.34 → v3.0.35 (release integrity: the mechanized stranger test)
+
+Nothing mechanical travels — both changes live in the template maintainer's release tooling
+(`make-release.py`, which is never in your tree). One optional cleanup. No **[your call]**
+entries beyond it.
+
+1. **Optional cleanup: delete `audits/` from your project root if instantiation left one
+   there.** Release artifacts v3.0.22 through v3.0.34 mistakenly shipped the template
+   maintainer's audit records (files like `audits/2026-08-04-silence-sweep.md`) — they
+   describe the harness template's own history, not your project, and nothing in your
+   instance reads them. Harmless to keep; delete for tidiness. From v3.0.35 the artifact
+   no longer carries the directory.
+2. **Nothing else changes for instances.** The mechanized stranger test (v3.0-62) runs at
+   export time in the template repo: surface-touching releases now refuse to export without
+   a receipted fresh-instantiation run, and "stranger test not required" skip lines are
+   derived from the release diff instead of asserted from memory. You see the effect as
+   better-tested releases, not as a file in your tree.
+
 ## v3.0.33 → v3.0.34 (housekeeping + the trajectory guard)
 
 Small, all opt-in, nothing changes behavior on its own. No **[your call]** entries.

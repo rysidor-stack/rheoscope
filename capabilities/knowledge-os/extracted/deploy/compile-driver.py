@@ -659,9 +659,52 @@ def _load_verdict_artifact(repo, rel):
         return None
 
 
+def _journal_label_completed(label):
+    """Did the JOURNALED verdict_label record a COMPLETED verdict? Mirrors
+    classify_verdict's allowlist over the label the engine journaled at
+    record time (incl. the substrate-gated(inner) form). Transport-shaped
+    labels ('bridge-error', 'no-verdict-field', ...) journal as themselves
+    and are NOT completed."""
+    l = str(label)
+    if l in _COMPLETED_LABELS:
+        return True
+    if l.startswith("substrate-gated(") and l.endswith(")"):
+        return l[len("substrate-gated("):-1] in _COMPLETED_LABELS
+    return False
+
+
+def _confirm_shaped(label):
+    """Both confirm spellings a completed leg can carry: bare `confirmed`
+    and `substrate-gated(confirmed)` (a bare startswith('confirm') test
+    would leave the gated shape invisible -- design K2)."""
+    return (label.startswith("confirm")
+            or label.startswith("substrate-gated(confirm"))
+
+
 def verify_record_legs(repo, vrec):
     """Classify every leg a verify record actually fired. Returns
-    {"legs": [{"artifact", "label", "completed"}], "incomplete": [str, ...]}.
+    {"legs": [{"artifact", "label", "completed", "stamped"}],
+     "incomplete": [str, ...]}.
+
+    JOURNAL-FIRST (v3.0-74): journal placement is the confirmation truth. A
+    leg is confirmed iff an absorption_verified[] entry exists for it --
+    `stamped: True`, the engine's own record. Every attempts-leg and
+    unverified no-op union leg is `stamped: False` whatever its artifact
+    says. The artifact (or the journaled verdict_label, preferred where
+    present) supplies only two things: COMPLETION -- did a real verdict
+    happen at all (the transport axis, unchanged) -- and the FORENSIC label
+    for display. The axes are deliberately separate: a discarded-approval
+    leg is COMPLETED (a real verdict exists) but NOT CONFIRMED (the journal
+    holds no stamp). A completed stampless leg whose label is confirm-shaped
+    is relabelled `stamp-refused(<original label>)` -- the state sec.7's
+    BLOCKED row already names.
+
+    Where the journal carries the demotion fields (verdict_label), THEY are
+    read and the artifact is never opened -- post-demotion records are fully
+    journal-read here. Legacy records (no journaled fields) still open the
+    artifact, but ONLY for the completion axis and the forensic label, never
+    to grant confirmation: absence of an artifact stays fail-closed
+    INCOMPLETE, and no artifact value can ever produce a confirmed leg.
 
     Which entries were fired THIS record:
       * absorption_verified[]        -- confirmed by construction (the engine
@@ -675,26 +718,31 @@ def verify_record_legs(repo, vrec):
     legs = []
     incomplete = []
 
-    def add(artifact, verdict, source):
-        completed, label = classify_verdict(verdict)
+    def add(entry, source):
+        artifact = entry.get("artifact")
+        jl = entry.get("verdict_label")
+        if jl is not None:
+            completed, label = _journal_label_completed(jl), str(jl)
+        else:
+            completed, label = classify_verdict(
+                _load_verdict_artifact(repo, artifact) if artifact else None)
+        if completed and _confirm_shaped(label):
+            label = "stamp-refused(%s)" % label
         legs.append({"artifact": artifact, "label": label,
-                     "completed": completed})
+                     "completed": completed, "stamped": False})
         if not completed:
             incomplete.append("%s %s -> %s" % (source, artifact or "(no "
                                                "artifact)", label))
 
     for av in vrec.get("absorption_verified") or []:
         legs.append({"artifact": av.get("artifact"), "label": "confirmed",
-                     "completed": True})
+                     "completed": True, "stamped": True})
     for at in vrec.get("absorption_verify_attempts") or []:
-        art = at.get("artifact")
-        add(art, _load_verdict_artifact(repo, art) if art else None,
-            "absorption leg")
+        add(at, "absorption leg")
     for nc in vrec.get("noop_candidates") or []:
         if nc.get("verified") or not nc.get("artifact"):
             continue
-        art = nc["artifact"]
-        add(art, _load_verdict_artifact(repo, art), "no-op leg")
+        add(nc, "no-op leg")
     return {"legs": legs, "incomplete": incomplete}
 
 
@@ -754,6 +802,8 @@ def execute_verify_ledger(root, since=None, out=print):
     reverted_runs = set()
     adjudicated = set()                    # (run seq, view)
     absorbs_by_view = {}                   # view -> [run seq, ...]
+    confirmed_cover = {}                   # (run seq, view) -> newest verify
+    #                                        seq holding a stamp for the pair
     for seq in sorted(recs):
         rec = recs[seq]
         dr = rec.get("driver_revert")
@@ -765,6 +815,10 @@ def execute_verify_ledger(root, since=None, out=print):
                 adjudicated.add((adj["adjudicates_seq"], adj.get("view")))
         for ab in rec.get("absorbed") or []:
             absorbs_by_view.setdefault(ab.get("view"), []).append(seq)
+        if isinstance(rec.get("verifies_seq"), int):
+            for av in rec.get("absorption_verified") or []:
+                key = (rec["verifies_seq"], av.get("view"))
+                confirmed_cover[key] = max(confirmed_cover.get(key, -1), seq)
 
     rows = []
     for seq in sorted(recs):
@@ -786,6 +840,16 @@ def execute_verify_ledger(root, since=None, out=print):
                 return "reverted-re-ridden" if later else "reverted"
             if label == "confirmed" and disposition is None:
                 return "confirmed"
+            # Supersession (v3.0-74 design sec.2.3): a LATER covering verify
+            # record holding an absorption_verified entry for the same view
+            # supersedes this record's open reading for the (run, view) pair
+            # -- the view re-earned its stamp through a live leg (the narrow
+            # --reverify recovery, or a transport re-fire). Journal-only, no
+            # rewrite; without this the old row would read open-blocking
+            # forever and the drain's zero-non-confirms exit could never be
+            # reached.
+            if confirmed_cover.get((run_seq, view), -1) > seq:
+                return "superseded-confirmed"
             return "open-%s" % (disposition or "blocking")
 
         for av in vrec.get("absorption_verified") or []:
@@ -1774,9 +1838,33 @@ def execute_reverify(root, seq, staging, auth_path, engine=None, probe=None,
                 "instead." % seq)
             return EXIT_FAIL
     if seq in _terminal_seqs(recs, repo=repo):
-        out("Nothing to do: run seq %d already has a terminal verify "
-            "disposition. No dispatch was made." % seq)
-        return EXIT_OK
+        # v3.0-74 narrow gate: a TERMINAL run qualifies for re-fire iff the
+        # newest covering verify record's completed non-confirm legs are ALL
+        # stamp-refused-shaped (>=1 exists) -- a discarded APPROVAL re-rolls
+        # nothing (there is no adverse verdict to shop around), and this is
+        # the cheapest recovery that ends machine-verified: one dispatch,
+        # no revert of correct content, the stamp lands through the one
+        # existing stamping path (its OWN fresh verdict decides). Rejected
+        # or mixed runs stay declined with the standing message -- re-firing
+        # legs against a standing rejection would be re-rolling the dice on
+        # a verdict, which no-self-adjudication forbids.
+        vrecs = [r for r in recs.values() if r.get("verifies_seq") == seq]
+        stamp_refused = []
+        if vrecs:
+            newest = max(vrecs, key=lambda r: r.get("seq", 0))
+            open_legs = [l for l in verify_record_legs(repo, newest)["legs"]
+                         if l["completed"] and not l["stamped"]]
+            if open_legs and all(l["label"].startswith("stamp-refused(")
+                                 for l in open_legs):
+                stamp_refused = open_legs
+        if not stamp_refused:
+            out("Nothing to do: run seq %d already has a terminal verify "
+                "disposition. No dispatch was made." % seq)
+            return EXIT_OK
+        out("REVERIFY (v3.0-74 narrow gate): run seq %d is terminal, but its "
+            "newest verify record carries %d stamp-refused leg(s) -- a "
+            "verifier approval the engine could not stamp. Re-firing those "
+            "legs; the fresh verdict decides." % (seq, len(stamp_refused)))
 
     events_views = []
     for a in rec.get("absorbed") or []:
@@ -1913,10 +2001,12 @@ def execute_revert(root, seq, reason=None, out=print):
             disposition = ("unverified (%d verify leg(s) never completed)"
                            % len(legs["incomplete"]))
         else:
-            nonconfirm = [l for l in legs["legs"]
-                          if not (l["label"].startswith("confirm")
-                                  or l["label"].startswith(
-                                      "substrate-gated(confirm"))]
+            # v3.0-74: a leg is confirmed iff STAMPED (absorption_verified
+            # entry -- the journal's own record). A completed stampless leg
+            # whose artifact approved reads stamp-refused(confirmed) and
+            # QUALIFIES the run for adjudication -- the discarded-approval
+            # reopening.
+            nonconfirm = [l for l in legs["legs"] if not l["stamped"]]
             if not nonconfirm:
                 out("REFUSED: run seq %d is fully confirmed -- every verify "
                     "leg completed and confirmed, so there is nothing to "
@@ -2079,19 +2169,30 @@ def execute_set_aside(root, seq, view, ruling, out=print):
         out("REFUSED: the covering verify record (seq %s) carries no "
             "non-confirm absorption leg for %s." % (newest.get("seq"), view))
         return EXIT_FAIL
-    art = attempt.get("artifact")
-    verdict = _load_verdict_artifact(repo, art) if art else None
-    completed, label = classify_verdict(verdict)
+    # v3.0-74: the confirm authority is the absorption_verified check above
+    # (the journal's own stamp record) -- NOT the artifact's label. What
+    # remains here is the completion axis only: journal-first (the demotion
+    # fields where journaled, the artifact as legacy forensics), and a
+    # COMPLETED attempts-leg is adjudicable regardless of its artifact's
+    # label. When the artifact reads confirmed, the real state is named: the
+    # verifier approved but the engine recorded no stamp (stamp-refused).
+    jl = attempt.get("verdict_label")
+    if jl is not None:
+        completed, label = _journal_label_completed(jl), str(jl)
+    else:
+        art = attempt.get("artifact")
+        verdict = _load_verdict_artifact(repo, art) if art else None
+        completed, label = classify_verdict(verdict)
     if not completed:
         out("REFUSED: the verify leg for %s did not complete (%s) -- a "
             "transport failure is not a verdict, so there is nothing to "
             "set aside. Re-fire the legs with --reverify instead."
             % (view, label))
         return EXIT_FAIL
-    if "confirm" in label:
-        out("REFUSED: the verify leg for %s carries a CONFIRMED verdict -- "
-            "there is nothing to adjudicate." % view)
-        return EXIT_FAIL
+    if _confirm_shaped(label):
+        out("NOTE: the verifier approved %s but the engine recorded no "
+            "stamp (stamp-refused) -- this ruling adjudicates that leg."
+            % view)
 
     run_sha = _find_run_commit(repo, seq)
     if not run_sha:
@@ -3102,11 +3203,17 @@ def self_test():                                            # noqa: C901
         case("--since takes YYYY-MM-DD only", True)
 
     # ---------- N. the seq-103 state: verify record whose legs never completed
-    def plant_seq103(repo, verdict_key="bridge-error"):
+    def plant_seq103(repo, verdict_key="bridge-error", stamped=False):
         """Reproduce the pre-fix live state by hand: a compile run commit, then
-        a verify record whose only leg carries a transport-class verdict, with
-        NO revert. This is exactly what journal seq 103 looks like."""
+        a verify record whose leg(s) carry the named verdict(s), with NO
+        revert. This is exactly what journal seq 103 looks like.
+        verdict_key may be a tuple -> one legacy attempts-leg per key (views
+        wiki/a.md, wiki/leg1.md, ...). stamped=True journals the single leg
+        as absorption_verified[] instead -- the genuinely-confirmed record
+        shape (v3.0-74: the journal's own stamp)."""
         core = _core()
+        keys = (list(verdict_key)
+                if isinstance(verdict_key, (list, tuple)) else [verdict_key])
         vp = os.path.join(repo, "wiki", "a.md")
         old = open(vp, encoding="utf-8").read()
         with open(vp, "w", encoding="utf-8", newline="\n") as fh:
@@ -3121,21 +3228,29 @@ def self_test():                                            # noqa: C901
             repo, ["wiki/a.md",
                    os.path.relpath(cpath, repo).replace(os.sep, "/")],
             "live-shaped run seq %d" % cseq)
-        art_rel = "receipts/verify/absorb-seq%d-v0.json" % cseq
-        ap = os.path.join(repo, art_rel.replace("/", os.sep))
-        os.makedirs(os.path.dirname(ap), exist_ok=True)
-        with open(ap, "w", encoding="utf-8", newline="\n") as fh:
-            json.dump(VERDICTS[verdict_key], fh, indent=1, sort_keys=True)
+        art_rels, entries = [], []
+        for v_idx, key in enumerate(keys):
+            art_rel = "receipts/verify/absorb-seq%d-v%d.json" % (cseq, v_idx)
+            ap = os.path.join(repo, art_rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(ap), exist_ok=True)
+            with open(ap, "w", encoding="utf-8", newline="\n") as fh:
+                json.dump(VERDICTS[key], fh, indent=1, sort_keys=True)
+            art_rels.append(art_rel)
+            view = "wiki/a.md" if v_idx == 0 else "wiki/leg%d.md" % v_idx
+            entries.append({"view": view, "events": ["raw/e1.md"],
+                            "artifact": art_rel, "packet_sha256": "d" * 64,
+                            "reason": VERDICTS[key].get("reason", "")})
         vrec = core.minimal_record("verify", "0" * 40)
         vrec["verifies_seq"] = cseq
-        vrec["absorption_verify_attempts"] = [
-            {"view": "wiki/a.md", "events": ["raw/e1.md"],
-             "artifact": art_rel, "packet_sha256": "d" * 64,
-             "reason": VERDICTS[verdict_key].get("reason", "")}]
+        if stamped:
+            vrec["absorption_verified"] = [
+                dict(entries[0], verified_at="t1")]
+        else:
+            vrec["absorption_verify_attempts"] = entries
         vseq, vpath = core.append_record(repo, vrec)
         core.stage_only_commit(
-            repo, [art_rel,
-                   os.path.relpath(vpath, repo).replace(os.sep, "/")],
+            repo, art_rels
+            + [os.path.relpath(vpath, repo).replace(os.sep, "/")],
             "live-shaped verify seq %d over %d" % (vseq, cseq))
         return cseq
 
@@ -3234,6 +3349,93 @@ def self_test():                                            # noqa: C901
     finally:
         shutil.rmtree(repo_n2, ignore_errors=True)
 
+    # ---------- N2b. v3.0-74 narrow gate: --reverify reopens a TERMINAL run
+    # whose newest covering record's open legs are ALL stamp-refused-shaped;
+    # a genuine rejection (or a mixed run) stays declined -- re-firing legs
+    # against a standing rejection would re-roll a verdict, which
+    # no-self-adjudication forbids. Re-firing a discarded APPROVAL re-rolls
+    # nothing, and the recovery ends machine-verified through the one
+    # existing stamping path.
+    repo_n3 = make_repo("cdrv-reverify-narrow-")
+    try:
+        st = make_staging(repo_n3)
+        good = make_grant(repo_n3)
+        _git(repo_n3, "add", "-A")
+        _git(repo_n3, "commit", "-qm", "fixtures")
+        cseq_n3 = plant_seq103(repo_n3, "confirm")   # discarded approval
+        # Terminality invariance (design K1/sec.7.3 -- the cross-check's
+        # demanded operational proof): the relabel moves the CONFIRMATION
+        # axis only; the leg stays completed/non-incomplete, so the run
+        # stays TERMINAL and reconciliation blocks nothing new.
+        case("terminality invariance: a discarded-approval run is TERMINAL "
+             "under the relabel (completed, non-incomplete)",
+             reconcile_state(repo_n3)["blocked"] is False)
+        vrec_n3 = max((r for r in load_journal(repo_n3).values()
+                       if r.get("verifies_seq") == cseq_n3),
+                      key=lambda r: r.get("seq", 0))
+        legs_n3 = verify_record_legs(repo_n3, vrec_n3)
+        case("terminality invariance: the relabelled leg reads "
+             "stamp-refused(confirmed)/completed/not-stamped and the "
+             "incomplete list is empty",
+             legs_n3["incomplete"] == []
+             and len(legs_n3["legs"]) == 1
+             and legs_n3["legs"][0]["label"] == "stamp-refused(confirmed)"
+             and legs_n3["legs"][0]["completed"] is True
+             and legs_n3["legs"][0]["stamped"] is False, str(legs_n3))
+        eng_n3 = FakeEngine(verify="confirm")
+        buf_n3 = []
+        rc = reverify_driver(repo_n3, cseq_n3, st, good, engine=eng_n3,
+                             out=buf_n3.append)
+        case("--reverify REOPENS (narrow gate) on the stamp-refused-only "
+             "terminal run and dispatches",
+             rc == EXIT_OK and eng_n3.verify_calls == 1
+             and any("narrow gate" in l for l in buf_n3), "; ".join(buf_n3))
+        recs_n3 = load_journal(repo_n3)
+        case("...the recovery ends MACHINE-VERIFIED: a fresh "
+             "absorption_verified record now covers the run",
+             any(r.get("verifies_seq") == cseq_n3
+                 and r.get("absorption_verified")
+                 for r in recs_n3.values()))
+        eng_probe3 = FakeEngine()
+        rc = reverify_driver(repo_n3, cseq_n3, st, good, engine=eng_probe3,
+                             out=silent)
+        case("...and the gate CLOSES after the recovery (no-op again, no "
+             "dispatch)", rc == EXIT_OK and eng_probe3.verify_calls == 0)
+        # Supersession (design sec.2.3): the old attempts-row's open reading
+        # is superseded by the later covering record's stamp for the same
+        # (run, view) -- ledger outcome superseded-confirmed, no other row
+        # moved.
+        buf_lg = []
+        execute_verify_ledger(repo_n3, out=buf_lg.append)
+        sup_rows = [l for l in buf_lg if "superseded-confirmed" in l]
+        case("--verify-ledger: the superseded open reading flips to "
+             "superseded-confirmed (exactly one such row)",
+             len(sup_rows) == 1 and "wiki/a.md" in sup_rows[0],
+             "; ".join(buf_lg))
+        case("--verify-ledger: no open-blocking row remains for the "
+             "recovered run",
+             not any("open-blocking" in l for l in buf_lg), "; ".join(buf_lg))
+        # A genuine rejection stays declined by the narrow gate...
+        cseq_rej = plant_seq103(repo_n3, "rejected")
+        eng_probe4 = FakeEngine()
+        rc = reverify_driver(repo_n3, cseq_rej, st, good, engine=eng_probe4,
+                             out=silent)
+        case("--reverify stays SHUT on a genuine rejection (terminal, no "
+             "dispatch -- no verdict re-roll)",
+             rc == EXIT_OK and eng_probe4.verify_calls == 0)
+        # ...and so does a MIXED run (a stamp-refused leg beside a rejection).
+        cseq_mx = plant_seq103(repo_n3, ("confirm", "rejected"))
+        eng_probe5 = FakeEngine()
+        rc = reverify_driver(repo_n3, cseq_mx, st, good, engine=eng_probe5,
+                             out=silent)
+        case("--reverify stays SHUT on a mixed run (stamp-refused beside a "
+             "rejection, no dispatch)",
+             rc == EXIT_OK and eng_probe5.verify_calls == 0)
+        case("journal chain intact across the narrow-gate sequence",
+             _core().check_chain(repo_n3) == len(load_journal(repo_n3)))
+    finally:
+        shutil.rmtree(repo_n3, ignore_errors=True)
+
     # ---------- N3. --revert: operator adjudication of a non-confirm verdict
     # (v3.0-local-5 second finding: the skill said "fix the view text and
     # re-run the verify leg" but no CLI mode performed it -- the first live
@@ -3296,12 +3498,38 @@ def self_test():                                            # noqa: C901
         make_grant(repo_q)
         _git(repo_q, "add", "-A")
         _git(repo_q, "commit", "-qm", "fixtures")
-        cseq_q = plant_seq103(repo_q, "confirm")
+        # v3.0-74: confirmed iff STAMPED. A run whose leg holds an
+        # absorption_verified entry (the journal's own record) is fully
+        # confirmed and stays refused -- the never-loosen direction.
+        cseq_q = plant_seq103(repo_q, "confirm", stamped=True)
         rc = execute_revert(repo_q, cseq_q, out=silent)
-        case("--revert refuses a fully-confirmed run (nothing to adjudicate)",
+        case("--revert refuses a fully-confirmed (STAMPED) run (nothing to "
+             "adjudicate)",
              rc == EXIT_FAIL
              and not any(r.get("driver_revert")
                          for r in load_journal(repo_q).values()))
+        # v3.0-74 reopening: a discarded approval -- artifact says confirmed,
+        # journal holds only an attempt -- is NOT confirmed; --revert
+        # qualifies the run and names the real state in its disposition.
+        cseq_q2 = plant_seq103(repo_q, "confirm")
+        buf_q = []
+        rc = execute_revert(repo_q, cseq_q2, out=buf_q.append)
+        case("--revert REOPENS for the discarded-approval shape "
+             "(stamp-refused(confirmed) named in the disposition)",
+             rc == EXIT_OK
+             and any("stamp-refused(confirmed)" in l for l in buf_q),
+             "; ".join(buf_q))
+        # ...and the substrate-gated confirm spelling counts too (design K2:
+        # a bare startswith('confirm') filter would leave it invisible).
+        cseq_q3 = plant_seq103(repo_q, "gated-confirm")
+        buf_q3 = []
+        rc = execute_revert(repo_q, cseq_q3, out=buf_q3.append)
+        case("--revert REOPENS for the substrate-gated(confirmed) discarded "
+             "shape",
+             rc == EXIT_OK
+             and any("stamp-refused(substrate-gated(confirmed))" in l
+                     for l in buf_q3),
+             "; ".join(buf_q3))
     finally:
         shutil.rmtree(repo_q, ignore_errors=True)
 
@@ -3487,10 +3715,27 @@ def self_test():                                            # noqa: C901
     try:
         _git(repo_sc, "add", "-A")
         _git(repo_sc, "commit", "-qm", "fixtures")
-        cseq_c = plant_seq103(repo_sc, "confirm")
-        case("--set-aside refuses a CONFIRMED leg (nothing to adjudicate)",
-             execute_set_aside(repo_sc, cseq_c, "wiki/a.md",
+        # v3.0-74: the confirm authority is the absorption_verified check --
+        # a STAMPED leg stays refused; a discarded-approval attempts-leg is
+        # adjudicable, with the real state (stamp-refused) named.
+        cseq_st = plant_seq103(repo_sc, "confirm", stamped=True)
+        case("--set-aside refuses a STAMPED (absorption_verified) leg "
+             "(nothing to adjudicate)",
+             execute_set_aside(repo_sc, cseq_st, "wiki/a.md",
                                "let it stand", out=silent) == EXIT_FAIL)
+        cseq_c = plant_seq103(repo_sc, "confirm")
+        buf_sa = []
+        rc = execute_set_aside(repo_sc, cseq_c, "wiki/a.md",
+                               "the on-file approval is genuine",
+                               out=buf_sa.append)
+        case("--set-aside ADJUDICATES the discarded-approval leg (v3.0-74 "
+             "zero-dispatch recovery), naming stamp-refused",
+             rc == EXIT_OK
+             and any("stamp-refused" in l for l in buf_sa)
+             and any(aj.get("adjudicates_seq") == cseq_c
+                     for r in load_journal(repo_sc).values()
+                     for aj in r.get("absorption_adjudicated") or []),
+             "; ".join(buf_sa))
         cseq_r2 = plant_seq103(repo_sc, "rejected")
         rc = execute_revert(repo_sc, cseq_r2, out=silent)
         case("--set-aside refuses a REVERTED run (nothing stands)",

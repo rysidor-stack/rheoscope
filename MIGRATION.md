@@ -143,6 +143,38 @@ entries beyond it.
    that pulled a v3.0.22–v3.0.34 zip may delete any `audits/` directory that arrived with
    it — it was the template maintainer's own record, shipped by mistake (v3.0-103).
 
+## v3.0.36 → v3.0.37 (lifecycle completion — discarded approvals recoverable, engine-born labels honest)
+
+If you run the knowledge-os engine. All drop-over copies; no **[your call]** entries at
+adoption time — the recovery acts themselves stay yours at use time (each one is a fresh
+cross-vendor check or your recorded ruling; nothing recovers silently).
+
+1. **Copy the four engine files** into your `deploy/`: `compile-driver.py` (journal-first
+   leg classification — a view is confirmed iff the journal holds an `absorption_verified`
+   entry; the verdict artifact is forensics, never state — plus the three reopened repair
+   doors and the ledger/trajectory supersession rule), `compile-v2.py` (mint provenance +
+   the consumed_status advance at stamp time), `backfill-derivation.py` (regions it mints
+   now record `minted_by: backfill`), `check-frontmatter.py` (the optional `minted_by`
+   key + enum). Run each `--self-test` to confirm (206/217/14/36 at this template's HEAD).
+2. **Copy `engine/OPERATIONS.md`** — §7's BLOCKED row now names the third recovery verb for
+   stamp-refused-only runs (`--reverify` re-fires the legs; its fresh verdict decides — not
+   a disposition; the two-disposition rule stands).
+3. **What this unlocks on your instance:** any pre-v3.0.29 discarded approval (a verify leg
+   whose artifact says `confirmed` but the engine recorded no stamp) stops reading as
+   confirmed and its repair doors open — `--revert` + re-ride, operator `--set-aside`
+   (zero-dispatch, your ruling recorded), or the narrow `--reverify` (discarded-approval
+   shape ONLY; a genuine rejection stays declined — no verdict re-rolls). Views the engine
+   creates from now on carry `minted_by: engine` and flip to `consumed_status:
+   verified-consumed` when a verify confirms, making them T1-servable.
+4. **Honest boundaries, so they're no surprise:** recovered approvals on BACKFILLED views
+   re-earn their `verified:` stamp but stay `legacy-assumed` — the migration content-audit
+   obligation (F13) is theirs and a verify confirm never clears it, so they remain barred
+   from T1 serving until a real content audit. Engine-born views minted BEFORE this release
+   carry no `minted_by` line and also stay conservatively `legacy-assumed` after confirming
+   (no relabel ships; a journal-verified relabel remains possible later if it ever
+   matters). `audit-pending` never advances. No journal rewrite, no backfill from
+   artifacts, nothing loosens.
+
 ## v3.0.33 → v3.0.34 (housekeeping + the trajectory guard)
 
 Small, all opt-in, nothing changes behavior on its own. No **[your call]** entries.

@@ -266,6 +266,11 @@ SWEEP_ILLUSTRATIVE_TARGETS = {
     '0001-slug.md',   # ADR filename PATTERN illustration
     '007.json',       # candidate-seq fixture pattern (drill docstring)
     'x.py', 'spec-x.md',  # this sensor's own docstring placeholders
+    # v3.0.36: the secret scanner BLOCKS files named credentials.json, so the
+    # perimeter docs must be able to NAME it -- it is a pattern the perimeter
+    # refuses, never a file that should resolve (CREDENTIALS.md had carried it
+    # as a hand-tolerated standing phantom since the first baseline).
+    'credentials.json',
 }
 
 # Dev-repo-only CITERS (v3.0.27, V4): files that exist in the dev repo but never

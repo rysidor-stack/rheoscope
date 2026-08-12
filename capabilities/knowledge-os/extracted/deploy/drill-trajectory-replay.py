@@ -25,17 +25,13 @@ The eight states, from the section-7 table (the lifecycle authority):
                      (superseded if a later reverted record lands for the run)
 
 Everything here reads the JOURNAL ALONE -- the verdict artifact is forensics,
-never state (v3.0-74's lesson as a rule). The one deliberate exception is the
-KNOWN-DEFECT pin below.
-
-KNOWN-DEFECT PIN (v3.0-74, fix scheduled for the lifecycle-completion session):
-`compile-driver.verify_record_legs` still classifies attempts-legs from the
-verdict ARTIFACT, so a pre-v3.0.29 discarded-approval leg (artifact says
-confirmed, journal recorded only an attempt) reads as fully confirmed and every
-recovery door stays shut. The self-test pins TODAY'S WRONG reading with an
-explicit KNOWN-DEFECT(v3.0-74) case: when the fix lands, that case FAILS LOUDLY
-and the fixer flips its expectation to the journal-derived reading (the
-adjacent case already asserts what the correct reading must be).
+never state (v3.0-74's lesson as a rule). Case (I) additionally pins
+`compile-driver.verify_record_legs`'s own journal-first reading of the
+discarded-approval shape (the v3.0-74 fix, landed by the lifecycle-completion
+build): the formerly-invisible stampless artifact-confirmed leg reads
+stamp-refused(confirmed) / stamped False / completed True, and the KNOWN-DEFECT
+pin that used to hold this slot flipped to that expectation the day the fix
+landed, exactly as its comment instructed.
 
 PLACEMENT NOTE (deviation from the backlog entry, recorded 2026-08-09): the
 v3.0-91 entry says "extend drill-golden-replay.py" AND "DEV-ONLY (rides the
@@ -93,7 +89,7 @@ def _label_completed(label):
 # --------------------------------------------------------------- context + legs
 class Ctx(object):
     __slots__ = ("reverted", "revert_failed", "adjudicated", "covered_runs",
-                 "absorbs_by_view")
+                 "absorbs_by_view", "confirmed_cover")
 
 
 def trajectory_context(recs):
@@ -102,6 +98,8 @@ def trajectory_context(recs):
     ctx.adjudicated = set()                    # (run seq, view)
     ctx.covered_runs = set()                   # run seqs a verify record covers
     ctx.absorbs_by_view = {}                   # view -> [run seq, ...]
+    ctx.confirmed_cover = {}                   # (run seq, view) -> newest
+    #                                            verify seq holding a stamp
     for seq in sorted(recs):
         rec = recs[seq]
         dr = rec.get("driver_revert")
@@ -115,6 +113,10 @@ def trajectory_context(recs):
                 ctx.adjudicated.add((adj["adjudicates_seq"], adj.get("view")))
         if isinstance(rec.get("verifies_seq"), int):
             ctx.covered_runs.add(rec["verifies_seq"])
+            for av in rec.get("absorption_verified") or []:
+                key = (rec["verifies_seq"], av.get("view"))
+                ctx.confirmed_cover[key] = max(
+                    ctx.confirmed_cover.get(key, -1), seq)
         for ab in rec.get("absorbed") or []:
             ctx.absorbs_by_view.setdefault(ab.get("view"), []).append(seq)
     return ctx
@@ -134,6 +136,15 @@ def collect_legs(recs, ctx):
                              "view": av.get("view", "?"), "kind": "verified",
                              "label": "confirmed", "disposition": None})
             for at in vrec.get("absorption_verify_attempts") or []:
+                # Supersession (v3.0-74 design sec.2.3): a LATER covering
+                # verify record holding an absorption_verified entry for the
+                # same view supersedes this record's open reading for the
+                # (run, view) pair -- the classifier takes the newest
+                # covering record's leg per view, so the superseded attempt
+                # is dropped (the pair is represented by the stamped leg).
+                if ctx.confirmed_cover.get(
+                        (run_seq, at.get("view", "?")), -1) > seq:
+                    continue
                 legs.append({"run_seq": run_seq, "verify_seq": seq,
                              "view": at.get("view", "?"), "kind": "attempt",
                              "label": at.get("verdict_label"),
@@ -494,23 +505,74 @@ def self_test():                                              # noqa: C901
              st[(90, "wiki/k.md")] == "BLOCKED", str(st))
         case("(I) v3.0-74 journal-only reading: no baseline advanced",
              base["wiki/k.md"] == ("pre-absorb", None), str(base))
-        # KNOWN-DEFECT(v3.0-74) -- pins TODAY'S WRONG reading. verify_record_legs
-        # classifies this leg from the verdict ARTIFACT and calls it confirmed/
-        # completed, so --reverify and --revert both decline and the article can
-        # never show its real approval. THE FIX IS SESSION 3's (lifecycle
-        # completion, v3.0-74 + v3.0-71): when verify_record_legs learns to
-        # judge by the RECORD, this case FAILS -- that failure is the flip
-        # signal. The fixer inverts the expectation below to assert the leg no
-        # longer reads confirmed, and deletes this comment's future tense.
+        # v3.0-74 FIXED (the lifecycle-completion build): verify_record_legs
+        # judges by the RECORD -- an attempts entry means no stamp, so the
+        # discarded-approval leg reads stamp-refused(confirmed), stamped
+        # False, completed True (a real verdict exists; the journal holds no
+        # stamp). The artifact supplied only the completion axis and the
+        # forensic label, never confirmation.
         vr = driver.verify_record_legs(base_i, recs[91])
         legs_i = vr["legs"]
-        case("(I) KNOWN-DEFECT v3.0-74 (EXPECTED-WRONG, flips when the fix "
-             "lands): verify_record_legs still reads the ARTIFACT and calls "
-             "the stampless leg confirmed",
-             len(legs_i) == 1 and legs_i[0]["label"].startswith("confirm")
+        case("(I) v3.0-74 fixed: verify_record_legs reads the JOURNAL -- the "
+             "stampless artifact-confirmed leg is stamp-refused(confirmed), "
+             "not stamped, completed",
+             len(legs_i) == 1
+             and legs_i[0]["label"] == "stamp-refused(confirmed)"
+             and legs_i[0]["stamped"] is False
              and legs_i[0]["completed"] is True, str(legs_i))
+        case("(I) v3.0-74 fixed: the leg is NOT incomplete (terminality "
+             "invariance -- completion is the transport axis, untouched)",
+             vr["incomplete"] == [], str(vr["incomplete"]))
     finally:
         shutil.rmtree(base_i, ignore_errors=True)
+
+    # --- (I2) supersession (v3.0-74 design sec.2.3): an older covering
+    # record's open attempt is superseded by a later covering record's stamp
+    # for the same (run, view) -- the narrow --reverify recovery's shape. The
+    # classifier takes the newest covering record's leg; the pair reads
+    # VERIFIED, the stale open reading is gone, nothing else moves.
+    recs = dict([
+        runrec(85, ["wiki/n.md", "wiki/o.md"]),
+        vrec(86, 85, attempts=[attempt("wiki/n.md", legacy=True),
+                               attempt("wiki/o.md", legacy=True)]),
+        vrec(87, 85, verified=[{"view": "wiki/n.md"}],
+             attempts=[attempt("wiki/o.md", legacy=True)]),
+    ])
+    st, viol, base = states_of(recs)
+    case("(I2) supersession: the re-earned stamp wins the (run, view) pair",
+         st[(85, "wiki/n.md")] == "VERIFIED", str(st))
+    case("(I2) supersession: the sibling with no later stamp stays BLOCKED "
+         "(nothing else moves)", st[(85, "wiki/o.md")] == "BLOCKED", str(st))
+    case("(I2) supersession: baseline advances to machine-verified",
+         base["wiki/n.md"] == ("machine-verified", 85), str(base))
+    case("(I2) supersession: zero violations", not viol, "; ".join(viol))
+
+    # --- (I3) union-leg discarded shape: an artifact-confirmed no-op union
+    # leg with `verified` unset is the same discarded-approval shape --
+    # verify_record_legs applies the identical journal-first relabel.
+    base_i3 = tempfile.mkdtemp(prefix="traj-v3074u-")
+    try:
+        art_rel = "receipts/verify/noop-seq92-e0.json"
+        art_path = os.path.join(base_i3, *art_rel.split("/"))
+        os.makedirs(os.path.dirname(art_path))
+        with open(art_path, "w", encoding="utf-8") as fh:
+            json.dump({"verdict": "confirmed",
+                       "reason": "union holds (flip never landed)"}, fh)
+        urec = {"verifies_seq": 92,
+                "noop_candidates": [{"event": "raw/x.md", "view": "wiki/p.md",
+                                     "artifact": art_rel}]}
+        vr = driver.verify_record_legs(base_i3, urec)
+        legs_u = vr["legs"]
+        case("(I3) union discarded shape: stamp-refused(confirmed), not "
+             "stamped, completed",
+             len(legs_u) == 1
+             and legs_u[0]["label"] == "stamp-refused(confirmed)"
+             and legs_u[0]["stamped"] is False
+             and legs_u[0]["completed"] is True, str(legs_u))
+        case("(I3) union discarded shape: not incomplete (completion axis "
+             "untouched)", vr["incomplete"] == [], str(vr["incomplete"]))
+    finally:
+        shutil.rmtree(base_i3, ignore_errors=True)
 
     # --- (J) exactly-one assertion has teeth: an inconsistent history (a run
     # both reverted and carrying a live recorded disposition is fine -- revert

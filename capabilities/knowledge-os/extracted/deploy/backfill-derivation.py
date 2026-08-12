@@ -155,9 +155,15 @@ def compute_origin_max(root, sources, origin_config_path=None):
     return origin.origin_max(per_event), {"total": cen["total"], "judgment": cen["judgment"]}
 
 
-def render_region(schema_version, kind, summary, origin_max_value, self_relpath):
+def render_region(schema_version, kind, summary, origin_max_value, self_relpath,
+                  minted_by):
     """The minted region: every DERIVATION_KEYS-required key, conservative values,
-    summary JSON-quoted (valid YAML scalar, hostile characters inert)."""
+    summary JSON-quoted (valid YAML scalar, hostile characters inert).
+    minted_by (v3.0-71): the mint's provenance, `engine` or `backfill`,
+    recorded in the region at birth -- the single fact that decides whether a
+    later confirmed verify may advance consumed_status (engine-born only;
+    backfill keeps the F13 audit obligation). Both minters call THIS function,
+    so the two can never drift."""
     return "\n".join([
         "# --- derivation (engine-managed; strip region) ---",
         "schema_version: %s" % schema_version,
@@ -167,6 +173,7 @@ def render_region(schema_version, kind, summary, origin_max_value, self_relpath)
         "status: active",
         "tier: T1",
         "consumed_status: legacy-assumed",
+        "minted_by: %s" % minted_by,
         "origin_max: %s" % origin_max_value,
         "subscribes:",
         "  entities: []",
@@ -208,7 +215,8 @@ def backfill(root, check_only=False, origin_config_path=None):
             fm_end, title, summary, sources = parsed
             omax, ocounts = compute_origin_max(root, sources, origin_config_path)
             region = render_region(sensor.SCHEMA_VERSION, view_kind(rel),
-                                   summary or title, omax, rel)
+                                   summary or title, omax, rel,
+                                   minted_by="backfill")
             lines = text.splitlines()
             new_lines = lines[:fm_end + 1] + ["", region] + lines[fm_end + 1:]
             new_text = "\n".join(new_lines) + ("\n" if text.endswith("\n") else "")
@@ -305,6 +313,11 @@ def self_test():
         case("conservative defaults: T1 + legacy-assumed + verified null",
              "tier: T1" in minted and "consumed_status: legacy-assumed" in minted
              and "verified: null" in minted)
+        case("v3.0-71: the backfill mint records minted_by: backfill "
+             "(provenance at birth -- this population's F13 audit obligation "
+             "stays open; a verify confirm never advances it)",
+             "minted_by: backfill" in minted
+             and "minted_by: engine" not in minted)
         m_legacy = next(x for x in rep["minted"] if x["view"] == "wiki/systems/legacy.md")
         m_missing = next(x for x in rep["minted"]
                          if x["view"] == "wiki/systems/missing-src.md")

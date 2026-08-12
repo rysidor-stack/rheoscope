@@ -882,7 +882,11 @@ def _mint_derivation_region(repo, view_rel, text):
         # fallback string, which would be a false statement about a view the
         # engine just created.
         summary or title or "(engine-born view; summary pending)",
-        omax, view_rel)
+        omax, view_rel,
+        # v3.0-71: the mint's provenance, recorded at birth -- this view was
+        # born through the validated absorb path, so a later confirmed verify
+        # may advance its consumed_status (engine-born population only).
+        minted_by="engine")
     lines = text.splitlines()
     new_lines = lines[:fm_end + 1] + ["", region] + lines[fm_end + 1:]
     return "\n".join(new_lines) + ("\n" if text.endswith("\n") else "")
@@ -1504,6 +1508,49 @@ def _stamp_verified_block(text, status, at, verifier_vendor, verifier_model_id,
     return text[:region_start] + new_region + "\n" + text[ei:]
 
 
+_MINTED_BY_RE = re.compile(r"(?m)^minted_by:[ \t]*(\S+)[ \t]*$")
+_CONSUMED_STATUS_LINE_RE = re.compile(r"(?m)^consumed_status:[ \t]*(\S+)[ \t]*$")
+
+
+def _advance_consumed_status(text):
+    """v3.0-71: advance `consumed_status: legacy-assumed` -> `verified-consumed`
+    iff the region carries `minted_by: engine` -- the engine-born population
+    only. Called at the view-write site AFTER _stamp_verified_block succeeds,
+    so the advance rides the same atomic write as the stamp; the two helpers
+    stay single-purpose and _stamp_verified_block's every-other-key-untouched
+    contract stays true of that function. Returns (text, advanced).
+
+    FAIL-CLOSED on everything else -- text returned unchanged, never an
+    error, and the stamp still lands:
+      * no derivation region, or no minted_by key (every region minted
+        before the field existed, including the v3.0.29-.36 genuine engine
+        mints -- conservative labels kept, ratified default 3: no relabel);
+      * minted_by: backfill (the F13/B3 migration-audit obligation is the
+        backfilled population's, and clearing it on a verify confirm is the
+        precise loosening v3.0-71's entry forbids) or any unknown value;
+      * any consumed_status other than exactly `legacy-assumed` -- in
+        particular `audit-pending` NEVER advances: that is the F12
+        obligation, cleared only by an actual audit."""
+    region_lines = asm._extract_derivation(text)
+    if region_lines is None:
+        return text, False
+    region = "\n".join(region_lines)
+    m = _MINTED_BY_RE.search(region)
+    if not m or m.group(1) != "engine":
+        return text, False
+    c = _CONSUMED_STATUS_LINE_RE.search(region)
+    if not c or c.group(1) != "legacy-assumed":
+        return text, False
+    new_region = (region[:c.start()] + "consumed_status: verified-consumed"
+                  + region[c.end():])
+    si = text.find(asm.DERIV_START)
+    ei = text.find(asm.DERIV_END, si)
+    if si == -1 or ei == -1:
+        return text, False
+    region_start = text.index("\n", si) + 1
+    return text[:region_start] + new_region + "\n" + text[ei:], True
+
+
 def _absorb_substrate_fields(verdict):
     """Pull verifier/absorb vendor+model_id STRICTLY from the verdict's own
     substrate block (F17 attestation channel) -- never an orchestrator
@@ -1901,16 +1948,29 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
                     confirm_v = False
                     stamp_refusal_reason = "stamp refused: %s" % e
                 else:
+                    # v3.0-71: transition at stamp time, same atomic write --
+                    # the engine-born population advances to
+                    # verified-consumed; everything else fail-closed
+                    # unchanged (see _advance_consumed_status).
+                    new_text, cs_advanced = _advance_consumed_status(new_text)
                     vp = os.path.join(repo, view.replace("/", os.sep))
                     with open(vp, "w", encoding="utf-8", newline="\n") as fh:
                         fh.write(new_text)
                     touched_view_paths.append(view)
-                    absorption_verified.append({
+                    av_entry = {
                         "view": view, "events": abs_events,
                         "verified_at": verified_at, "artifact": art_rel,
                         "packet_sha256": packet_sha,
                         "view_sha256": _sha256(new_text),
-                        "substrate": verdict.get("substrate")})
+                        "substrate": verdict.get("substrate")}
+                    if cs_advanced:
+                        # Additive, absent wherever the advance did not fire,
+                        # so legacy records read byte-identical; no lifecycle
+                        # reader consumes it (the view file is the serving
+                        # truth) -- it puts the record-time truth of the
+                        # transition on the journal.
+                        av_entry["consumed_status_advanced"] = True
+                    absorption_verified.append(av_entry)
                     absorption_confirmed += 1
 
             if not confirm_v:
@@ -2892,6 +2952,13 @@ def self_test():
                  == _sha256(av_packet1)
              and av_vrec1["absorption_verified"][0]["view_sha256"]
                  == _sha256(av_body_after))
+        case("v3.0-71: a confirm on a PRE-PROVENANCE region (no minted_by) "
+             "advances nothing -- consumed_status stays legacy-assumed and "
+             "the journal entry carries NO consumed_status_advanced key "
+             "(additive field, absent where the advance did not fire)",
+             "consumed_status_advanced"
+             not in av_vrec1["absorption_verified"][0]
+             and "minted_by" not in av_body_after)
         av_probs, _ = crd.check_acc4(base, av_vres1["sha"])
         case("absorption-verify CONFIRM: produced verify commit passes "
              "check-run-diff (derivation-only stamp exemption)",
@@ -4435,12 +4502,72 @@ def self_test():
         born_vrec = json.load(open(os.path.join(core.journal_dir(base),
                                                 "%d.json" % born_vres["seq"]),
                                    encoding="utf-8"))
+        born_after = open(os.path.join(base, "wiki", "scoped", "borne.md"),
+                          encoding="utf-8").read()
         case("v3.0-69: the verification is stamped into the view and "
              "journaled as an absorption_verified entry",
              len(born_vrec.get("absorption_verified", [])) == 1
-             and "status: passed" in open(
-                 os.path.join(base, "wiki", "scoped", "borne.md"),
-                 encoding="utf-8").read())
+             and "status: passed" in born_after)
+        # v3.0-71: provenance at mint, transition at stamp -- the engine-born
+        # population's label fix, both halves in one trajectory.
+        case("v3.0-71: the engine mint records minted_by: engine in the "
+             "region (provenance at birth)",
+             "minted_by: engine" in born_disk
+             and "consumed_status: legacy-assumed" in born_disk)
+        case("v3.0-71 ACCEPTANCE: the confirmed verify ADVANCES the "
+             "engine-born view to verified-consumed in the same write as "
+             "the stamp",
+             "consumed_status: verified-consumed" in born_after
+             and "consumed_status: legacy-assumed" not in born_after
+             and "minted_by: engine" in born_after)
+        case("v3.0-71: the advance is journaled at record time "
+             "(consumed_status_advanced: true on the absorption_verified "
+             "entry)",
+             born_vrec["absorption_verified"][0].get(
+                 "consumed_status_advanced") is True)
+        born_probs, _ = crd.check_acc4(base, born_vres["sha"])
+        case("v3.0-71: the stamp+advance verify commit still passes "
+             "check-run-diff (derivation-only exemption holds for the "
+             "composed write)", born_probs == [])
+
+        # v3.0-71 fail-closed sweep: _advance_consumed_status refuses every
+        # non-engine-born shape -- text byte-unchanged, never an error.
+        def _region_text(minted_by_line, consumed="legacy-assumed"):
+            return ("---\ntitle: T\n---\n\n"
+                    "# --- derivation (engine-managed; strip region) ---\n"
+                    "schema_version: 3\nview: topic\nsummary: \"s\"\n"
+                    "entities: []\nstatus: active\ntier: T1\n"
+                    "consumed_status: %s\n%s"
+                    "origin_max: human\nsubscribes:\n  entities: []\n"
+                    "  corpus: []\nbundle: [wiki/x.md]\nverified: null\n"
+                    "# --- /derivation ---\n\n# X\nbody\n"
+                    % (consumed,
+                       (minted_by_line + "\n") if minted_by_line else ""))
+        for shape, txt in (
+                ("minted_by: backfill (F13/B3 audit debt stays open)",
+                 _region_text("minted_by: backfill")),
+                ("no minted_by key (pre-provenance region reads as legacy)",
+                 _region_text("")),
+                ("unknown minted_by value",
+                 _region_text("minted_by: wat")),
+                ("audit-pending never advances (F12 stands)",
+                 _region_text("minted_by: engine", consumed="audit-pending")),
+                ("already verified-consumed (idempotent)",
+                 _region_text("minted_by: engine",
+                              consumed="verified-consumed")),
+                ("no derivation region",
+                 "---\ntitle: T\n---\n\n# X\nbody\n")):
+            out_txt, adv = _advance_consumed_status(txt)
+            case("v3.0-71 fail-closed: %s -> no advance, text byte-unchanged"
+                 % shape, adv is False and out_txt == txt)
+        eng_txt = _region_text("minted_by: engine")
+        adv_txt, adv = _advance_consumed_status(eng_txt)
+        case("v3.0-71: engine + legacy-assumed -> the advance fires and "
+             "EXACTLY the one line changes (every other byte untouched)",
+             adv is True
+             and adv_txt == eng_txt.replace(
+                 "consumed_status: legacy-assumed",
+                 "consumed_status: verified-consumed"))
 
         # unmintable shapes: unchanged text, NO new refusal
         NOFM_TEXT = "# No Frontmatter\n\n## Intro\nthe unfrontmattered claim\n"

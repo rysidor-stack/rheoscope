@@ -142,18 +142,22 @@ RECEIPT_KEYS = {
 }
 
 # Derivation block (spec §5). All keys required; enums checked where the spec fixes them.
+# minted_by (v3.0-71): mint provenance, optional -- legacy regions (everything
+# minted before the field existed) lack it and read as legacy fail-closed;
+# the enum is checked when present.
 DERIVATION_KEYS = {
     "required": {
         "schema_version", "view", "summary", "entities", "status", "tier",
         "consumed_status", "origin_max", "subscribes", "bundle", "verified",
     },
-    "optional": set(),
+    "optional": {"minted_by"},
 }
 ENUMS = {
     "view": {"topic", "dashboard", "index", "briefing"},
     "status": {"active", "superseded"},
     "tier": {"T1", "T2", "T3", "T4"},
     "consumed_status": {"verified-consumed", "legacy-assumed", "audit-pending"},
+    "minted_by": {"engine", "backfill"},
 }
 
 DERIV_START = "# --- derivation"
@@ -637,6 +641,14 @@ verified:
 _DERIV_SKEW = _VALID_DERIV.replace("schema_version: 3.2", "schema_version: 3.1")
 _DERIV_MISSING = _VALID_DERIV.replace("origin_max: human\n", "")
 _DERIV_BAD_ENUM = _VALID_DERIV.replace("view: topic", "view: bogus")
+# v3.0-71 minted_by: optional key -- present-and-valid is clean (both enum
+# values), present-and-bogus warns, absent stays clean (_VALID_DERIV above).
+_DERIV_MINTED_ENGINE = _VALID_DERIV.replace(
+    "view: topic", "view: topic\nminted_by: engine")
+_DERIV_MINTED_BACKFILL = _VALID_DERIV.replace(
+    "view: topic", "view: topic\nminted_by: backfill")
+_DERIV_MINTED_BOGUS = _VALID_DERIV.replace(
+    "view: topic", "view: topic\nminted_by: wishful-thinking")
 _UNTERMINATED_FM = "---\nsource: alice\nbody with no close\n"
 
 
@@ -652,6 +664,12 @@ def self_test():
         ("deriv skew",       _DERIV_SKEW,       "wiki/systems/x.md", 1, 1),
         ("deriv missing key",_DERIV_MISSING,    "wiki/systems/x.md", 1, 0),
         ("deriv bad enum",   _DERIV_BAD_ENUM,   "wiki/systems/x.md", 1, 0),
+        ("deriv minted_by engine (v3.0-71, optional key clean)",
+         _DERIV_MINTED_ENGINE, "wiki/systems/x.md", 0, 0),
+        ("deriv minted_by backfill (v3.0-71, optional key clean)",
+         _DERIV_MINTED_BACKFILL, "wiki/systems/x.md", 0, 0),
+        ("deriv minted_by bogus value (v3.0-71, enum warns)",
+         _DERIV_MINTED_BOGUS, "wiki/systems/x.md", 1, 0),
         ("unterminated fm",  _UNTERMINATED_FM,  "raw/x.md",          1, 0),
     ]
     failed = 0

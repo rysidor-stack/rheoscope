@@ -135,7 +135,14 @@ entries beyond it.
    fixtures, and the hooks `README.md`. Then install the scanner:
    `cp core/security/hooks/scan-staged-secrets.sh .git/hooks/pre-commit` (if you already
    have a pre-commit hook, chain it instead). Run
-   `bash core/security/hooks/scan-staged-secrets.sh --self-test` — expect 27/27.
+   `bash core/security/hooks/scan-staged-secrets.sh --self-test` — expect 29/29 at this
+   recipe's tag (31/31 once v3.0.38 is adopted; an earlier draft of this line said 27/27,
+   a pre-ship candidate count).
+   **Known wall at this tag (fixed in v3.0.38):** the scanner blocks the very commit that
+   adds its own source file — its pattern table looks secret-shaped to itself. If you adopt
+   v3.0.36 or v3.0.37 directly, the sanctioned way through is a one-time operator-run
+   `git commit --no-verify` of that one file (or adopt v3.0.38+, where the scanner's own
+   canonical path is exempt and the commit just works).
 3. **Sweep step:** copy the new `/sweep` skill (step 17 surfaces any egress-allowlist change
    to you once per sweep). No other wiring changes; restart Claude Code so hooks reload.
 4. **Also in this release (no action):** the v3.0.35 release-integrity gate and audits/
@@ -174,6 +181,24 @@ cross-vendor check or your recorded ruling; nothing recovers silently).
    (no relabel ships; a journal-verified relabel remains possible later if it ever
    matters). `audit-pending` never advances. No journal rewrite, no backfill from
    artifacts, nothing loosens.
+
+## v3.0.37 → v3.0.38 (the scanner stops blocking its own adoption)
+
+One file, no **[your call]** entries — a tightening-preserving false-positive fix
+(backlog v3.0-104, surfaced live at the aces-fork adoption 2026-08-12).
+
+1. **Copy the updated scanner** (shell copy, the hooks dir is write-guarded):
+   `cp <template>/core/security/hooks/scan-staged-secrets.sh core/security/hooks/` and
+   reinstall it: `cp core/security/hooks/scan-staged-secrets.sh .git/hooks/pre-commit`
+   (re-chain if you chained it). Run
+   `bash core/security/hooks/scan-staged-secrets.sh --self-test` — expect 31/31.
+2. **What changed:** the scanner's own source file at its canonical path
+   (`core/security/hooks/scan-staged-secrets.sh`) is now exempt from its own scan — its
+   pattern table looks secret-shaped to itself, which blocked the adoption commit on
+   every instance (you may have hit this as a one-time operator `--no-verify`). Safe by
+   construction: agents are mechanically barred from writing anywhere under
+   `core/security/hooks/` (the v3.0.36 write-guard), and the same bytes under any OTHER
+   path still block — both directions battery-pinned. Nothing else loosens.
 
 ## v3.0.33 → v3.0.34 (housekeeping + the trajectory guard)
 

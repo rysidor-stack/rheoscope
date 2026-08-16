@@ -74,8 +74,14 @@ PLACEHOLDER_RE='EXAMPLE|REDACTED|PLACEHOLDER|CHANGE[-_]?ME|your-[a-z0-9-]+-here|
 PATH_BLOCK_RE='(^|/)(\.env(\..*)?|[^/]*\.(pem|ppk)|credentials\.json)$'
 PATH_KEY_RE='(^|/)[^/]*\.key$'
 PATH_ALLOW_RE='(^|/)\.env\.(example|sample)$'
-# The perimeter's own fixture dir -- hard-coded, never configurable.
-EXEMPT_RE='(^|/)core/security/hooks/test-inputs/'
+# The perimeter's own fixture dir -- hard-coded, never configurable. The
+# scanner's own source file is exempt at its canonical path only (v3.0-104:
+# its pattern table and self-test strings look secret-shaped to itself, so it
+# blocked the very commit that adopts it on every instance; safe to exempt
+# because agents are mechanically barred from writing anywhere under
+# core/security/hooks/ -- the v3.0-98(a) write-guard -- so this file cannot
+# be used as a smuggling channel).
+EXEMPT_RE='(^|/)core/security/hooks/(test-inputs/|scan-staged-secrets\.sh$)'
 
 _fail() {
   echo "COMMIT BLOCKED by scan-staged-secrets.sh: $1" >&2
@@ -201,6 +207,12 @@ self_test() {
 
   # Same bytes OUTSIDE the exempt path block (the exemption is the path, not the bytes)
   mkrepo; stage "elsewhere/fx.txt" "-----BEGIN RSA PRIVATE KEY-----";                      expect "fixture bytes outside the exempt dir still block" 1
+
+  # v3.0-104: the scanner's own source file commits cleanly at its canonical
+  # path (adoption self-block fix) -- but the same pattern-shaped bytes under
+  # the scanner's NAME anywhere else still block (path exemption, not name)
+  mkrepo; stage "core/security/hooks/scan-staged-secrets.sh" "PAT='-----BEGIN RSA PRIVATE KEY-----'"; expect "the scanner's own source at its canonical path passes" 0
+  mkrepo; stage "tools/scan-staged-secrets.sh" "PAT='-----BEGIN RSA PRIVATE KEY-----'";    expect "scanner-named file OUTSIDE the canonical path still blocks" 1
 
   # Cross-vendor review regressions (2026-08-11): a placeholder match must never
   # shadow a later REAL value of the same class in the same file

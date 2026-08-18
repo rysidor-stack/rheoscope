@@ -986,6 +986,22 @@ def project_run_journal(root):
                     if entry["attested_by"] is None:
                         entry["attested_by"] = set()
                     entry["attested_by"].add(ident)
+        # v3.0-111: the union-leg ACCEPT door (compile-driver --set-aside
+        # --union-event, v3.0.39) journals an absorption_adjudicated entry whose
+        # subject is the union:<event> pseudo-view -- no noop_candidates flag ever
+        # flips (the journal is append-only). Without this reader, the sanctioned
+        # accept left the event PENDING_NOOP_CANDIDATE forever and census green
+        # was unreachable (2026-08-17 defect-class hunt, shape 4 #1). The
+        # operator's adjudication closes the pair on EVERY view the union leg
+        # covered; "absorbed" here matches the verdict-ledger/drill reading
+        # (ADJUDICATED = closed by ruling), and the upsert's upgrade-only merge
+        # makes the ruling stick regardless of record order.
+        for adj in rec.get("absorption_adjudicated") or []:
+            union_event = adj.get("union_event")
+            if not union_event:
+                continue  # view-subject adjudications already ride absorbed[]
+            for v in (adj.get("union_views") or []):
+                upsert(union_event, v, "absorbed")
     return out
 
 
@@ -1959,6 +1975,56 @@ def self_test():
              "pair carries no substrate/vendor-model field, so attested_by "
              "stays None (unattested) even once verified",
              proj2["raw/lock.md"]["wiki/lock.md"]["attested_by"] is None)
+
+        # v3.0-111: the union-leg ACCEPT door. A compile record leaves a union
+        # no-op pair pending; the operator's --set-aside --union-event journals
+        # an absorption_adjudicated record (union:<event> subject, no
+        # noop_candidates flip -- append-only journal). The projection must
+        # read it: the pair closes on the ruling, exactly as --verify-ledger
+        # and the trajectory drill already read the same record (the third
+        # reader, taught at last).
+        compile_core.append_record(base_noop, {
+            "run_type": "compile", "parent_git_sha": "f" * 40,
+            "pins": [], "registrations": {},
+            "corrections": [], "absorbed": [],
+            "noop_candidates": [
+                {"view": "wiki/u1.md", "event": "raw/union-e.md",
+                 "verified": False, "disposition": "PENDING_NOOP_CANDIDATE"},
+                {"view": "wiki/u2.md", "event": "raw/union-e.md",
+                 "verified": False, "disposition": "PENDING_NOOP_CANDIDATE"},
+            ],
+        })
+        proj3 = project_run_journal(base_noop)
+        case("B-3 union door (v3.0-111): BEFORE adjudication the union pair "
+             "reads noop_pending_verification on both covered views",
+             proj3["raw/union-e.md"]["wiki/u1.md"]["disposition"]
+             == "noop_pending_verification"
+             and proj3["raw/union-e.md"]["wiki/u2.md"]["disposition"]
+             == "noop_pending_verification")
+        compile_core.append_record(base_noop, {
+            "run_type": "verify-adjudication", "parent_git_sha": "f" * 40,
+            "pins": [], "registrations": {},
+            "corrections": [], "absorbed": [], "noop_candidates": [],
+            "absorption_adjudicated": [
+                {"view": "union:raw/union-e.md",
+                 "union_event": "raw/union-e.md",
+                 "union_views": ["wiki/u1.md", "wiki/u2.md"],
+                 "adjudicates_seq": 3, "at": "2026-08-17T00:00:00",
+                 "ruling": "accepted -- operator words here, verbatim",
+                 "adjudicated_by": "operator",
+                 "driver": "deploy/compile-driver.py"}],
+        })
+        proj4 = project_run_journal(base_noop)
+        case("B-3 union door (v3.0-111): the operator's union adjudication "
+             "closes the pair on EVERY covered view -- census exit exists "
+             "for the ACCEPT door, not just the redo door",
+             proj4["raw/union-e.md"]["wiki/u1.md"]["disposition"] == "absorbed"
+             and proj4["raw/union-e.md"]["wiki/u2.md"]["disposition"]
+             == "absorbed")
+        case("B-3 union door (v3.0-111): a view-subject adjudication (no "
+             "union_event key) is ignored by this reader -- view legs "
+             "already ride absorbed[], no double-count",
+             "union:raw/union-e.md" not in proj4)
     finally:
         shutil.rmtree(base_noop, ignore_errors=True)
 

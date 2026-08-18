@@ -255,6 +255,43 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
    are EXPECTED in the record's `refused[]` under G6; those refusals appearing is part
    of the acceptance, not a failure.
 
+## v3.0.41 → v3.0.42 (the class-hunt six: census exit for the accept door, the scanner actually installed, honest clocks and lit registers)
+
+The 2026-08-17 pre-cutover defect-class hunt's fix-first set. No **[your call]** entries;
+every change is a repair of something already ratified. **This is the fleet fan-out
+basis — adopt this one even if you skip the window above.**
+
+1. **Engine census (v3.0-111):** re-copy `deploy/staleness.py`. The union-leg ACCEPT
+   door (v3.0.39) now exits the conservation census: an operator union set-aside closes
+   the pending pair on every covered view. Before this, accepting left the event
+   pending forever and census green was unreachable. Self-test 117/117.
+2. **The scanner, actually installed (v3.0-112):** re-copy `deploy`-adjacent perimeter
+   files `core/security/hooks/scan-staged-secrets.sh` (battery 47/47 — the update flow
+   is now pinned: reinstall the hook BEFORE committing a scanner update) and the
+   `/doctor` skill (new `precommit-scanner` check: WARNs when the installed hook is
+   absent or stale — run it now; most instances that instantiated before this release
+   will WARN, and the FIX line is one `cp`). Init now runs `git init` itself when
+   needed so a fresh instance's FIRST commit is scanned; `core/onboarding/UPDATING.md`
+   gains the reinstall-on-update section.
+3. **Honest clocks (v3.0-116a):** re-copy `deploy/check-triggers.py` — `file_age` now
+   reads the newest commit date touching the path (mtime only outside git, and it says
+   so), so a clone/checkout no longer silently resets freshness triggers. Self-test
+   25/25.
+4. **Registers lit (v3.0-115):** copy `deploy/deadline-register.yaml.example` →
+   `deploy/deadline-register.yaml` and `deploy/verify-routing-register.yaml.example` →
+   `deploy/verify-routing-register.yaml` if you don't have live ones (init now does
+   this for fresh instances). The deadline scaffold reports honestly empty until you
+   add clocks; the verify-routing rows are instance-generic and work verbatim.
+5. **The briefing validators get their seed (v3.0-114):** copy the template's
+   `capabilities/knowledge-os/extracted/manifests/` to `manifests/` at your root (init
+   now wires it). Until you do, `check-briefing-format --self-test` is an honest NOTE
+   no-op; after, its 30-row exemplar/defect battery actually runs.
+6. **Windows note (v3.0-113):** if your instance was created by `init.ps1`, check
+   `project.yaml` for mojibake (`â€"` where an em-dash should be) — the stamping block
+   read the file in the wrong encoding on every fresh ps1 instantiation. Fix is a
+   hand-repair of the garbled characters (compare `project.yaml.example`); the
+   installer is fixed going forward.
+
 ## v3.0.40 → v3.0.41 (the scanner's own file is scanned after all — known-own-lines)
 
 One file, no **[your call]** entries — a perimeter re-tightening found by the pre-cutover

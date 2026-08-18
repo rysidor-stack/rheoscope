@@ -397,7 +397,11 @@ $migrationMap = @{
         @{ src = 'capabilities/knowledge-os/extracted/wiki-schema.md'; dst = 'docs/wiki-schema.md' },
         @{ src = 'capabilities/knowledge-os/extracted/deploy';        dst = 'deploy' },
         @{ src = 'capabilities/knowledge-os/extracted/discover';      dst = '.claude/skills/discover' },
-        @{ src = 'capabilities/knowledge-os/extracted/engine';        dst = 'docs/engine' }
+        @{ src = 'capabilities/knowledge-os/extracted/engine';        dst = 'docs/engine' },
+        # v3.0-114: check-briefing-format's exemplar/defect battery seeds from
+        # manifests/sweep-briefing/source/ -- absent, it was a no-op on every
+        # instance. Identical entry in init.sh's wire_copy list.
+        @{ src = 'capabilities/knowledge-os/extracted/manifests';     dst = 'manifests' }
     )
     'stress-testing' = @()
     'code-conventions' = @(
@@ -533,6 +537,17 @@ foreach ($cap in $validCaps) {
             Copy-Item $trigRegExample $trigRegPath
             Info "created (live from example): deploy/trigger-register.yaml"
         }
+        # v3.0-115: the trigger register's two siblings, same pattern (deadline
+        # scaffold honest-empty until the operator adds clocks; verify-routing rows
+        # instance-generic). Identical to init.sh.
+        foreach ($regName in @('deadline-register', 'verify-routing-register')) {
+            $regPath = Join-Path $scriptRoot ("deploy/$regName.yaml")
+            $regExample = Join-Path $scriptRoot ("deploy/$regName.yaml.example")
+            if ((-not (Test-Path $regPath)) -and (Test-Path $regExample)) {
+                Copy-Item $regExample $regPath
+                Info "created (live from example): deploy/$regName.yaml"
+            }
+        }
     }
 
     # Capability-internal deferred recipes
@@ -626,7 +641,13 @@ $releaseTagPath = Join-Path $scriptRoot 'RELEASE'
 $releaseTag = if (Test-Path $releaseTagPath) { (Get-Content $releaseTagPath -Raw).Trim() } else { '' }
 if (-not $releaseTag) { $releaseTag = 'v' + (Get-Content (Join-Path $scriptRoot 'VERSION') -Raw).Trim() }
 $projectYamlPath = Join-Path $scriptRoot 'project.yaml'
-$projectYamlText = Get-Content $projectYamlPath -Raw
+# v3.0-113: -Encoding UTF8 is LOAD-BEARING. Windows PowerShell 5.1 reads a no-BOM
+# file as ANSI without it; this block always rewrites the file (the stamp guard
+# always fires on the example's empty values) and Write-FileNoBom writes UTF-8,
+# so the missing flag mojibaked every non-ASCII byte in project.yaml on every
+# fresh instantiation (2026-08-17 defect-class hunt; hidden because the .ps1 had
+# only ever been parse-checked, never run for a receipt).
+$projectYamlText = Get-Content $projectYamlPath -Raw -Encoding UTF8
 $stampChanged = $false
 if ($projectYamlText -notmatch '(?m)^template_source:\s*".+"') {
     $stampChanged = $true
@@ -718,10 +739,21 @@ if (Test-Path $hooksDst) {
         # (warn instead -- composing with someone's hook is their call, not init's).
         $scannerSrc = Join-Path $scriptRoot 'core/security/hooks/scan-staged-secrets.sh'
         $precommitDst = Join-Path $scriptRoot '.git/hooks/pre-commit'
+        # v3.0-112: the documented happy path ran `git init` AFTER init, so this
+        # branch always warned-and-skipped and the first commit ran unscanned.
+        # When the folder is not yet a repo, init now runs `git init` itself --
+        # safe on a fresh directory, idempotent when the operator re-runs it per
+        # the printed next steps. Identical to init.sh.
+        if ((-not (Test-Path (Join-Path $scriptRoot '.git'))) -and (Test-Path $scannerSrc) -and (Get-Command git -ErrorAction SilentlyContinue)) {
+            git -C $scriptRoot init -q 2>$null
+            if (Test-Path (Join-Path $scriptRoot '.git')) {
+                Info "git repository initialized (v3.0-112: the commit scanner must exist before the first commit does)"
+            }
+        }
         if (-not (Test-Path $scannerSrc)) {
             Info "skip (source absent): core/security/hooks/scan-staged-secrets.sh"
         } elseif (-not (Test-Path (Join-Path $scriptRoot '.git'))) {
-            Write-Warning "commit scanning NOT installed -- this folder is not a git repository yet. After 'git init', copy core/security/hooks/scan-staged-secrets.sh to .git/hooks/pre-commit to turn it on."
+            Write-Warning "commit scanning NOT installed -- this folder is not a git repository yet (and 'git init' failed or git is unavailable). After 'git init', copy core/security/hooks/scan-staged-secrets.sh to .git/hooks/pre-commit to turn it on."
         } elseif (Test-Path $precommitDst) {
             Write-Warning "commit scanning NOT installed -- a pre-commit hook already exists at .git/hooks/pre-commit. To add secret scanning, chain core/security/hooks/scan-staged-secrets.sh from your existing hook, or replace it if it's not yours on purpose."
         } else {
@@ -745,10 +777,32 @@ if (Test-Path $capabilitiesDir) {
 
 # ---------- 8. Stamp metadata back to project.yaml ----------
 
+# v3.0-113(b), caught by v3.0.42's first-ever real init.ps1 stranger run: this step
+# used to re-serialize the WHOLE file from the parsed object (ConvertTo-Yaml $py) --
+# destroying every comment, reordering keys, and DISCARDING the template_source/
+# template_release stamps written to the TEXT above (the object predates them).
+# init.sh edits in place (yq eval -i / sed); this now does the targeted-edit
+# equivalent: re-read the post-stamp text, replace-or-append exactly two keys,
+# leave every other byte alone.
 $py.instantiated_date = $dict['instantiated_date']
 $py.instantiated_capabilities = $instantiatedCaps
-$yamlOut = ConvertTo-Yaml $py
-Write-FileNoBom -Path $projectYamlPath -Content $yamlOut
+$stampText = Get-Content $projectYamlPath -Raw -Encoding UTF8
+$dateLine = 'instantiated_date: "' + $dict['instantiated_date'] + '"'
+if ($stampText -match '(?m)^instantiated_date:') {
+    $stampText = $stampText -replace '(?m)^instantiated_date:.*$', $dateLine
+} else {
+    if (-not $stampText.EndsWith("`n")) { $stampText += "`n" }
+    $stampText += $dateLine + "`n"
+}
+$capsBlock = "instantiated_capabilities:`n"
+foreach ($c in $instantiatedCaps) { $capsBlock += "- $c`n" }
+if ($stampText -match '(?ms)^instantiated_capabilities:.*?(?=^\S|\z)') {
+    $stampText = $stampText -replace '(?ms)^instantiated_capabilities:.*?(?=^\S|\z)', $capsBlock
+} else {
+    if (-not $stampText.EndsWith("`n")) { $stampText += "`n" }
+    $stampText += $capsBlock
+}
+Write-FileNoBom -Path $projectYamlPath -Content $stampText
 
 # Consume VERSION: from here on, the project's single version source is
 # project.yaml.template_version (validated against VERSION above). Leaving a second

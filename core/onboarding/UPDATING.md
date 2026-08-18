@@ -58,3 +58,20 @@ instance logs its own. Both increment `v3.0-N` independently, so collisions are 
 when one happens, **your local entry renumbers** to `v3.0-local-N` with a provenance line
 (the template side never renumbers; shipped doctor FIX lines cite its numbers). New
 instance-local entries use `v3.0-local-N` from the start.
+
+## The pre-commit scanner rides updates by hand (v3.0-112)
+
+Adopting a newer template updates `core/security/hooks/scan-staged-secrets.sh` in your
+tree, but git hooks are per-clone and untracked: the RUNNING copy at
+`.git/hooks/pre-commit` stays whatever was installed the day it was installed. After any
+adoption that touches the scanner, reinstall it — **before** you commit the adoption
+(the ordering matters: the new scanner's own pattern table can trip the OLD installed
+hook; reinstalled first, the commit passes):
+
+```
+cp core/security/hooks/scan-staged-secrets.sh .git/hooks/pre-commit
+```
+
+(Chained hooks: refresh your chained copy instead.) `/doctor`'s `precommit-scanner`
+check verifies the installed hook is present and byte-current — a WARN there after an
+update means this step was missed.

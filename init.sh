@@ -404,6 +404,11 @@ for cap in "${VALID_CAPS[@]}"; do
             wire_copy "$SCRIPT_ROOT/capabilities/knowledge-os/extracted/deploy"          "$SCRIPT_ROOT/deploy"
             wire_copy "$SCRIPT_ROOT/capabilities/knowledge-os/extracted/discover"        "$SCRIPT_ROOT/.claude/skills/discover"
             wire_copy "$SCRIPT_ROOT/capabilities/knowledge-os/extracted/engine"          "$SCRIPT_ROOT/docs/engine"
+            # v3.0-114: without this entry check-briefing-format's exemplar/defect
+            # battery was a NOTE-and-exit-0 no-op on every instance (the seed lives
+            # under manifests/; neither shell copied it; the parity check compares
+            # the two maps to each other and could not see a shared omission).
+            wire_copy "$SCRIPT_ROOT/capabilities/knowledge-os/extracted/manifests"       "$SCRIPT_ROOT/manifests"
 
             # Empty-state artifacts (fixes day-1 misdetection, backlog W6-1): /flight-plan's
             # Step 0.6 knowledge-os detection reads wiki/HEALTH.md + wiki/REVIEW.md; without them
@@ -427,6 +432,19 @@ for cap in "${VALID_CAPS[@]}"; do
                 cp "$SCRIPT_ROOT/deploy/trigger-register.yaml.example" "$SCRIPT_ROOT/deploy/trigger-register.yaml"
                 info "created (live from example): deploy/trigger-register.yaml"
             fi
+            # v3.0-115: the same fix for the trigger register's two siblings (the
+            # v3.0-101(b) pattern, left half-done there): the deadline register so
+            # check-deadlines and the sweep's certified briefing category exist on
+            # day one (rows are project-specific -- the scaffold reports honestly
+            # empty until the operator adds clocks), and the verify-routing register
+            # whose example rows are instance-generic (the tier-promotion backstop
+            # for the 2026-07-29 incident class lights up with a verbatim copy).
+            for REG in deadline-register verify-routing-register; do
+                if [[ ! -e "$SCRIPT_ROOT/deploy/$REG.yaml" && -e "$SCRIPT_ROOT/deploy/$REG.yaml.example" ]]; then
+                    cp "$SCRIPT_ROOT/deploy/$REG.yaml.example" "$SCRIPT_ROOT/deploy/$REG.yaml"
+                    info "created (live from example): deploy/$REG.yaml"
+                fi
+            done
 
             mkdir -p "$SCRIPT_ROOT/wiki"
 
@@ -684,10 +702,21 @@ else
         # (warn instead -- composing with someone's hook is their call, not init's).
         SCANNER_SRC="$SCRIPT_ROOT/core/security/hooks/scan-staged-secrets.sh"
         PRECOMMIT_DST="$SCRIPT_ROOT/.git/hooks/pre-commit"
+        # v3.0-112: on the documented happy path `git init` came AFTER init, so this
+        # branch always warned-and-skipped and the first `git add -A` commit ran
+        # unscanned on every fresh instance (2026-08-17 defect-class hunt). When the
+        # folder is not yet a repo, init now runs `git init` itself -- safe on a fresh
+        # directory, idempotent if the operator runs it again per the printed next
+        # steps -- so the scanner is installed before any commit can exist.
+        if [[ ! -d "$SCRIPT_ROOT/.git" ]] && command -v git >/dev/null 2>&1 && [[ -f "$SCANNER_SRC" ]]; then
+            if git -C "$SCRIPT_ROOT" init -q 2>/dev/null; then
+                info "git repository initialized (v3.0-112: the commit scanner must exist before the first commit does)"
+            fi
+        fi
         if [[ ! -f "$SCANNER_SRC" ]]; then
             info "skip (source absent): core/security/hooks/scan-staged-secrets.sh"
         elif [[ ! -d "$SCRIPT_ROOT/.git" ]]; then
-            echo "WARNING: commit scanning NOT installed — this folder is not a git repository yet. After 'git init', copy core/security/hooks/scan-staged-secrets.sh to .git/hooks/pre-commit (and make it executable) to turn it on." >&2
+            echo "WARNING: commit scanning NOT installed — this folder is not a git repository yet (and 'git init' failed or git is unavailable). After 'git init', copy core/security/hooks/scan-staged-secrets.sh to .git/hooks/pre-commit (and make it executable) to turn it on." >&2
         elif [[ -e "$PRECOMMIT_DST" ]]; then
             echo "WARNING: commit scanning NOT installed — a pre-commit hook already exists at .git/hooks/pre-commit. To add secret scanning, chain core/security/hooks/scan-staged-secrets.sh from your existing hook, or replace it if it's not yours on purpose." >&2
         else

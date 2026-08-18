@@ -301,6 +301,28 @@ self_test() {
   else
     case_ "E2E: real hook-mediated DELETE-THEN-RE-ADD (verified A-shape) with embedded secret is refused" XX "shape=$readd_shape or commit succeeded"
   fi
+  # v3.0-112 rider (2026-08-17 hunt, shape 3 #1): the UPDATE path. MIGRATION's
+  # reinstall-BEFORE-commit ordering is load-bearing: with the new bytes already
+  # installed as the hook, committing the same new bytes as a MODIFICATION passes
+  # (every added line is in $0). The battery pins the flow so a recipe reorder
+  # can't silently resurrect the update self-block.
+  git -C "$e2e_repo" checkout -q -- . 2>/dev/null || true
+  printf '# a new pattern line: -----BEGIN FAKE UPDATE KEY-----\n' >> "$e2e_repo/.git/hooks/pre-commit"
+  cp "$e2e_repo/.git/hooks/pre-commit" "$e2e_repo/notes.md.update-src" 2>/dev/null || true
+  rm -f "$e2e_repo/notes.md.update-src"
+  # simulate: template shipped an updated scanner (adds a self-tripping line);
+  # adopter reinstalls FIRST (hook already updated above), then stages the same
+  # updated bytes at the canonical path and commits.
+  mkdir -p "$e2e_repo/core/security/hooks"
+  cp "$e2e_repo/.git/hooks/pre-commit" "$e2e_repo/core/security/hooks/scan-staged-secrets.sh"
+  git -C "$e2e_repo" add core/security/hooks/scan-staged-secrets.sh
+  total=$((total+1))
+  if git -C "$e2e_repo" commit -q -m update >/dev/null 2>&1; then
+    case_ "E2E: UPDATE with reinstall-first passes (recipe ordering is load-bearing and pinned)" ok
+  else
+    case_ "E2E: UPDATE with reinstall-first passes (recipe ordering is load-bearing and pinned)" XX "update commit refused"
+  fi
+
   # v3.0-110 through the REAL hook too: a secret pasted into an ordinary
   # already-tracked file is refused at an actual commit (round-2 demand).
   git -C "$e2e_repo" reset -q HEAD -- core/security/hooks/scan-staged-secrets.sh 2>/dev/null || true

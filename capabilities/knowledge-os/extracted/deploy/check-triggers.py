@@ -333,9 +333,30 @@ def evaluate(row, root, today):
         path = os.path.join(root, cond["path"])
         if not os.path.isfile(path):
             return True, "%s is absent (a missing freshness-class file is stale)" % cond["path"]
+        # v3.0-116(a): age from the newest COMMIT touching the path, not mtime --
+        # any clone/checkout/stash-pop rewrites mtime to "now", silently resetting
+        # every freshness clock and under-firing the trigger forever (the
+        # checkout-invariance convention project.py states, applied here).
+        # Outside a repo, or for an uncommitted file, fall back to mtime and SAY SO.
+        commit_iso = None
+        try:
+            r = subprocess.run(
+                ["git", "-C", root, "log", "-1", "--format=%cI", "--", cond["path"]],
+                capture_output=True, text=True, timeout=30)
+            if r.returncode == 0 and r.stdout.strip():
+                commit_iso = r.stdout.strip()
+        except Exception:
+            commit_iso = None
+        if commit_iso:
+            age = (now - datetime.fromisoformat(commit_iso).replace(tzinfo=None)).days
+            met = age > cond["days"]
+            return met, "%s last committed %d day(s) ago (threshold %d)" % (
+                cond["path"], age, cond["days"])
         age = (now - datetime.fromtimestamp(os.path.getmtime(path))).days
         met = age > cond["days"]
-        return met, "%s is %d day(s) old (threshold %d)" % (cond["path"], age, cond["days"])
+        return met, ("%s is %d day(s) old by MTIME (threshold %d; not in git -- "
+                     "mtime is checkout-fragile, commit the file to make this "
+                     "clock honest)" % (cond["path"], age, cond["days"]))
 
     if pred == "count_lines_matching":
         n, err = _count_matching_lines(root, cond["glob"], cond["regex"])
@@ -582,6 +603,36 @@ def self_test():
              (sorted(ids_met), sorted(ids_unmet)))
         case("file_age: fresh file unmet; absent file MET",
              "dp-fresh" in ids_unmet and "gone-stale" in ids_met)
+        dp_detail = next((r["detail"] for r in rep["unmet"] if r["id"] == "dp-fresh"), "")
+        case("file_age (v3.0-116a): outside git the fallback SAYS it is mtime-based",
+             "MTIME" in dp_detail, dp_detail)
+        # v3.0-116(a) checkout-invariance: a git-committed file whose COMMIT is
+        # old stays stale even when its mtime says "just now" (the checkout case).
+        gitbase = tempfile.mkdtemp()
+        try:
+            for c in (["init", "-q"], ["config", "user.email", "t@t"],
+                      ["config", "user.name", "t"]):
+                subprocess.run(["git", "-C", gitbase] + c, check=True,
+                               capture_output=True)
+            write(os.path.join(gitbase, "OLD.md"), "x\n")
+            env = dict(os.environ,
+                       GIT_AUTHOR_DATE="2026-01-01T00:00:00",
+                       GIT_COMMITTER_DATE="2026-01-01T00:00:00")
+            subprocess.run(["git", "-C", gitbase, "add", "OLD.md"],
+                           check=True, capture_output=True)
+            subprocess.run(["git", "-C", gitbase, "commit", "-q", "-m", "old"],
+                           check=True, capture_output=True, env=env)
+            os.utime(os.path.join(gitbase, "OLD.md"))  # mtime = NOW (the checkout lie)
+            reg2 = os.path.join(gitbase, "reg.yaml")
+            write(reg2, "rows:\n"
+                  + mkrow("old-by-commit", "{ predicate: file_age, path: OLD.md, days: 30 }"))
+            rep2 = build_report(reg2, gitbase, today=NOW)
+            case("file_age (v3.0-116a): commit date beats a freshly-touched mtime "
+                 "-- the checkout reset cannot silence the trigger",
+                 any(r["id"] == "old-by-commit" for r in rep2["met"]),
+                 rep2)
+        finally:
+            shutil.rmtree(gitbase, ignore_errors=True)
         case("count_lines_matching: 2 scan lines unmet at 10, MET at 2",
              "scan-low" in ids_unmet and "scan-met" in ids_met)
         case("marker_present: present MET, absent unmet",

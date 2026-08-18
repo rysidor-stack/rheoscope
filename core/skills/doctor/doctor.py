@@ -53,6 +53,11 @@ Checks (harness-v3.0/specs/template-self-truth-and-onboarding-brief-2026-07-10.m
                       (backlog v3.0-80; the dormant register retired 2026-08-08 -- the
                       dev-only drills it excused no longer ship).
   13. skill-adapters  deploy/gen-skill-adapters.py --check, when wired (backlog v3.0-79).
+  15. precommit-scanner  (v3.0-112, 2026-08-17) the commit scanner is INSTALLED at
+                      .git/hooks/pre-commit and byte-current with the shipped copy (or a
+                      deliberate chain naming it); WARN when absent/stale -- an instance
+                      that ran init before `git init`, or skipped a MIGRATION reinstall,
+                      otherwise runs unscanned forever with a green doctor.
   14. corpus-reachability  (v3.0.18, backlog v3.0-88) every execution corpus declared in
                       project.yaml -- the corpus_sources list, or the legacy singular
                       corpus_source + corpus_config -- is present and readable at its
@@ -422,6 +427,57 @@ def check_hooks_wired(ctx):
                    "settings.local.json present, valid JSON, both hooks wired with correct "
                    "matcher coverage (Bash + PowerShell for block-dangerous-bash.sh, "
                    "Edit/Write for block-env-writes.sh)")
+
+
+def check_precommit_scanner(ctx):
+    """Check 15 (v3.0-112, 2026-08-17 defect-class hunt): the commit scanner must
+    be INSTALLED and CURRENT, not just shipped. Before this check, an instance
+    whose init ran before `git init`, or that skipped a MIGRATION reinstall step,
+    ran no scanner (or a stale one) forever with 71 green checks. Compares the
+    installed hook's bytes to the shipped source; a differing hook that mentions
+    the scanner by name is treated as a deliberate chain, surfaced as a note.
+    WARN, never FAIL -- the scanner is defense-in-depth, not project correctness."""
+    src = ctx["root"] / "core" / "security" / "hooks" / "scan-staged-secrets.sh"
+    if not src.is_file():
+        return Result("SKIP", "precommit-scanner",
+                       "core/security/hooks/scan-staged-secrets.sh not shipped in this "
+                       "instance -- nothing to install (pre-v3.0.36 tree)")
+    gitdir = ctx["root"] / ".git"
+    if not gitdir.is_dir():
+        return Result("WARN", "precommit-scanner",
+                       "this folder is not a git repository, so the commit scanner cannot "
+                       "be installed and NO commit is scanned. FIX: git init, then "
+                       "cp core/security/hooks/scan-staged-secrets.sh .git/hooks/pre-commit")
+    hook = gitdir / "hooks" / "pre-commit"
+    if not hook.is_file():
+        return Result("WARN", "precommit-scanner",
+                       "no .git/hooks/pre-commit -- commits are NOT scanned for secrets "
+                       "(the agent --no-verify bar is guarding a scanner that isn't there). "
+                       "FIX: cp core/security/hooks/scan-staged-secrets.sh .git/hooks/pre-commit")
+    try:
+        same = hook.read_bytes() == src.read_bytes()
+    except OSError as e:
+        return Result("WARN", "precommit-scanner",
+                       "could not read the installed hook: %s" % e)
+    if same:
+        return Result("PASS", "precommit-scanner",
+                       "commit scanner installed at .git/hooks/pre-commit and byte-identical "
+                       "to the shipped core/security/hooks copy")
+    try:
+        chained = "scan-staged-secrets" in hook.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        chained = False
+    if chained:
+        return Result("PASS", "precommit-scanner",
+                       "pre-commit hook differs from the shipped scanner but references it "
+                       "by name -- reading it as a deliberate chain. Keep the chained copy "
+                       "current when adopting scanner updates.")
+    return Result("WARN", "precommit-scanner",
+                   ".git/hooks/pre-commit exists but is neither the shipped scanner nor a "
+                   "chain referencing it -- commits are NOT scanned for secrets. FIX: chain "
+                   "core/security/hooks/scan-staged-secrets.sh from your hook, or replace "
+                   "the hook if it isn't yours on purpose (it may also simply be STALE: "
+                   "re-copy after adopting a newer template).")
 
 def check_skill_drift(ctx):
     skills_dir = ctx["root"] / ".claude" / "skills"
@@ -907,6 +963,7 @@ def run_all(root, fast_selftests=False):
     add(_safe(check_jq, "jq", ctx))
     add(_safe(check_python_sensors, "python-sensors", ctx))
     add(_safe(check_hooks_wired, "hooks-wired", ctx))
+    add(_safe(check_precommit_scanner, "precommit-scanner", ctx))
     add(_safe(check_skill_drift, "skill-drift", ctx))
     add(_safe(check_derivation_gate, "derivation-gate", ctx))
     add(_safe(check_docs_stamps, "docs-stamps", ctx))
@@ -984,6 +1041,38 @@ def self_test():
         r = note(check_hooks_wired(ctx))
         check("hooks-wired: warn when one hook missing",
               r.status == "WARN" and "block-env-writes.sh" in r.detail)
+
+        # v3.0-112: precommit-scanner check, all four dispositions on real trees.
+        scan_src_dir = Path(ctx["root"]) / "core" / "security" / "hooks"
+        scan_src_dir.mkdir(parents=True, exist_ok=True)
+        scan_src = scan_src_dir / "scan-staged-secrets.sh"
+        r = note(check_precommit_scanner(ctx))
+        check("precommit-scanner: SKIP when the scanner isn't shipped",
+              r.status == "SKIP")
+        scan_src.write_text("#!/bin/sh\n# the shipped scanner bytes\n", encoding="utf-8")
+        r = note(check_precommit_scanner(ctx))
+        check("precommit-scanner: warn when not a git repo (nothing scans)",
+              r.status == "WARN" and "git init" in r.detail)
+        hooks_dir = Path(ctx["root"]) / ".git" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        r = note(check_precommit_scanner(ctx))
+        check("precommit-scanner: warn when repo has no pre-commit hook installed",
+              r.status == "WARN" and "pre-commit" in r.detail)
+        (hooks_dir / "pre-commit").write_text(
+            "#!/bin/sh\n# the shipped scanner bytes\n", encoding="utf-8")
+        r = note(check_precommit_scanner(ctx))
+        check("precommit-scanner: PASS when installed hook is byte-identical",
+              r.status == "PASS")
+        (hooks_dir / "pre-commit").write_text(
+            "#!/bin/sh\nmy own hook\nbash core/security/hooks/scan-staged-secrets.sh\n",
+            encoding="utf-8")
+        r = note(check_precommit_scanner(ctx))
+        check("precommit-scanner: a differing hook that NAMES the scanner reads as a chain",
+              r.status == "PASS" and "chain" in r.detail)
+        (hooks_dir / "pre-commit").write_text("#!/bin/sh\nunrelated hook\n", encoding="utf-8")
+        r = note(check_precommit_scanner(ctx))
+        check("precommit-scanner: warn on a foreign/stale hook (commits unscanned)",
+              r.status == "WARN" and "STALE" in r.detail)
 
         (claude_dir / "settings.local.json").write_text(
             json.dumps({"hooks": {"PreToolUse": [

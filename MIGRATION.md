@@ -255,6 +255,34 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
    are EXPECTED in the record's `refused[]` under G6; those refusals appearing is part
    of the acceptance, not a failure.
 
+## v3.0.42 → v3.0.43 (the egress ask stops taxing local one-liners)
+
+One hook + its docs, no **[your call]** entries — an operator-ratified tuning of the ASK
+tier (backlog v3.0-124, ratified 2026-08-18: prompt fatigue on provably-local interpreter
+one-liners trains a reflexive Allow, which erodes the tier it was meant to strengthen).
+
+1. **Re-copy the hook** (shell copy, upstream-authored bytes):
+   `core/security/hooks/block-dangerous-bash.sh`. Inline `py/python/python3 -c` and
+   `node -e` now ASK only when the command carries a network-shaped token (`urllib`,
+   `requests`, `socket`, `http(s)`, `fetch`, `axios`, `require(net|http|tls|dgram)`, …,
+   matched quote-normalized); a local one-liner (`py -c "import json; …"`) passes
+   silently. Named tools (`curl`/`wget`/`nc`/PowerShell cmdlets) ask exactly as before;
+   the DENY tier is byte-untouched. Honest boundary: this NARROWS ask coverage — a
+   token-absent egress spelling that previously prompted now passes; that regression
+   IS the ratified trade (prompt fatigue was training a reflexive Allow), and the
+   token list is a floor of common spellings, not an enumeration.
+2. **Fixtures:** copy the two new passing fixtures
+   `core/security/hooks/test-inputs/test-py-c-local-passing.json` and
+   `test-node-e-local-passing.json` (the ASK-direction fixtures `test-py-c.json` /
+   `test-node-e.json` already carry network tokens and are unchanged).
+3. **Verify the copy in one command** (new in v3.0.43): `bash
+   core/security/hooks/block-dangerous-bash.sh --self-test` → expect
+   `84 passed, 0 failed`. The driver is embedded in the hook (the sibling pattern to
+   `scan-staged-secrets.sh --self-test`) and is intercepted before the stdin read, so
+   the PreToolUse path is byte-unaffected. A count below 84 means the fixture copy in
+   step 2 is incomplete.
+4. **Restart Claude Code** after copying — hooks load at session start.
+
 ## v3.0.41 → v3.0.42 (the class-hunt six: census exit for the accept door, the scanner actually installed, honest clocks and lit registers)
 
 The 2026-08-17 pre-cutover defect-class hunt's fix-first set. No **[your call]** entries;

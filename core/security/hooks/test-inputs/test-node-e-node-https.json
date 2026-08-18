@@ -1,0 +1,1 @@
+{ "tool_input": { "command": "node -e \"import https from 'node:https'; https.get(u)\"" } }

@@ -26,6 +26,133 @@
 # file. Consulted by the ASK tier only; the DENY tier ignores it.
 set -euo pipefail
 
+# --------------------------------------------------------------- SELF-TEST
+# `bash block-dangerous-bash.sh --self-test` (v3.0.43, the cross-vendor leg's
+# round-7 demand: the fixtures were committed but their DRIVER and expectations
+# lived only in README prose, so no one could run the board in one command the
+# way `scan-staged-secrets.sh --self-test` already allowed). Two phases: an
+# embedded case table (self-contained, survives fixture-dir loss) and a pass
+# over every committed fixture against its pinned expectation. Intercepted
+# BEFORE the stdin read, so the PreToolUse path is byte-unaffected.
+if [ "${1:-}" = "--self-test" ]; then
+  SELF_PATH="${BASH_SOURCE[0]}"
+  SELF_DIR=$(cd "$(dirname "$SELF_PATH")" && pwd)
+  pass=0; fail=0
+  # rc is captured on the line AFTER the assignment and NOTHING may intervene --
+  # an intervening command clobbers $? (this bit the v3.0.43 evidence script).
+  run_case() {
+    expect="$1"; cmd="$2"; label="$3"
+    json=$(jq -n --arg c "$cmd" '{tool_input:{command:$c}}')
+    set +e
+    out=$(printf '%s' "$json" | bash "$SELF_PATH" 2>/dev/null)
+    rc=$?
+    set -e
+    kind=silent
+    [ "$rc" -eq 2 ] && kind=DENY
+    [ -n "$out" ] && kind=ASK
+    if [ "$kind" = "$expect" ]; then
+      pass=$((pass+1))
+    else
+      fail=$((fail+1))
+      echo "FAIL [$label] expected=$expect got=$kind rc=$rc" >&2
+    fi
+  }
+
+  # -- DENY tier (destructive + agent commit-bypass, incl. global-option/quoted)
+  run_case DENY 'rm -rf /' 'rm-rf-root'
+  run_case DENY 'git reset --hard origin/main' 'git-reset-hard'
+  run_case DENY 'git commit --no-verify -m x' 'commit-no-verify'
+  run_case DENY 'git commit -n -m x' 'commit-n-alias'
+  run_case DENY 'git -C /repo commit --no-verify -m x' 'commit-global-option'
+  run_case DENY 'git -c user.name=x commit -n -m y' 'commit-global-config'
+  run_case DENY "git 'commit' --no-verify -m x" 'commit-quoted'
+  run_case DENY 'Remove-Item -Recurse -Force C:\' 'removeitem-root'
+  run_case DENY 'Remove-Item -Recurse -Force /' 'removeitem-posix-root'
+  # -- DENY negatives (the words that must NOT match)
+  run_case silent 'git commit -m "fix the parser"' 'commit-passing'
+  # The DOCUMENTED accepted false positive (v3.0.36 deny-over-ask trade): a commit
+  # MESSAGE containing -n trips the bypass pattern. Pinned so the trade stays a
+  # deliberate, visible choice rather than a surprise someone "fixes" unknowingly.
+  run_case DENY 'git commit -m "fix -n handling"' 'commit-msg-dash-n-accepted-fp'
+  run_case silent 'git commit-tree -n abc123' 'commit-tree-passing'
+  run_case silent 'git push -n origin main' 'push-dry-run'
+  run_case silent 'Remove-Item -Recurse -Force ./build' 'removeitem-relative'
+  run_case silent 'Remove-Item ./one-file.txt' 'removeitem-single-file'
+  run_case silent 'ls -la && echo done' 'plain-passing'
+  # -- ASK tier: named egress tools (unconditional, unchanged by v3.0.43)
+  run_case ASK 'curl -s https://api.example.com/v1' 'curl'
+  run_case ASK "curl -s 'https://api.example.com/v1'" 'curl-quoted'
+  run_case ASK 'wget https://example.com/f.tar' 'wget'
+  run_case ASK 'nc -l 4444' 'nc'
+  run_case ASK 'netcat host 80' 'netcat'
+  run_case ASK 'Invoke-WebRequest -Uri https://example.com' 'ps-iwr-cmdlet'
+  run_case ASK 'iwr https://example.com -OutFile f' 'ps-iwr-alias'
+  run_case ASK 'Invoke-RestMethod https://example.com/api' 'ps-irm'
+  # -- ASK tier: inline interpreters WITH a network token (v3.0.43 fire direction)
+  run_case ASK 'python -c "import urllib.request; urllib.request.urlopen(u)"' 'py-urllib'
+  run_case ASK 'py -c "import requests; requests.get(u)"' 'py-requests'
+  run_case ASK 'py -c "import socket as s; s.create_connection((h,80))"' 'py-socket'
+  run_case ASK 'python -c "from http import client; client.HTTPConnection(h)"' 'py-from-http-import'
+  run_case ASK 'python -c "from multiprocessing.connection import Client; Client((h,80))"' 'py-mp-connection'
+  run_case ASK 'python -c "from asyncio import open_connection; open_connection(h,80)"' 'py-asyncio-open-connection'
+  run_case ASK 'py -c "import ssl; ssl.create_default_context()"' 'py-ssl'
+  run_case ASK 'python -c "import asyncore; asyncore.loop()"' 'py-asyncore'
+  run_case ASK 'node -e "require(\"http\").get(u)"' 'node-http'
+  run_case ASK "node -e \"import https from 'node:https'; https.get(u)\"" 'node-node-https'
+  run_case ASK "node -e \"import {connect} from 'tls'; connect(443,h)\"" 'node-import-from-tls'
+  run_case ASK "node -e \"import dns from 'dns/promises'; dns.resolve(h)\"" 'node-dns-promises'
+  run_case ASK 'node -e "fetch(process.argv[1])"' 'node-fetch'
+  # -- allow-silent: inline interpreters with NO network token (the v3.0.43 point)
+  run_case silent 'py -c "import json; d=json.load(open(\"x.json\")); print(d)"' 'py-local-json'
+  run_case silent 'python3 -c "import re,sys; print(len(sys.stdin.read()))"' 'py-local-re-sys'
+  run_case silent 'py -c "import struct; print(struct.calcsize(fmt))"' 'py-local-struct'
+  run_case silent "node -e \"const fs=require('fs'); console.log(fs.readFileSync(p).length)\"" 'node-local-fs'
+  run_case silent "node -e \"import fs from 'node:fs'; console.log(fs.statSync(p).size)\"" 'node-local-node-fs'
+  run_case silent 'python build.py --release' 'py-script-not-inline'
+
+  # -- Phase 2: every committed fixture against its pinned expectation.
+  fixture_expect() {
+    case "$1" in
+      test-rm-rf.json|test-git-reset-hard.json|test-git-commit-no-verify.json|\
+test-git-commit-n-alias.json|test-git-C-commit-no-verify.json|\
+test-git-config-commit-n-alias.json|test-git-quoted-commit-no-verify.json|\
+test-ps-removeitem-root.json|test-ps-removeitem-root-alias.json|\
+test-ps-removeitem-root-path-flag.json|test-ps-removeitem-posix-root.json) echo DENY ;;
+      test-a-curl.json|test-quoted-curl-ask.json|test-wget.json|test-nc.json|\
+test-netcat.json|test-ps-invoke-webrequest.json|test-ps-iwr.json|\
+test-py-c.json|test-node-e.json|test-py-c-from-http-import.json|\
+test-node-e-node-https.json) echo ASK ;;
+      *) echo silent ;;   # every *-passing fixture, the env-guard fixtures, and
+                          # the two v3.0.43 local one-liners
+    esac
+  }
+  if [ -d "$SELF_DIR/test-inputs" ]; then
+    for f in "$SELF_DIR"/test-inputs/*.json; do
+      b=$(basename "$f")
+      exp=$(fixture_expect "$b")
+      set +e
+      out=$(bash "$SELF_PATH" < "$f" 2>/dev/null)
+      rc=$?
+      set -e
+      kind=silent
+      [ "$rc" -eq 2 ] && kind=DENY
+      [ -n "$out" ] && kind=ASK
+      if [ "$kind" = "$exp" ]; then
+        pass=$((pass+1))
+      else
+        fail=$((fail+1))
+        echo "FAIL [fixture $b] expected=$exp got=$kind rc=$rc" >&2
+      fi
+    done
+  else
+    echo "NOTE: test-inputs/ absent -- embedded cases only" >&2
+  fi
+
+  echo "block-dangerous-bash self-test: $pass passed, $fail failed"
+  [ "$fail" -eq 0 ] || exit 1
+  exit 0
+fi
+
 INPUT=$(cat)
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // ""')
 # Quote-normalized twin for pattern matching (v3.0.41, cross-vendor catch): shell
@@ -105,10 +232,50 @@ ASK_PATTERNS=(
   'inline node|(^|[[:space:]`$(])node[[:space:]]+-e'
 )
 
+# Inline-interpreter refinement (v3.0.43, backlog v3.0-124 -- operator-ratified
+# 2026-08-18): the named tools above exist to reach the network, so they always
+# ask; an interpreter one-liner only MIGHT. Asking on every `py -c` taxed the
+# operator with false positives on provably-local commands (a json.load of a
+# local file drew the same prompt as an exfiltration), and prompt fatigue is
+# itself a perimeter cost: it trains a reflexive Allow. So the inline entries
+# ask ONLY when the command carries a network-shaped token, matched against the
+# NORMALIZED string so quoting games don't hide one.
+# STATED HONESTLY (cross-vendor round-4 correction): this NARROWS ASK coverage.
+# Pre-v3.0.43, every inline -c/-e spelling fired the ask, token or no token; now a
+# token-absent egress spelling (exotic stdlib API, composed import) passes silently
+# where it previously prompted. That is a deliberate, operator-ratified LOOSENING
+# (v3.0-124, 2026-08-18) -- the same trade class as v3.0.33's deny->ask -- bought
+# to end false-positive prompt fatigue, which was training a reflexive Allow. The
+# floor comment below bounds what the gate still promises.
+# Token-list bias is WIDE on purpose: over-ask costs one prompt, under-ask misses
+# egress. "http" rides bare (cross-vendor round-1 catch, 2026-08-18: the dotted form
+# missed `https.get`, `node:https`, `http2`, `from http import client`); the four
+# builtin module names ride word-bounded bare (round-2 catch: dotted/prefixed forms
+# missed `import {connect} from 'tls'` and `dns/promises`), which subsumes the
+# node:/require() spellings in every quoting; the connection-verb group (round-2
+# catch: `from asyncio import open_connection` names no module token at all).
+# `node:fs`/`require(fs)` stay local and silent -- fs is not in the token list.
+NET_TOKEN_RE='urllib|requests|http|socket|ftplib|smtplib|poplib|imaplib|telnetlib|websocket|pycurl|paramiko|xmlrpc|fetch[[:space:](]|axios|xmlhttprequest|open_connection|create_connection|getaddrinfo|multiprocessing\.connection|asyncore|\b(net|tls|dgram|dns|ssl)\b'
+# The token list is a FLOOR, not an enumeration (cross-vendor round-3 adjudication,
+# 2026-08-18): the stdlib egress-API surface is unbounded (round 3's
+# multiprocessing.connection is folded above; its class is not closeable by listing).
+# The gate's contract is the common spellings an injected prompt or a convenience
+# habit would actually produce. Spellings outside the floor previously DID prompt
+# and now do not -- that regression is the ratified trade (above), accepted because
+# an ASK prompt informs the operator but never binds a deliberate composer, and a
+# prompt stream that is mostly noise stops informing anyone.
+
 for entry in "${ASK_PATTERNS[@]}"; do
   label="${entry%%|*}"
   pat="${entry#*|}"
   if echo "$COMMAND_NORM" | grep -Eqi "$pat"; then
+    case "$label" in
+      "inline python"|"inline node")
+        if ! echo "$COMMAND_NORM" | grep -Eqi "$NET_TOKEN_RE"; then
+          continue
+        fi
+        ;;
+    esac
     # Standing allowance? (operator-committed file; ASK tier only)
     if [ -f "$ALLOWLIST" ]; then
       while IFS= read -r line || [ -n "$line" ]; do

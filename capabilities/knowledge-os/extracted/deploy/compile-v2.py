@@ -1238,8 +1238,9 @@ def _absorption_trigger_state(repo, compile_seq):
 
     Returns {view: {"last_verified_seq": int|None,
     "last_verified_view_sha256": str|None, "last_verified_commit": str|None,
-    "last_verified_kind": "machine-verified"|"adjudicated"|None,
-    "last_verified_at": str|None,
+    "last_verified_kind": "machine-verified"|"adjudicated"|
+                          "baseline-reset"|None,
+    "last_verified_at": str|None, "last_verified_provenance": str|None,
     "first_pre_blob": str, "first_pre_seq": int|None,
     "absorbed_seqs": [seq...] sorted}}.
 
@@ -1271,7 +1272,27 @@ def _absorption_trigger_state(repo, compile_seq):
     honest diff base for the next update -- otherwise a set-aside view diffs
     from birth forever. The stamp kind is carried ("adjudicated" vs
     "machine-verified") so the verify packet names what the baseline is; a
-    bare rejection with no ruling advances NOTHING."""
+    bare rejection with no ruling advances NOTHING.
+
+    UNION ADJUDICATIONS ARE SKIPPED (v3.0.39 / v3.0-105, the cross-check
+    correction made code). A union-leg set-aside journals an
+    absorption_adjudicated[] entry whose `view` is the pseudo-view string
+    `union:<event>` and which carries `union_event` -- it pins no content
+    (no baseline_commit / view_sha256), because a union leg absorbed
+    nothing. This reader MUST skip such entries: without the skip it would
+    mint and advance a state entry keyed by the `union:` string, and
+    nothing enforces that the `union:` namespace is disjoint from real
+    view paths. The skip keys on the `union_event` field, not on a string
+    prefix -- a real view path that happened to begin with `union:` still
+    gets its baseline tracked correctly.
+
+    BASELINE-RESET RUNG (v3.0.39 / v3.0-106). An operator baseline reset
+    (`compile-driver.py --baseline-reset`, journaled as baseline_reset[])
+    is the ladder's third rung: it advances the baseline to the view's
+    content at a NAMED out-of-engine refresh commit, kind "baseline-reset",
+    competing newest-by-journal-seq with the other two rungs exactly as
+    machine-verified and adjudicated compete with each other. The entry's
+    provenance is carried so the packet can name it out loud."""
     reverted = set()
     for _seq, rec in _iter_all_journal_records(repo):
         dr = rec.get("driver_revert")
@@ -1285,6 +1306,7 @@ def _absorption_trigger_state(repo, compile_seq):
                 "last_verified_commit": None,
                 "last_verified_kind": None,
                 "last_verified_at": None,
+                "last_verified_provenance": None,
                 "first_pre_blob": "", "first_pre_seq": None,
                 "absorbed_seqs": []}
 
@@ -1311,7 +1333,15 @@ def _absorption_trigger_state(repo, compile_seq):
                 st["last_verified_commit"] = av.get("verify_commit")
                 st["last_verified_kind"] = "machine-verified"
                 st["last_verified_at"] = av.get("verified_at")
+                st["last_verified_provenance"] = None
         for aj in rec.get("absorption_adjudicated", []):
+            # v3.0-105 REQUIRED skip (cross-check correction): a union-leg
+            # adjudication (entry carries `union_event`, view is the
+            # pseudo-view `union:<event>`) pins no content and must never
+            # mint or advance a state entry -- keyed on the FIELD, never on
+            # a string prefix (namespace disjointness is unenforced).
+            if aj.get("union_event"):
+                continue
             v = aj.get("view")
             if not v:
                 continue
@@ -1322,6 +1352,22 @@ def _absorption_trigger_state(repo, compile_seq):
                 st["last_verified_commit"] = aj.get("baseline_commit")
                 st["last_verified_kind"] = "adjudicated"
                 st["last_verified_at"] = aj.get("at")
+                st["last_verified_provenance"] = None
+        for br in rec.get("baseline_reset", []):
+            # v3.0-106: the ladder's third rung -- an operator baseline
+            # reset at a named out-of-engine refresh commit, competing
+            # newest-by-journal-seq with the other two rungs.
+            v = br.get("view")
+            if not v:
+                continue
+            st = state.setdefault(v, _blank())
+            if st["last_verified_seq"] is None or seq > st["last_verified_seq"]:
+                st["last_verified_seq"] = seq
+                st["last_verified_view_sha256"] = br.get("view_sha256")
+                st["last_verified_commit"] = br.get("refresh_commit")
+                st["last_verified_kind"] = "baseline-reset"
+                st["last_verified_at"] = br.get("at")
+                st["last_verified_provenance"] = br.get("provenance")
     for st in state.values():
         st["absorbed_seqs"].sort()
     return state
@@ -1415,6 +1461,13 @@ def _cumulative_diff(repo, view, current_body, state):
                      "machine-verified -- journal seq %d)"
                      % (st.get("last_verified_at") or "(date unrecorded)",
                         lvs))
+    elif st.get("last_verified_kind") == "baseline-reset":
+        # v3.0-106, named in the v3.0-67 out-loud style: the checker must
+        # never have to guess what the "before" is.
+        base_line = ("(baseline: reset to imported snapshot by operator "
+                     "ruling, not machine-verified -- %s, journal seq %d)"
+                     % (st.get("last_verified_provenance")
+                        or "(provenance unrecorded)", lvs))
     else:
         base_line = ("(baseline: last machine-verified state, journal seq "
                      "%d)" % lvs)
@@ -4336,6 +4389,142 @@ def self_test():
              and "original sa2 body" not in "".join(
                  ln for ln in diff_j.splitlines()
                  if ln.startswith("+")))
+
+        # ================== v3.0.39: union skip + baseline-reset (105/106)
+        # The cross-check correction made operational: a union-leg set-aside
+        # record (view = `union:<event>`, carries union_event, NO pin
+        # fields) must never mint or advance a trigger-state entry.
+        u_adj = core.minimal_record("verify-adjudication",
+                                    _git(base, "rev-parse", "HEAD").strip())
+        u_adj["run_window"] = {"start": "t0", "end": "t1"}
+        u_adj["absorption_adjudicated"] = [{
+            "view": "union:raw/scoped/eu.md",
+            "union_event": "raw/scoped/eu.md",
+            "union_views": ["wiki/scoped/su.md"],
+            "event_sha256": "e" * 64,
+            "union_view_sha256": {"wiki/scoped/su.md": "f" * 64},
+            "adjudicates_seq": res_d["seq"], "at": "2026-08-16T12:00:00",
+            "ruling": "union fixture ruling", "adjudicated_by": "operator",
+            "rejected_artifact": "receipts/verify/noop-fixture.json"}]
+        core.append_record(base, u_adj)
+        st_u = _absorption_trigger_state(base, 10 ** 6)
+        case("v3.0-105 REQUIRED skip: a union adjudication record mints NO "
+             "trigger-state entry for its pseudo-view",
+             "union:raw/scoped/eu.md" not in st_u)
+        case("v3.0-105 REQUIRED skip: a union set-aside advances no view "
+             "baseline (su.md's stamp is untouched by the union record)",
+             (st_u.get("wiki/scoped/su.md") or {}).get("last_verified_kind")
+             == "machine-verified")
+        # Disjointness regression: the skip keys on the union_event FIELD,
+        # never on the `union:` string prefix -- a real view path that
+        # happened to begin with `union:` still gets its baseline tracked.
+        odd_adj = core.minimal_record("verify-adjudication",
+                                      _git(base, "rev-parse",
+                                           "HEAD").strip())
+        odd_adj["run_window"] = {"start": "t0", "end": "t1"}
+        odd_adj["absorption_adjudicated"] = [{
+            "view": "union:odd-but-real-path.md",
+            "adjudicates_seq": res_d["seq"], "at": "2026-08-16T12:01:00",
+            "ruling": "odd-path fixture ruling",
+            "adjudicated_by": "operator",
+            "baseline_commit": _git(base, "rev-parse", "HEAD").strip(),
+            "view_sha256": "a" * 64}]
+        core.append_record(base, odd_adj)
+        st_o = _absorption_trigger_state(base, 10 ** 6)
+        case("v3.0-105 disjointness regression: a PIN-BEARING entry whose "
+             "real path merely starts with 'union:' is still tracked "
+             "(the skip is field-keyed, not prefix-keyed)",
+             (st_o.get("union:odd-but-real-path.md") or {})
+             .get("last_verified_kind") == "adjudicated")
+
+        # --- v3.0-106: the baseline-reset rung -- wins by seq, packet
+        # names it out loud, recovery stays fail-honest, and a post-reset
+        # confirm supersedes it.
+        sa2_now = open(os.path.join(base, "wiki", "scoped", "sa2.md"),
+                       encoding="utf-8").read()
+        reset_commit = _git(base, "rev-parse", "HEAD").strip()
+        brec = core.minimal_record("baseline-reset", reset_commit)
+        brec["run_window"] = {"start": "t0", "end": "t1"}
+        brec["baseline_reset"] = [{
+            "view": "wiki/scoped/sa2.md", "at": "2026-08-16T13:00:00",
+            "refresh_commit": reset_commit,
+            "view_sha256": _sha256(sa2_now),
+            "provenance": "fixture corpus photograph, imported "
+                          "2026-08-16 outside the engine",
+            "ruling": "fixture reset ruling", "reset_by": "operator",
+            "driver": "deploy/compile-driver.py"}]
+        brec["refused"] = []
+        core.append_record(base, brec)
+        st_r = _absorption_trigger_state(base, 10 ** 6)
+        case("v3.0-106: the reset rung ADVANCES the ladder (newest by "
+             "journal seq beats the older machine-verified stamp), kind "
+             "baseline-reset, commit = the refresh commit",
+             (st_r.get("wiki/scoped/sa2.md") or {})
+             .get("last_verified_kind") == "baseline-reset"
+             and (st_r.get("wiki/scoped/sa2.md") or {})
+             .get("last_verified_commit") == reset_commit)
+        diff_r = _cumulative_diff(base, "wiki/scoped/sa2.md", sa2_now, st_r)
+        case("v3.0-106: the packet names the reset baseline in so many "
+             "words, provenance included",
+             "baseline: reset to imported snapshot by operator ruling, "
+             "not machine-verified -- fixture corpus photograph"
+             in diff_r)
+        # fail-honest recovery: a reset entry whose pinned sha disagrees
+        # with the recovered content must say so, never silently diff.
+        brec2 = core.minimal_record("baseline-reset",
+                                    _git(base, "rev-parse", "HEAD").strip())
+        brec2["run_window"] = {"start": "t0", "end": "t1"}
+        brec2["baseline_reset"] = [{
+            "view": "wiki/scoped/su.md", "at": "2026-08-16T13:05:00",
+            "refresh_commit": reset_commit,
+            "view_sha256": "0" * 64,
+            "provenance": "fixture bad-pin photograph",
+            "ruling": "fixture reset ruling", "reset_by": "operator",
+            "driver": "deploy/compile-driver.py"}]
+        brec2["refused"] = []
+        core.append_record(base, brec2)
+        st_bad = _absorption_trigger_state(base, 10 ** 6)
+        su_now = open(os.path.join(base, "wiki", "scoped", "su.md"),
+                      encoding="utf-8").read()
+        diff_bad = _cumulative_diff(base, "wiki/scoped/su.md", su_now,
+                                    st_bad)
+        case("v3.0-106: recovery stays fail-honest on a sha mismatch "
+             "(CUMULATIVE DIFF UNAVAILABLE, never a silent wrong base)",
+             "CUMULATIVE DIFF UNAVAILABLE" in diff_bad)
+        # a post-reset confirm supersedes the reset rung (newest by seq)
+        open(os.path.join(base, "raw", "scoped", "ek.md"), "w",
+             newline="\n").write("post-reset source: the kappa claim "
+                                 "text\n")
+        subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", base, "commit", "-qm", "ek fixture"],
+                       capture_output=True)
+        plan_k = {"items": [
+            {"view": "wiki/scoped/sa2.md", "events": ["raw/scoped/ek.md"],
+             "event_class": {"raw/scoped/ek.md": {
+                 "class": "t3", "origin": "explicit"}}}]}
+
+        class ResetUpdateBackend:
+            def absorb(self, view_rel, view_text, events):
+                new = (view_text.rstrip("\n")
+                       + "\n\n## Post Reset\nthe kappa claim text\n")
+                return {"new_text": new,
+                        "manifest": [{"event": e, "section": "Post Reset"}
+                                     for e in sorted(events)],
+                        "corpus_support": [], "noops": []}
+
+        res_k = run(base, plan_k, ResetUpdateBackend())
+        sv_backend_k = _GoodAttestBackend(confirm=True)
+        verify_run(base, res_k["seq"], sv_backend_k)
+        pk_k = sv_backend_k.calls[-1]
+        case("v3.0-106: the packet fired OVER the reset baseline names it "
+             "(integration: the run's own verify leg saw the reset rung)",
+             "baseline: reset to imported snapshot by operator ruling"
+             in pk_k)
+        st_k = _absorption_trigger_state(base, 10 ** 6)
+        case("v3.0-106: a post-reset confirm SUPERSEDES the reset rung "
+             "(the ladder never shadows the live verify lifecycle)",
+             (st_k.get("wiki/scoped/sa2.md") or {})
+             .get("last_verified_kind") == "machine-verified")
 
         # ===================================== verifier demotion (2026-08-09)
         # Record-time class normalization (unit) + the journaled leg fields

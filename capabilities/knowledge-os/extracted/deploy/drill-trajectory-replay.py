@@ -89,7 +89,8 @@ def _label_completed(label):
 # --------------------------------------------------------------- context + legs
 class Ctx(object):
     __slots__ = ("reverted", "revert_failed", "adjudicated", "covered_runs",
-                 "absorbs_by_view", "confirmed_cover")
+                 "absorbs_by_view", "confirmed_cover", "adjudicated_pins",
+                 "baseline_resets")
 
 
 def trajectory_context(recs):
@@ -100,6 +101,14 @@ def trajectory_context(recs):
     ctx.absorbs_by_view = {}                   # view -> [run seq, ...]
     ctx.confirmed_cover = {}                   # (run seq, view) -> newest
     #                                            verify seq holding a stamp
+    ctx.adjudicated_pins = {}                  # view -> (journal seq, run seq)
+    #                                            newest PIN-BEARING (non-union)
+    #                                            adjudication (v3.0-105: union
+    #                                            entries carry union_event and
+    #                                            pin no content -- the
+    #                                            REQUIRED baseline skip)
+    ctx.baseline_resets = {}                   # view -> newest reset journal
+    #                                            seq (v3.0-106)
     for seq in sorted(recs):
         rec = recs[seq]
         dr = rec.get("driver_revert")
@@ -111,6 +120,12 @@ def trajectory_context(recs):
         for adj in rec.get("absorption_adjudicated") or []:
             if isinstance(adj.get("adjudicates_seq"), int):
                 ctx.adjudicated.add((adj["adjudicates_seq"], adj.get("view")))
+                if not adj.get("union_event"):
+                    ctx.adjudicated_pins[adj.get("view")] = (
+                        seq, adj["adjudicates_seq"])
+        for br in rec.get("baseline_reset") or []:
+            if br.get("view"):
+                ctx.baseline_resets[br["view"]] = seq
         if isinstance(rec.get("verifies_seq"), int):
             ctx.covered_runs.add(rec["verifies_seq"])
             for av in rec.get("absorption_verified") or []:
@@ -209,17 +224,31 @@ def matching_states(leg, ctx):
 
 
 def derive_baseline(view, ctx, classified):
-    """Section 7 / v3.0-67 order: last machine-verified state; else last
-    operator-adjudicated state; else the view's real pre-absorb content --
-    reverted runs' ghosts excluded by construction (a VERIFIED classification
-    already requires the run not be reverted)."""
+    """Section 7 / v3.0-67 ladder: the newest (by journal seq) of last
+    machine-verified state, last operator-adjudicated state, and last
+    operator baseline-reset (v3.0-106); else the view's real pre-absorb
+    content -- reverted runs' ghosts excluded by construction (a VERIFIED
+    classification already requires the run not be reverted). Union
+    adjudication entries are EXCLUDED by construction (v3.0-105, the
+    REQUIRED skip): ctx.adjudicated_pins carries only pin-bearing entries
+    (no `union_event`), so a union set-aside can never advance any view's
+    baseline here."""
+    candidates = []
     ver = [leg["run_seq"] for leg, st in classified
            if leg["view"] == view and st == "VERIFIED"]
     if ver:
-        return ("machine-verified", max(ver))
-    adj = [n for (n, vv) in ctx.adjudicated if vv == view]
-    if adj:
-        return ("adjudicated", max(adj))
+        ver_j = max([j for (n, vv), j in ctx.confirmed_cover.items()
+                     if vv == view] or [-1])
+        candidates.append((ver_j, "machine-verified", max(ver)))
+    if view in ctx.adjudicated_pins:
+        jseq, run_seq = ctx.adjudicated_pins[view]
+        candidates.append((jseq, "adjudicated", run_seq))
+    if view in ctx.baseline_resets:
+        jseq = ctx.baseline_resets[view]
+        candidates.append((jseq, "baseline-reset", jseq))
+    if candidates:
+        _j, kind, val = max(candidates)
+        return (kind, val)
     return ("pre-absorb", None)
 
 
@@ -230,7 +259,10 @@ def replay(recs):
       1. exactly ONE section-7 state per leg (totality AND mutual exclusion);
       2. a baseline is derivable for every view the history touches;
       3. a view with only non-confirm legs (no VERIFIED, no ADJUDICATED) sits
-         at the pre-absorb baseline -- a bare rejection advances nothing."""
+         at the pre-absorb baseline -- a bare rejection advances nothing.
+         (An operator baseline-reset record is the one sanctioned advance
+         without a terminal leg -- v3.0-106; it is an operator ruling with
+         journaled provenance, not a bare rejection.)"""
     ctx = trajectory_context(recs)
     legs = collect_legs(recs, ctx)
     rows, violations, classified = [], [], []
@@ -262,10 +294,14 @@ def replay(recs):
         basis, _seq = baselines[v]
         has_terminal = any(st in ("VERIFIED", "ADJUDICATED")
                            for leg, st in classified if leg["view"] == v)
-        if not has_terminal and basis != "pre-absorb":
+        if not has_terminal and basis not in ("pre-absorb", "baseline-reset"):
             violations.append(
                 "view %s has no VERIFIED/ADJUDICATED leg but baseline reads "
                 "%s -- a bare rejection advanced a baseline" % (v, basis))
+        if basis == "baseline-reset" and v not in ctx.baseline_resets:
+            violations.append(
+                "view %s reads a baseline-reset basis with no baseline_reset "
+                "record on the journal" % v)
     return rows, violations, baselines
 
 
@@ -573,6 +609,125 @@ def self_test():                                              # noqa: C901
              "untouched)", vr["incomplete"] == [], str(vr["incomplete"]))
     finally:
         shutil.rmtree(base_i3, ignore_errors=True)
+
+    # --- (L) v3.0-105: union set-aside classifies ADJUDICATED with ZERO
+    # classifier edits -- the design's load-bearing claim, pinned. The
+    # adjudication record's view is the pseudo-view string `union:<event>`,
+    # exactly the key collect_legs already builds, so matching_states needs
+    # no change; and the pin-less record advances NO view baseline (the
+    # REQUIRED derive_baseline skip, keyed on union_event).
+    noop = {"event": "raw/u.md", "view": "wiki/q.md",
+            "artifact": "receipts/verify/noop-seq100-e0.json",
+            "verdict_label": "rejected",
+            "reason_classes": ["contradiction"]}
+    recs = dict([
+        runrec(100, ["wiki/q.md"]),
+        vrec(101, 100, verified=[{"view": "wiki/q.md"}], noops=[noop]),
+    ])
+    st, viol, base = states_of(recs)
+    case("(L) an open union leg is BLOCKED beside its confirmed sibling",
+         st[(100, "union:raw/u.md")] == "BLOCKED"
+         and st[(100, "wiki/q.md")] == "VERIFIED", str(st))
+    recs[102] = {"absorption_adjudicated": [
+        {"adjudicates_seq": 100, "view": "union:raw/u.md",
+         "union_event": "raw/u.md", "union_views": ["wiki/q.md"],
+         "ruling": "operator ruling, verbatim",
+         "adjudicated_by": "operator"}]}
+    st, viol, base = states_of(recs)
+    case("(L) union set-aside classifies ADJUDICATED with zero classifier "
+         "edits (the pseudo-view record matches the existing "
+         "(adjudicates_seq, view) key)",
+         st[(100, "union:raw/u.md")] == "ADJUDICATED", str(st))
+    case("(L) exactly-one-state invariance holds under the union "
+         "adjudication record", not viol, "; ".join(viol))
+    case("(L) the union adjudication advances NO view baseline (pin-less "
+         "by design; the REQUIRED skip) and no union pseudo-view enters "
+         "the baseline census",
+         base["wiki/q.md"] == ("machine-verified", 100)
+         and not any(v.startswith("union:") for v in base), str(base))
+    # the same verb covers a RECORDED union leg (verify_disposition:
+    # recorded), operator-paced -- the sec.7 row's own action.
+    noop_rec = dict(noop, event="raw/u2.md",
+                    artifact="receipts/verify/noop-seq103-e0.json",
+                    verify_disposition="recorded")
+    recs2 = dict([
+        runrec(103, ["wiki/q2.md"]),
+        vrec(104, 103, verified=[{"view": "wiki/q2.md"}],
+             noops=[noop_rec]),
+    ])
+    st, viol, _ = states_of(recs2)
+    case("(L) a union leg journaled verify_disposition: recorded is "
+         "RECORDED", st[(103, "union:raw/u2.md")] == "RECORDED", str(st))
+    recs2[105] = {"absorption_adjudicated": [
+        {"adjudicates_seq": 103, "view": "union:raw/u2.md",
+         "union_event": "raw/u2.md", "ruling": "accept",
+         "adjudicated_by": "operator"}]}
+    st, viol, _ = states_of(recs2)
+    case("(L) RECORDED union leg -> ADJUDICATED through the same verb, "
+         "zero violations",
+         st[(103, "union:raw/u2.md")] == "ADJUDICATED" and not viol,
+         "%s %s" % (st, viol))
+
+    # --- (M) v3.0-106: a baseline-reset record contributes ZERO legs, moves
+    # ZERO leg states, and lands in the baseline census as
+    # ("baseline-reset", journal seq).
+    recs = dict([
+        runrec(120, ["wiki/r.md"]),
+        vrec(121, 120, attempts=[attempt("wiki/r.md")]),
+    ])
+    rows_before, _v, _b = replay(recs)
+    recs[122] = {"run_type": "baseline-reset",
+                 "baseline_reset": [
+                     {"view": "wiki/r.md", "at": "2026-08-16T13:00:00",
+                      "refresh_commit": "f" * 40, "view_sha256": "a" * 64,
+                      "provenance": "fixture photograph",
+                      "ruling": "operator ruling, verbatim",
+                      "reset_by": "operator"}],
+                 "refused": []}
+    rows_after, viol, base = replay(recs)
+    case("(M) a baseline-reset record contributes ZERO legs",
+         len(rows_after) == len(rows_before),
+         "%d -> %d" % (len(rows_before), len(rows_after)))
+    st = {(r["run_seq"], r["view"]): r["state"] for r in rows_after}
+    case("(M) the reset moves NO leg state -- the open rejection stays "
+         "BLOCKED (a reset adjudicates nothing)",
+         st[(120, "wiki/r.md")] == "BLOCKED", str(st))
+    case("(M) the baseline census names the reset rung "
+         "(('baseline-reset', journal seq))",
+         base["wiki/r.md"] == ("baseline-reset", 122), str(base))
+    case("(M) exactly-one-state invariance holds under the baseline-reset "
+         "record (and the reset basis is not flagged as a bare-rejection "
+         "advance)", not viol, "; ".join(viol))
+    # ladder ordering: a post-reset confirm supersedes the reset rung
+    recs.update([runrec(123, ["wiki/r.md"]),
+                 vrec(124, 123, verified=[{"view": "wiki/r.md"}])])
+    _rows, viol, base = replay(recs)
+    case("(M) a post-reset confirm supersedes the reset rung "
+         "(newest by journal seq)",
+         base["wiki/r.md"] == ("machine-verified", 123) and not viol,
+         str(base))
+    # and the reset rung itself wins over an OLDER adjudication (the fork's
+    # memory-engine composition shape, decision 0.4: doors compose freely)
+    recs3 = dict([
+        runrec(130, ["wiki/s.md"]),
+        vrec(131, 130, attempts=[attempt("wiki/s.md")]),
+        (132, {"absorption_adjudicated": [
+            {"adjudicates_seq": 130, "view": "wiki/s.md",
+             "ruling": "wave set-aside", "adjudicated_by": "operator"}]}),
+        (133, {"run_type": "baseline-reset",
+               "baseline_reset": [
+                   {"view": "wiki/s.md", "at": "t",
+                    "refresh_commit": "f" * 40, "view_sha256": "a" * 64,
+                    "provenance": "photograph", "ruling": "r",
+                    "reset_by": "operator"}],
+               "refused": []}),
+    ])
+    st, viol, base = states_of(recs3)
+    case("(M) composition: the leg stays ADJUDICATED while the newer reset "
+         "rung carries the baseline (disjoint records, disjoint readers)",
+         st[(130, "wiki/s.md")] == "ADJUDICATED"
+         and base["wiki/s.md"] == ("baseline-reset", 133)
+         and not viol, "%s %s %s" % (st, base, viol))
 
     # --- (J) exactly-one assertion has teeth: an inconsistent history (a run
     # both reverted and carrying a live recorded disposition is fine -- revert

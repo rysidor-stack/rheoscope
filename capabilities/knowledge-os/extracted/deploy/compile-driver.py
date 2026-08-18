@@ -16,6 +16,9 @@ over as files in `--staging`.
   compile-driver.py --reverify --root DIR --seq N --staging DIR --authorization PATH
   compile-driver.py --revert --root DIR --seq N [--reason TEXT]
   compile-driver.py --set-aside --root DIR --seq N --view PATH --ruling TEXT
+  compile-driver.py --set-aside --root DIR --seq N --union-event PATH --ruling TEXT
+  compile-driver.py --baseline-reset --root DIR (--view PATH | --views-file PATH)
+                    --refresh-commit SHA --provenance TEXT --ruling TEXT
   compile-driver.py --reconcile --root DIR
   compile-driver.py --self-test
   Exit: 0 clean | 1 validation/gate failure | 2 inconclusive/usage | 3 lock held
@@ -37,6 +40,49 @@ mode never reverts, never edits a view, and refuses: a confirmed leg
 failure (that is --reverify's case, not an adjudication), and a missing
 --ruling (an unrecorded ruling is standing memory, which the HUMAN-GATE
 doctrine refuses).
+
+UNION-LEG SET-ASIDE (v3.0.39, closing backlog v3.0-105 per the ratified
+verify-doors design). A union no-op leg (joint-citation no-op check) can
+complete with a genuine non-confirm verdict, but its subject is a run+event
+pair, never an absorbed view -- so `--set-aside --seq N --union-event
+<raw path>` is the second addressing mode, mutually exclusive with --view.
+The journaled absorption_adjudicated[] entry carries the pseudo-view subject
+`union:<event>` (exactly the identity the verify ledger and the trajectory
+drill already key union rows by) plus what the checker actually graded: the
+event hash and the per-view union shas from the leg's own justification,
+and the kept verdict artifact. It carries NO baseline pin fields
+(baseline_commit / view_sha256 are ABSENT): a union leg absorbed nothing,
+so there is no content whose baseline could advance. The guards mirror the
+absorbed-view path clause for clause; the mixed-run --reverify decline is
+untouched (re-firing against a standing rejection would be re-rolling a
+verdict).
+
+BASELINE-RESET (v3.0.39, closing backlog v3.0-106 per the ratified
+verify-doors design). An out-of-engine wholesale refresh (a corpus
+photograph) rewrites articles with no per-event provenance; the verify
+packet's baseline ladder had no rung for it, so every post-refresh packet
+diffed from a pre-photograph base -- a false fabrication-class rejection
+guaranteed before the checker read a word. `--baseline-reset` is the
+operator's explicit repair: it pins a view's verify baseline at a NAMED
+out-of-engine refresh commit (`git show <refresh_commit>:<view>`,
+hash-locked at journal time), journaling provenance and ruling verbatim as
+a `baseline-reset` record with baseline_reset[] entries. Bulk form:
+--views-file (one view path per line); the record carries a refused[] list
+naming every view that did not pass and why -- journal-only truth includes
+the refusals. The guard chain, in refusal order: G1 operator words or
+nothing (empty --ruling or --provenance refuses); G2 worktree clean; G3 the
+refresh commit exists and is an ancestor of HEAD; G4 the refresh commit is
+not engine-authored history (it must not touch any receipts/journal/*.json
+-- an import is never a run commit); G5 the view exists AT the refresh
+commit (its bytes there are what gets pinned, never the worktree); G6
+no-rewind (a stamp whose pinned commit is a descendant of, identical to, or
+incomparable with the refresh commit refuses -- only a strict-ancestor
+stamp, or no stamp, proceeds; fail-closed when ancestry cannot be
+determined); G7 one reset per (view, refresh_commit). A reset adjudicates
+NOTHING: it touches no ledger row and no leg state; every open non-confirm
+verdict stays exactly as open as it was. Reset articles are not "verified"
+-- the packet names the baseline "reset to imported snapshot by operator
+ruling, not machine-verified" in so many words.
 
 STAGING CONTRACT (what the skill must produce; see emit_packets()/stamp_dispatch()
 in compile-backends.py, which are the sanctioned way to produce it):
@@ -196,6 +242,11 @@ USAGE = (
     "compile-driver.py --revert --root DIR --seq N [--reason TEXT]\n"
     "compile-driver.py --set-aside --root DIR --seq N --view PATH "
     "--ruling TEXT\n"
+    "compile-driver.py --set-aside --root DIR --seq N --union-event PATH "
+    "--ruling TEXT\n"
+    "compile-driver.py --baseline-reset --root DIR (--view PATH | "
+    "--views-file PATH)\n"
+    "                  --refresh-commit SHA --provenance TEXT --ruling TEXT\n"
     "compile-driver.py --reconcile --root DIR\n"
     "compile-driver.py --verify-ledger --root DIR [--since YYYY-MM-DD]\n"
     "                                        # read-only builder-verifier\n"
@@ -279,9 +330,11 @@ def _worktree_clean(repo):
 
 # --------------------------------------------------------------- argv parsing
 _VALUE_FLAGS = ("--root", "--staging", "--authorization", "--seq", "--reason",
-                "--view", "--ruling", "--since")
+                "--view", "--ruling", "--since", "--union-event",
+                "--refresh-commit", "--provenance", "--views-file")
 _BOOL_FLAGS = ("--run", "--reconcile", "--reverify", "--revert", "--set-aside",
-               "--verify-ledger", "--self-test", "--sections")
+               "--baseline-reset", "--verify-ledger", "--self-test",
+               "--sections")
 
 
 def parse_args(argv):
@@ -297,7 +350,8 @@ def parse_args(argv):
             "invariant 4). Nothing was run.")
     out = {"mode": None, "root": None, "staging": None, "authorization": None,
            "seq": None, "reason": None, "view": None, "ruling": None,
-           "since": None, "sections": False}
+           "since": None, "sections": False, "union-event": None,
+           "refresh-commit": None, "provenance": None, "views-file": None}
     i = 0
     modes = []
     while i < len(args):
@@ -365,18 +419,39 @@ def parse_args(argv):
                 r"^\d{4}-\d{2}-\d{2}$", out["since"]):
             raise UsageError("--since takes YYYY-MM-DD")
     if out["mode"] == "set-aside":
-        missing = [f for f in ("root", "seq", "view", "ruling") if not out[f]]
+        missing = [f for f in ("root", "seq", "ruling") if not out[f]]
         if missing:
             raise UsageError(
                 "--set-aside requires %s (it records the operator's ruling "
-                "on ONE flagged view of ONE non-confirmed run; --ruling is "
+                "on ONE flagged subject of ONE non-confirmed run; --ruling is "
                 "the operator's own words, verbatim -- an unrecorded ruling "
                 "is standing memory, which the HUMAN-GATE doctrine refuses)"
                 % ", ".join("--" + m for m in missing))
+        if bool(out["view"]) == bool(out["union-event"]):
+            raise UsageError(
+                "--set-aside takes exactly one of --view (an absorbed view's "
+                "non-confirm leg) or --union-event (a union no-op leg, "
+                "addressed by run seq + event; v3.0-105) -- the two "
+                "addressing modes are mutually exclusive")
         try:
             out["seq"] = int(out["seq"])
         except (TypeError, ValueError):
             raise UsageError("--seq must be an integer journal sequence number")
+    if out["mode"] == "baseline-reset":
+        missing = [f for f in ("root", "refresh-commit", "provenance",
+                               "ruling") if not out[f]]
+        if missing:
+            raise UsageError(
+                "--baseline-reset requires %s (the ruling and the provenance "
+                "are the operator's own words, journaled verbatim -- an "
+                "unrecorded ruling is standing memory, and a reset that "
+                "cannot name what was imported is the escape-hatch shape the "
+                "firewall forbids)"
+                % ", ".join("--" + m for m in missing))
+        if bool(out["view"]) == bool(out["views-file"]):
+            raise UsageError(
+                "--baseline-reset takes exactly one of --view (one view) or "
+                "--views-file (bulk: one view path per line)")
     return out
 
 
@@ -883,7 +958,11 @@ def execute_verify_ledger(root, since=None, out=print):
                          or ["unclassified"],
                          "disposition": nc.get("verify_disposition")
                          or "blocking",
-                         "outcome": _outcome(None, label,
+                         # v3.0-105: the union row's adjudication subject is
+                         # the same pseudo-view string the row itself carries
+                         # -- view=None here meant nothing could ever match,
+                         # so a union set-aside could never read set-aside.
+                         "outcome": _outcome("union:%s" % ev, label,
                                              nc.get("verify_disposition")
                                              or "blocking")})
 
@@ -2083,14 +2162,24 @@ def execute_revert(root, seq, reason=None, out=print):
 
 
 # --------------------------------------------------------------- set-aside mode
-def execute_set_aside(root, seq, view, ruling, out=print):
-    """Operator set-aside of a non-confirm verdict on ONE view (v3.0.29; see
-    the module docstring's SET-ASIDE section for the doctrine). Journals the
-    ruling as an absorption_adjudicated[] record whose baseline pin is the
-    RUN COMMIT's content for the view -- exactly what the verifier graded
-    and the operator ruled on -- so later verify passes diff updates from
-    the adjudicated state, named as such, never from birth and never from a
-    bare rejection."""
+def execute_set_aside(root, seq, view, ruling, union_event=None, out=print):
+    """Operator set-aside of a non-confirm verdict on ONE subject (v3.0.29;
+    see the module docstring's SET-ASIDE section for the doctrine). Two
+    addressing modes, mutually exclusive:
+
+      * --view: an absorbed view's leg. Journals the ruling as an
+        absorption_adjudicated[] record whose baseline pin is the RUN
+        COMMIT's content for the view -- exactly what the verifier graded
+        and the operator ruled on -- so later verify passes diff updates
+        from the adjudicated state, named as such, never from birth and
+        never from a bare rejection.
+      * --union-event (v3.0-105): a union no-op leg, identified by (run seq,
+        event). The journaled entry's subject is the pseudo-view string
+        `union:<event>` and it carries NO baseline pin fields -- a union leg
+        absorbed nothing, so there is no content whose baseline could
+        advance. What it pins instead is what the checker actually graded:
+        the event hash and per-view union shas from the leg's own
+        justification, plus the kept verdict artifact."""
     import hashlib
     repo = os.path.abspath(root)
     if not os.path.isdir(repo) or not _is_git_repo(repo):
@@ -2123,18 +2212,28 @@ def execute_set_aside(root, seq, view, ruling, out=print):
                 "longer stands, so there is no verdict left to set aside."
                 % seq)
             return EXIT_FAIL
-    absorbed_views = {a.get("view") for a in rec.get("absorbed") or []}
-    if view not in absorbed_views:
-        out("REFUSED: run seq %d absorbed no view %r (absorbed: %s)."
-            % (seq, view, ", ".join(sorted(v for v in absorbed_views if v))
-               or "(none)"))
-        return EXIT_FAIL
+    # The adjudication subject: a real view path, or the union pseudo-view
+    # string `union:<event>` (v3.0-105) -- the same key the verify ledger
+    # and the trajectory drill already use for union rows, so one ruling
+    # per verdict is enforced over one shared key space.
+    subject = view if union_event is None else "union:%s" % union_event
+    if union_event is None:
+        absorbed_views = {a.get("view") for a in rec.get("absorbed") or []}
+        if view not in absorbed_views:
+            out("REFUSED: run seq %d absorbed no view %r (absorbed: %s)."
+                % (seq, view,
+                   ", ".join(sorted(v for v in absorbed_views if v))
+                   or "(none)"))
+            return EXIT_FAIL
     for r in recs.values():
         for aj in r.get("absorption_adjudicated") or []:
-            if aj.get("view") == view and aj.get("adjudicates_seq") == seq:
-                out("REFUSED: seq %d's absorption of %s already carries an "
+            if aj.get("view") == subject and aj.get("adjudicates_seq") == seq:
+                out("REFUSED: seq %d's %s already carries an "
                     "operator adjudication (journal seq %s). One ruling per "
-                    "verdict." % (seq, view, r.get("seq")))
+                    "verdict."
+                    % (seq, ("absorption of %s" % view)
+                       if union_event is None
+                       else ("union leg for %s" % union_event), r.get("seq")))
                 return EXIT_FAIL
 
     # The verdict being set aside must EXIST, be COMPLETE, and be a
@@ -2155,20 +2254,41 @@ def execute_set_aside(root, seq, view, ruling, out=print):
             "aside. Re-fire the legs with --reverify instead."
             % (len(legs["incomplete"]), seq))
         return EXIT_FAIL
-    if any(av.get("view") == view
-           for av in newest.get("absorption_verified") or []):
-        out("REFUSED: the verify leg for %s CONFIRMED -- there is nothing "
-            "to adjudicate." % view)
-        return EXIT_FAIL
-    attempt = None
-    for at in newest.get("absorption_verify_attempts") or []:
-        if at.get("view") == view:
-            attempt = at
-            break
-    if attempt is None:
-        out("REFUSED: the covering verify record (seq %s) carries no "
-            "non-confirm absorption leg for %s." % (newest.get("seq"), view))
-        return EXIT_FAIL
+    if union_event is not None:
+        # v3.0-105: the subject is the union leg for (seq, event). The
+        # confirm-authority check transposed: a `verified: true` union leg
+        # has nothing to adjudicate; an unverified entry with an artifact is
+        # the leg the ledger and the drill already key `union:<event>`.
+        ncs = [nc for nc in newest.get("noop_candidates") or []
+               if nc.get("event") == union_event]
+        if any(nc.get("verified") for nc in ncs):
+            out("REFUSED: the union leg for %s CONFIRMED -- there is "
+                "nothing to adjudicate." % union_event)
+            return EXIT_FAIL
+        candidates = [nc for nc in ncs
+                      if not nc.get("verified") and nc.get("artifact")]
+        if not candidates:
+            out("REFUSED: run seq %d fired no unverified union leg for "
+                "event %s (covering verify record seq %s). Nothing was "
+                "journaled." % (seq, union_event, newest.get("seq")))
+            return EXIT_FAIL
+        attempt = candidates[0]
+    else:
+        if any(av.get("view") == view
+               for av in newest.get("absorption_verified") or []):
+            out("REFUSED: the verify leg for %s CONFIRMED -- there is "
+                "nothing to adjudicate." % view)
+            return EXIT_FAIL
+        attempt = None
+        for at in newest.get("absorption_verify_attempts") or []:
+            if at.get("view") == view:
+                attempt = at
+                break
+        if attempt is None:
+            out("REFUSED: the covering verify record (seq %s) carries no "
+                "non-confirm absorption leg for %s."
+                % (newest.get("seq"), view))
+            return EXIT_FAIL
     # v3.0-74: the confirm authority is the absorption_verified check above
     # (the journal's own stamp record) -- NOT the artifact's label. What
     # remains here is the completion axis only: journal-first (the demotion
@@ -2187,53 +2307,307 @@ def execute_set_aside(root, seq, view, ruling, out=print):
         out("REFUSED: the verify leg for %s did not complete (%s) -- a "
             "transport failure is not a verdict, so there is nothing to "
             "set aside. Re-fire the legs with --reverify instead."
-            % (view, label))
+            % (subject, label))
         return EXIT_FAIL
     if _confirm_shaped(label):
         out("NOTE: the verifier approved %s but the engine recorded no "
             "stamp (stamp-refused) -- this ruling adjudicates that leg."
-            % view)
-
-    run_sha = _find_run_commit(repo, seq)
-    if not run_sha:
-        out("REFUSED: could not locate the run commit that added "
-            "receipts/journal/%d.json. Nothing was journaled." % seq)
-        return EXIT_FAIL
-    p = subprocess.run(["git", "-C", repo, "show", "%s:%s" % (run_sha, view)],
-                       capture_output=True, text=True, encoding="utf-8",
-                       errors="replace")
-    if p.returncode != 0:
-        out("REFUSED: git show %s:%s failed (%s) -- the adjudicated "
-            "baseline content could not be pinned. Nothing was journaled."
-            % (run_sha[:12], view, (p.stderr or "").strip()[-160:]))
-        return EXIT_FAIL
-    view_sha = hashlib.sha256(p.stdout.encode("utf-8")).hexdigest()
+            % subject)
 
     core = _core()
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     rc, head, _e = _git(repo, "rev-parse", "HEAD")
     arec = core.minimal_record("verify-adjudication", head.strip())
     arec["run_window"] = {"start": now, "end": now}
-    arec["absorption_adjudicated"] = [{
-        "view": view, "adjudicates_seq": seq, "at": now,
-        "ruling": ruling, "adjudicated_by": "operator",
-        "rejected_artifact": attempt.get("artifact"),
-        "baseline_commit": run_sha, "view_sha256": view_sha,
-        "driver": "deploy/compile-driver.py",
-    }]
+    if union_event is not None:
+        # v3.0-105: NO baseline pin fields (baseline_commit / view_sha256
+        # ABSENT) -- a union leg absorbed nothing, so there is no content
+        # whose baseline could advance. What IS pinned is what the checker
+        # graded: the event hash and per-view union shas from the leg's own
+        # justification, plus the kept verdict artifact.
+        just = attempt.get("justification") or {}
+        arec["absorption_adjudicated"] = [{
+            "view": subject, "union_event": union_event,
+            "union_views": just.get("union_views")
+            or sorted({nc.get("view") for nc in candidates
+                       if nc.get("view")}),
+            "event_sha256": just.get("event_sha256"),
+            "union_view_sha256": just.get("union_view_sha256"),
+            "adjudicates_seq": seq, "at": now,
+            "ruling": ruling, "adjudicated_by": "operator",
+            "rejected_artifact": attempt.get("artifact"),
+            "driver": "deploy/compile-driver.py",
+        }]
+    else:
+        run_sha = _find_run_commit(repo, seq)
+        if not run_sha:
+            out("REFUSED: could not locate the run commit that added "
+                "receipts/journal/%d.json. Nothing was journaled." % seq)
+            return EXIT_FAIL
+        p = subprocess.run(["git", "-C", repo, "show",
+                            "%s:%s" % (run_sha, view)],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace")
+        if p.returncode != 0:
+            out("REFUSED: git show %s:%s failed (%s) -- the adjudicated "
+                "baseline content could not be pinned. Nothing was journaled."
+                % (run_sha[:12], view, (p.stderr or "").strip()[-160:]))
+            return EXIT_FAIL
+        view_sha = hashlib.sha256(p.stdout.encode("utf-8")).hexdigest()
+        arec["absorption_adjudicated"] = [{
+            "view": view, "adjudicates_seq": seq, "at": now,
+            "ruling": ruling, "adjudicated_by": "operator",
+            "rejected_artifact": attempt.get("artifact"),
+            "baseline_commit": run_sha, "view_sha256": view_sha,
+            "driver": "deploy/compile-driver.py",
+        }]
     aseq, jpath = core.append_record(repo, arec)
     jrel = os.path.relpath(jpath, repo).replace(os.sep, "/")
     core.stage_only_commit(
         repo, [jrel],
         "compile-driver: operator set-aside of seq %d verdict on %s "
-        "(adjudication journaled at seq %d)" % (seq, view, aseq))
-    out("SET-ASIDE RECORDED: the operator's ruling on %s (run seq %d) is "
-        "journaled at seq %d, with the rejected verdict kept on the record "
-        "(%s). The view's verify baseline now advances to this adjudicated "
-        "state -- future verify packets will name it 'adjudicated %s by "
-        "operator ruling, not machine-verified'."
-        % (view, seq, aseq, attempt.get("artifact") or "no artifact path",
-           now[:10]))
+        "(adjudication journaled at seq %d)" % (seq, subject, aseq))
+    if union_event is not None:
+        out("SET-ASIDE RECORDED: the operator's ruling on the union leg for "
+            "%s (run seq %d) is journaled at seq %d, with the rejected "
+            "verdict kept on the record (%s). No baseline moves -- a union "
+            "leg absorbed nothing; the ledger row reads set-aside and the "
+            "drill state reads ADJUDICATED."
+            % (union_event, seq, aseq,
+               attempt.get("artifact") or "no artifact path"))
+    else:
+        out("SET-ASIDE RECORDED: the operator's ruling on %s (run seq %d) is "
+            "journaled at seq %d, with the rejected verdict kept on the "
+            "record (%s). The view's verify baseline now advances to this "
+            "adjudicated state -- future verify packets will name it "
+            "'adjudicated %s by operator ruling, not machine-verified'."
+            % (view, seq, aseq,
+               attempt.get("artifact") or "no artifact path", now[:10]))
+    return EXIT_OK
+
+
+# --------------------------------------------------------------- baseline-reset
+def _newest_baseline_stamp(recs, view):
+    """The view's newest baseline stamp across the ladder's three rungs
+    (machine-verified / adjudicated / baseline-reset), newest by JOURNAL seq
+    -- the same competition _absorption_trigger_state runs. Returns
+    (journal_seq, kind, pinned_commit) or (None, None, None). Union
+    adjudication entries (carrying `union_event`) are skipped: they pin no
+    content, so they are not baseline stamps (v3.0-105 / the cross-check
+    correction)."""
+    newest = (None, None, None)
+    for seq in sorted(recs):
+        rec = recs[seq]
+        for av in rec.get("absorption_verified") or []:
+            if av.get("view") == view:
+                newest = (seq, "machine-verified", av.get("verify_commit"))
+        for aj in rec.get("absorption_adjudicated") or []:
+            if aj.get("union_event"):
+                continue
+            if aj.get("view") == view:
+                newest = (seq, "adjudicated", aj.get("baseline_commit"))
+        for br in rec.get("baseline_reset") or []:
+            if br.get("view") == view:
+                newest = (seq, "baseline-reset", br.get("refresh_commit"))
+    return newest
+
+
+def execute_baseline_reset(root, view, views_file, refresh_commit,
+                           provenance, ruling, out=print):
+    """Operator baseline reset for out-of-engine refreshes (v3.0.39, closing
+    backlog v3.0-106; see the module docstring's BASELINE-RESET section for
+    the doctrine and the named guard chain G1-G7). Appends ONE
+    `baseline-reset` journal record: baseline_reset[] entries for every view
+    that passed the guards, plus a refused[] list naming every view that did
+    not and why -- journal-only truth includes the refusals. A reset
+    adjudicates NOTHING (no ledger row, no leg state moves) and pins only
+    content already in history at a commit the engine did not author."""
+    import hashlib
+    repo = os.path.abspath(root)
+    if not os.path.isdir(repo) or not _is_git_repo(repo):
+        out("REFUSED: --root %s is not a git repository." % root)
+        return EXIT_FAIL
+    # G1 -- operator words or nothing.
+    if not str(ruling or "").strip():
+        out("REFUSED: --ruling is empty. The ruling is the operator's own "
+            "words, recorded verbatim; nothing was journaled.")
+        return EXIT_FAIL
+    if not str(provenance or "").strip():
+        out("REFUSED: --provenance is empty. A reset must name what was "
+            "imported, when, and from where -- scope-locked to declared "
+            "imports (G1); nothing was journaled.")
+        return EXIT_FAIL
+    # G2 -- worktree clean; the record lands as its own stage-only commit.
+    if not _worktree_clean(repo):
+        out("REFUSED: the worktree is not clean. The baseline-reset record "
+            "must land as its own stage-only commit; commit or stash first. "
+            "Nothing was journaled.")
+        return EXIT_FAIL
+
+    if views_file is not None:
+        vf = views_file if os.path.isabs(views_file) \
+            else os.path.join(repo, views_file)
+        try:
+            lines = open(vf, encoding="utf-8").read().splitlines()
+        except OSError as e:
+            out("REFUSED: --views-file %s could not be read (%s). Nothing "
+                "was journaled." % (views_file, e))
+            return EXIT_FAIL
+        views = [ln.strip() for ln in lines if ln.strip()]
+        if not views:
+            out("REFUSED: --views-file %s names no views. Nothing was "
+                "journaled." % views_file)
+            return EXIT_FAIL
+    else:
+        views = [view]
+
+    # G3 -- the refresh commit must exist and be an ancestor of HEAD;
+    # fail-closed on any git error.
+    rc, full, err = _git(repo, "rev-parse", "--verify",
+                         "%s^{commit}" % refresh_commit)
+    if rc != 0 or not full.strip():
+        out("REFUSED (G3): --refresh-commit %s does not name a commit in "
+            "this repository (%s). Nothing was journaled."
+            % (refresh_commit, (err or "").strip()[-160:]))
+        return EXIT_FAIL
+    full = full.strip()
+    rc, _o, err = _git(repo, "merge-base", "--is-ancestor", full, "HEAD")
+    if rc != 0:
+        out("REFUSED (G3): --refresh-commit %s is not an ancestor of HEAD "
+            "(or ancestry could not be determined: %s) -- fail-closed. "
+            "Nothing was journaled."
+            % (refresh_commit, (err or "").strip()[-160:] or "not an "
+               "ancestor"))
+        return EXIT_FAIL
+    # G4 -- the refresh commit must not be engine-authored history: a commit
+    # that touches any receipts/journal/<seq>.json is a journaled run/record
+    # commit, never "an import" (the narrow-scope rule made mechanical).
+    jre = re.compile(r"^receipts/journal/\d+\.json$")
+    if any(jre.match(f) for f in _commit_files(repo, full)):
+        out("REFUSED (G4): --refresh-commit %s touches receipts/journal/ -- "
+            "engine-authored history is never an import. A reset pins a "
+            "declared out-of-engine refresh, identified by a commit the "
+            "engine did not author. Nothing was journaled." % refresh_commit)
+        return EXIT_FAIL
+
+    recs = load_journal(repo)
+    entries, refused = [], []
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    for v in views:
+        # Per-view guards run in the spec's refusal order: G5, G6, G7 --
+        # for EVERY line, repeats included (a repeated line re-earns its
+        # refusal under whichever guard fires first).
+        # G5 -- the view must exist at the refresh commit; its bytes THERE
+        # are what gets pinned -- never the current worktree.
+        p = subprocess.run(["git", "-C", repo, "show", "%s:%s" % (full, v)],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace")
+        if p.returncode != 0:
+            refused.append({"view": v, "guard": "G5",
+                            "reason": "not present at the refresh commit "
+                                      "(%s)" % (p.stderr or "")
+                            .strip()[-120:]})
+            continue
+        vsha = hashlib.sha256(p.stdout.encode("utf-8")).hexdigest()
+        # G6 -- no rewind: only a stamp whose pinned commit is a STRICT
+        # ancestor of the refresh commit (or no stamp at all) proceeds.
+        # Descendant, identical, or incomparable-ancestry stamps refuse;
+        # fail-closed when ancestry cannot be determined.
+        sseq, skind, scommit = _newest_baseline_stamp(recs, v)
+        if sseq is not None:
+            if not scommit:
+                refused.append({"view": v, "guard": "G6",
+                                "reason": "newest stamp (%s, journal seq %d) "
+                                          "pins no commit -- ancestry "
+                                          "cannot be determined, fail-closed"
+                                          % (skind, sseq)})
+                continue
+            rc, sfull, _e = _git(repo, "rev-parse", "--verify",
+                                 "%s^{commit}" % scommit)
+            if rc != 0:
+                refused.append({"view": v, "guard": "G6",
+                                "reason": "newest stamp's pinned commit %s "
+                                          "is unresolvable -- ancestry "
+                                          "cannot be determined, fail-closed"
+                                          % scommit})
+                continue
+            sfull = sfull.strip()
+            if sfull == full:
+                refused.append({"view": v, "guard": "G6",
+                                "reason": "newest stamp (%s, journal seq %d) "
+                                          "already pins the refresh commit "
+                                          "itself" % (skind, sseq)})
+                continue
+            rc, _o, _e = _git(repo, "merge-base", "--is-ancestor",
+                              sfull, full)
+            if rc != 0:
+                refused.append({"view": v, "guard": "G6",
+                                "reason": "baseline already advanced past "
+                                          "(or independently of) the "
+                                          "refresh commit -- newest stamp "
+                                          "(%s, journal seq %d) pins %s, "
+                                          "not a strict ancestor of the "
+                                          "refresh commit; a reset would "
+                                          "regress it"
+                                          % (skind, sseq, sfull[:12])})
+                continue
+        # G7 -- one reset per (view, refresh_commit); a LATER photograph is
+        # a different refresh_commit and may reset again. The duplicate scan
+        # covers the journal AND the entries already accepted THIS
+        # invocation, so a view repeated inside one --views-file refuses
+        # here rather than journaling the same pair twice.
+        dup = None
+        for r in recs.values():
+            for br in r.get("baseline_reset") or []:
+                if br.get("view") == v \
+                        and br.get("refresh_commit") == full:
+                    dup = r.get("seq")
+        if dup is not None:
+            refused.append({"view": v, "guard": "G7",
+                            "reason": "already reset at this refresh commit "
+                                      "(journal seq %s) -- one ruling per "
+                                      "fact" % dup})
+            continue
+        if any(e["view"] == v for e in entries):
+            refused.append({"view": v, "guard": "G7",
+                            "reason": "duplicate view in this views-file -- "
+                                      "the pair already resets in this "
+                                      "record; one ruling per fact"})
+            continue
+        entries.append({"view": v, "at": now,
+                        "refresh_commit": full, "view_sha256": vsha,
+                        "provenance": provenance, "ruling": ruling,
+                        "reset_by": "operator",
+                        "driver": "deploy/compile-driver.py"})
+
+    for rj in refused:
+        out("REFUSED (%s) %s: %s" % (rj["guard"], rj["view"], rj["reason"]))
+    if not entries:
+        out("REFUSED: no view passed the guards -- nothing was journaled "
+            "(%d refusal(s) above)." % len(refused))
+        return EXIT_FAIL
+
+    core = _core()
+    rc, head, _e = _git(repo, "rev-parse", "HEAD")
+    brec = core.minimal_record("baseline-reset", head.strip())
+    brec["run_window"] = {"start": now, "end": now}
+    brec["baseline_reset"] = entries
+    brec["refused"] = refused
+    aseq, jpath = core.append_record(repo, brec)
+    jrel = os.path.relpath(jpath, repo).replace(os.sep, "/")
+    core.stage_only_commit(
+        repo, [jrel],
+        "compile-driver: operator baseline-reset of %d view(s) at refresh "
+        "commit %s (journaled at seq %d; %d refusal(s) on the record)"
+        % (len(entries), full[:12], aseq, len(refused)))
+    out("BASELINE-RESET RECORDED: %d view(s) reset at refresh commit %s, "
+        "journaled at seq %d with provenance and ruling verbatim%s. A reset "
+        "closes no verdict row and verifies nothing -- future verify packets "
+        "open '(baseline: reset to imported snapshot by operator ruling, "
+        "not machine-verified -- ...)'."
+        % (len(entries), full[:12], aseq,
+           ("; %d view(s) refused, named in the record" % len(refused))
+           if refused else ""))
     return EXIT_OK
 
 
@@ -2593,7 +2967,9 @@ def self_test():                                            # noqa: C901
          parsed == {"mode": "run", "root": "r", "staging": "s",
                     "authorization": "a", "seq": None, "reason": None,
                     "view": None, "ruling": None, "since": None,
-                    "sections": True},
+                    "sections": True, "union-event": None,
+                    "refresh-commit": None, "provenance": None,
+                    "views-file": None},
          parsed)
     case("--self-test parses as its own mode",
          parse_args(["--self-test"])["mode"] == "self-test")
@@ -3585,7 +3961,7 @@ def self_test():                                            # noqa: C901
         case("--set-aside without --view/--ruling refuses", False)
     except UsageError as e:
         case("--set-aside without --view/--ruling refuses",
-             "--view" in str(e) and "--ruling" in str(e), str(e))
+             "--ruling" in str(e), str(e))
     p = parse_args(["--set-aside", "--root", "r", "--seq", "7",
                     "--view", "wiki/a.md", "--ruling", "let it stand"])
     case("--set-aside argv parses (mode/seq/view/ruling)",
@@ -3745,6 +4121,526 @@ def self_test():                                            # noqa: C901
                                    out=silent) == EXIT_FAIL)
     finally:
         shutil.rmtree(repo_sc, ignore_errors=True)
+
+    # ---------------- O5. v3.0.39: union set-aside + baseline-reset (105/106)
+    try:
+        parse_args(["--set-aside", "--root", ".", "--seq", "7",
+                    "--view", "wiki/a.md", "--union-event", "raw/e.md",
+                    "--ruling", "r"])
+        case("--set-aside refuses --view AND --union-event together "
+             "(mutually exclusive addressing modes)", False)
+    except UsageError as e:
+        case("--set-aside refuses --view AND --union-event together "
+             "(mutually exclusive addressing modes)",
+             "mutually exclusive" in str(e), str(e))
+    try:
+        parse_args(["--set-aside", "--root", ".", "--seq", "7",
+                    "--ruling", "r"])
+        case("--set-aside with NEITHER --view nor --union-event refuses",
+             False)
+    except UsageError:
+        case("--set-aside with NEITHER --view nor --union-event refuses",
+             True)
+    p = parse_args(["--set-aside", "--root", "r", "--seq", "7",
+                    "--union-event", "raw/e.md", "--ruling", "let it close"])
+    case("--set-aside --union-event argv parses (mode/seq/event/ruling)",
+         p["mode"] == "set-aside" and p["seq"] == 7
+         and p["union-event"] == "raw/e.md"
+         and p["ruling"] == "let it close", p)
+    try:
+        parse_args(["--baseline-reset", "--root", ".", "--view", "v"])
+        case("--baseline-reset without refresh-commit/provenance/ruling "
+             "refuses", False)
+    except UsageError as e:
+        case("--baseline-reset without refresh-commit/provenance/ruling "
+             "refuses", "--refresh-commit" in str(e)
+             and "--provenance" in str(e) and "--ruling" in str(e), str(e))
+    try:
+        parse_args(["--baseline-reset", "--root", ".", "--view", "v",
+                    "--views-file", "f", "--refresh-commit", "c",
+                    "--provenance", "p", "--ruling", "r"])
+        case("--baseline-reset refuses --view AND --views-file together",
+             False)
+    except UsageError:
+        case("--baseline-reset refuses --view AND --views-file together",
+             True)
+    p = parse_args(["--baseline-reset", "--root", "r", "--views-file",
+                    "views.txt", "--refresh-commit", "abc123",
+                    "--provenance", "the import", "--ruling", "reset"])
+    case("--baseline-reset argv parses (bulk form)",
+         p["mode"] == "baseline-reset" and p["views-file"] == "views.txt"
+         and p["refresh-commit"] == "abc123"
+         and p["provenance"] == "the import" and p["ruling"] == "reset", p)
+
+    def plant_union(repo, verdict_key="rejected", event="raw/ue.md",
+                    disposition=None):
+        """A compile run whose covering verify record stamps its one
+        absorbed view AND carries an unverified union no-op leg for EVENT
+        with the named verdict -- the two live fork fixtures' shape
+        (journal 123/125: rejected and revised)."""
+        core = _core()
+        vp = os.path.join(repo, "wiki", "a.md")
+        old = open(vp, encoding="utf-8").read()
+        with open(vp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(old + "absorbed line\n")
+        rec = core.minimal_record("compile", "0" * 40)
+        rec["absorbed"] = [{"view": "wiki/a.md", "events": ["raw/e1.md"],
+                            "pre_blob": "a" * 40, "post_blob": "b" * 40,
+                            "manifest": [], "corpus_support": []}]
+        rec["run_window"] = {"start": "t0", "end": "t1"}
+        cseq, cpath = core.append_record(repo, rec)
+        core.stage_only_commit(
+            repo, ["wiki/a.md",
+                   os.path.relpath(cpath, repo).replace(os.sep, "/")],
+            "union-shaped run seq %d" % cseq)
+        art_rel = "receipts/verify/noop-seq%d-e0.json" % cseq
+        ap = os.path.join(repo, art_rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(ap), exist_ok=True)
+        with open(ap, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(VERDICTS[verdict_key], fh, indent=1, sort_keys=True)
+        nc = {"view": "wiki/a.md", "event": event, "artifact": art_rel,
+              "verified": False,
+              "verdict_label": VERDICTS[verdict_key].get("verdict",
+                                                         "no-verdict-field"),
+              "reason_classes": ["contradiction"],
+              "justification": {"event_sha256": "e" * 64,
+                                "view_sha256": "f" * 64,
+                                "union_views": ["wiki/a.md"],
+                                "union_view_sha256": {"wiki/a.md": "f" * 64},
+                                "note": "fixture union"}}
+        if disposition:
+            nc["verify_disposition"] = disposition
+        vrec = core.minimal_record("verify", "0" * 40)
+        vrec["verifies_seq"] = cseq
+        vrec["absorption_verified"] = [{"view": "wiki/a.md",
+                                        "events": ["raw/e1.md"],
+                                        "artifact": "",
+                                        "verified_at": "t1"}]
+        vrec["noop_candidates"] = [nc]
+        vseq, vpath = core.append_record(repo, vrec)
+        core.stage_only_commit(
+            repo, [art_rel,
+                   os.path.relpath(vpath, repo).replace(os.sep, "/")],
+            "union verify seq %d over %d" % (vseq, cseq))
+        return cseq
+
+    repo_u = make_repo("cdrv-union-")
+    try:
+        _git(repo_u, "add", "-A")
+        _git(repo_u, "commit", "-qm", "fixtures")
+        cseq_u = plant_union(repo_u, "rejected")
+        case("--set-aside --union-event refuses an event the run fired no "
+             "union leg for",
+             execute_set_aside(repo_u, cseq_u, None, "close it",
+                               union_event="raw/nope.md",
+                               out=silent) == EXIT_FAIL)
+        # ledger BEFORE: the union row reads open-blocking (direction 1)
+        lines_b = []
+        execute_verify_ledger(repo_u, out=lines_b.append)
+        row_b = [ln for ln in lines_b if "union:raw/ue.md" in ln]
+        case("verify-ledger: the un-adjudicated union row reads "
+             "open-blocking", row_b and "open-blocking" in row_b[0],
+             "\n".join(lines_b))
+        rc = execute_set_aside(repo_u, cseq_u, None,
+                               "the event's extra claim is out of scope "
+                               "for this corpus -- let the row close",
+                               union_event="raw/ue.md", out=silent)
+        case("--set-aside --union-event LANDS on the live rejected shape "
+             "(fork journal 123)", rc == EXIT_OK)
+        adj_u = [aj for r in load_journal(repo_u).values()
+                 for aj in r.get("absorption_adjudicated") or []]
+        case("union adjudication record: pseudo-view subject, union_event, "
+             "graded hashes and artifact kept, ruling VERBATIM",
+             len(adj_u) == 1
+             and adj_u[0]["view"] == "union:raw/ue.md"
+             and adj_u[0]["union_event"] == "raw/ue.md"
+             and adj_u[0]["union_views"] == ["wiki/a.md"]
+             and adj_u[0]["event_sha256"] == "e" * 64
+             and adj_u[0]["union_view_sha256"] == {"wiki/a.md": "f" * 64}
+             and adj_u[0]["rejected_artifact"].startswith("receipts/verify/")
+             and adj_u[0]["ruling"].startswith("the event's extra claim"),
+             adj_u)
+        case("union adjudication record carries NO baseline pin fields "
+             "(baseline_commit / view_sha256 ABSENT -- a union leg "
+             "absorbed nothing)",
+             "baseline_commit" not in adj_u[0]
+             and "view_sha256" not in adj_u[0], adj_u)
+        # ledger AFTER: the row flips to set-aside (direction 2 -- the :886
+        # argument fix pinned both directions)
+        lines_a = []
+        execute_verify_ledger(repo_u, out=lines_a.append)
+        row_a = [ln for ln in lines_a if "union:raw/ue.md" in ln]
+        case("verify-ledger: the adjudicated union row flips open-blocking "
+             "-> set-aside", row_a and "set-aside" in row_a[0]
+             and "open-blocking" not in row_a[0], "\n".join(lines_a))
+        case("--set-aside --union-event refuses a SECOND ruling on the "
+             "same (seq, event) (one ruling per verdict)",
+             execute_set_aside(repo_u, cseq_u, None, "again",
+                               union_event="raw/ue.md",
+                               out=silent) == EXIT_FAIL)
+        case("--set-aside --union-event refuses an empty ruling",
+             execute_set_aside(repo_u, cseq_u, None, "   ",
+                               union_event="raw/ue2.md",
+                               out=silent) == EXIT_FAIL)
+        # the view-mode duplicate check is NOT confused by the union ruling:
+        # the view leg (stamped) still refuses on its own confirm ground
+        case("the union ruling does not shadow the view key space (the "
+             "stamped view leg still refuses as confirmed, not as "
+             "already-adjudicated)",
+             execute_set_aside(repo_u, cseq_u, "wiki/a.md", "r",
+                               out=silent) == EXIT_FAIL)
+    finally:
+        shutil.rmtree(repo_u, ignore_errors=True)
+
+    repo_u2 = make_repo("cdrv-union2-")
+    try:
+        _git(repo_u2, "add", "-A")
+        _git(repo_u2, "commit", "-qm", "fixtures")
+        cseq_rv = plant_union(repo_u2, "revised")
+        rc = execute_set_aside(repo_u2, cseq_rv, None,
+                               "completeness-class; recorded and closed",
+                               union_event="raw/ue.md", out=silent)
+        case("--set-aside --union-event LANDS on the live revised shape "
+             "(fork journal 125)", rc == EXIT_OK)
+        cseq_cf = plant_union(repo_u2, "confirm", event="raw/uc.md")
+        # verified: true union leg -- flip the fixture's entry
+        recs_u2 = load_journal(repo_u2)
+        vs = [s for s, r in recs_u2.items()
+              if r.get("verifies_seq") == cseq_cf]
+        vpath_cf = os.path.join(repo_u2, "receipts", "journal",
+                                "%d.json" % vs[0])
+        vrec_cf = json.load(open(vpath_cf, encoding="utf-8"))
+        vrec_cf["noop_candidates"][0]["verified"] = True
+        with open(vpath_cf, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(vrec_cf, fh, indent=1, sort_keys=True)
+        case("--set-aside --union-event refuses a CONFIRMED "
+             "(verified: true) union leg -- nothing to adjudicate",
+             execute_set_aside(repo_u2, cseq_cf, None, "r",
+                               union_event="raw/uc.md",
+                               out=silent) == EXIT_FAIL)
+        vrec_cf["noop_candidates"][0]["verified"] = False
+        with open(vpath_cf, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(vrec_cf, fh, indent=1, sort_keys=True)
+        buf_un = []
+        rc = execute_set_aside(repo_u2, cseq_cf, None,
+                               "the on-file union approval is genuine",
+                               union_event="raw/uc.md", out=buf_un.append)
+        case("--set-aside --union-event ADJUDICATES the discarded-union-"
+             "approval shape, naming stamp-refused (the NOTE path)",
+             rc == EXIT_OK and any("stamp-refused" in ln for ln in buf_un),
+             "; ".join(buf_un))
+        cseq_tr = plant_union(repo_u2, "bridge-error", event="raw/ut.md")
+        case("--set-aside --union-event refuses an INCOMPLETE union leg "
+             "toward --reverify (a transport failure is not a verdict)",
+             execute_set_aside(repo_u2, cseq_tr, None, "r",
+                               union_event="raw/ut.md",
+                               out=silent) == EXIT_FAIL)
+    finally:
+        shutil.rmtree(repo_u2, ignore_errors=True)
+
+    # mixed-run --reverify decline: byte-untouched behavior, pinned on both
+    # sides of a union adjudication (design sec.2.4 / hard requirement 1).
+    repo_u3 = make_repo("cdrv-union3-")
+    try:
+        st_u3 = make_staging(repo_u3)
+        good_u3 = make_grant(repo_u3)
+        _git(repo_u3, "add", "-A")
+        _git(repo_u3, "commit", "-qm", "fixtures")
+        cseq_m = plant_union(repo_u3, "rejected")
+        eng_m = FakeEngine()
+        buf_m1 = []
+        rc = reverify_driver(repo_u3, cseq_m, st_u3, good_u3, engine=eng_m,
+                             out=buf_m1.append)
+        case("mixed run (stamped view + open union rejection): --reverify "
+             "declines BEFORE the union adjudication (terminal, not "
+             "stamp-refused-only)",
+             rc == EXIT_OK and eng_m.verify_calls == 0
+             and any("Nothing to do" in ln for ln in buf_m1),
+             "; ".join(buf_m1))
+        rc = execute_set_aside(repo_u3, cseq_m, None, "close the union row",
+                               union_event="raw/ue.md", out=silent)
+        buf_m2 = []
+        rc2 = reverify_driver(repo_u3, cseq_m, st_u3, good_u3, engine=eng_m,
+                              out=buf_m2.append)
+        case("mixed run: --reverify STILL declines identically AFTER the "
+             "union adjudication (the v3.0-74 narrow gate is "
+             "byte-untouched; adjudication is not a re-fire ticket)",
+             rc == EXIT_OK and rc2 == EXIT_OK and eng_m.verify_calls == 0
+             and buf_m2 == buf_m1, "%s vs %s" % (buf_m1, buf_m2))
+    finally:
+        shutil.rmtree(repo_u3, ignore_errors=True)
+
+    # ------------------------- baseline-reset: the G1-G7 guard chain
+    repo_br = make_repo("cdrv-breset-")
+    try:
+        _git(repo_br, "add", "-A")
+        _git(repo_br, "commit", "-qm", "fixtures")
+        # the out-of-engine photograph: rewrite a.md, add b.md + c.md
+        write(os.path.join(repo_br, "wiki", "a.md"),
+              "# View A\n\nphotograph body\n")
+        write(os.path.join(repo_br, "wiki", "b.md"),
+              "# View B\n\nphotograph body b\n")
+        write(os.path.join(repo_br, "wiki", "c.md"),
+              "# View C\n\nphotograph body c\n")
+        _git(repo_br, "add", "-A")
+        _git(repo_br, "commit", "-qm",
+             "corpus photograph (out-of-engine import)")
+        refresh_sha = _git(repo_br, "rev-parse", "HEAD")[1].strip()
+        case("G1: empty --ruling refuses",
+             execute_baseline_reset(repo_br, "wiki/b.md", None, refresh_sha,
+                                    "the import", "  ",
+                                    out=silent) == EXIT_FAIL)
+        case("G1: empty --provenance refuses (scope-locked to declared "
+             "imports)",
+             execute_baseline_reset(repo_br, "wiki/b.md", None, refresh_sha,
+                                    "", "reset it",
+                                    out=silent) == EXIT_FAIL)
+        with open(os.path.join(repo_br, "wiki", "b.md"), "a",
+                  encoding="utf-8") as fh:
+            fh.write("dirt\n")
+        case("G2: a dirty worktree refuses (the record lands as its own "
+             "stage-only commit)",
+             execute_baseline_reset(repo_br, "wiki/b.md", None, refresh_sha,
+                                    "the import", "reset it",
+                                    out=silent) == EXIT_FAIL)
+        _git(repo_br, "checkout", "--", ".")
+        case("G3: an unknown --refresh-commit refuses",
+             execute_baseline_reset(repo_br, "wiki/b.md", None,
+                                    "deadbeef" * 5, "the import", "reset it",
+                                    out=silent) == EXIT_FAIL)
+        rc_ct, orphan, _e = _git(repo_br, "commit-tree", "-m", "off-line",
+                                 "-p", "HEAD", "HEAD^{tree}")
+        case("G3: a commit that is NOT an ancestor of HEAD refuses "
+             "(fail-closed ancestry)",
+             rc_ct == 0
+             and execute_baseline_reset(repo_br, "wiki/b.md", None,
+                                        orphan.strip(), "the import",
+                                        "reset it",
+                                        out=silent) == EXIT_FAIL)
+        case("G5: a view absent at the refresh commit refuses (single "
+             "mode: nothing journaled)",
+             execute_baseline_reset(repo_br, "wiki/nope.md", None,
+                                    refresh_sha, "the import", "reset it",
+                                    out=silent) == EXIT_FAIL)
+        chain_before = _core().check_chain(repo_br)
+        case("...and the guard refusals journaled NOTHING",
+             _core().check_chain(repo_br) == chain_before
+             and _worktree_clean(repo_br))
+        rc = execute_baseline_reset(repo_br, "wiki/b.md", None, refresh_sha,
+                                    "fixture photograph, imported "
+                                    "2026-08-16 outside the engine",
+                                    "reset the window", out=silent)
+        case("--baseline-reset LANDS per-view (exit 0, stage-only commit, "
+             "worktree clean)", rc == EXIT_OK and _worktree_clean(repo_br))
+        br_recs = [r for r in load_journal(repo_br).values()
+                   if r.get("run_type") == "baseline-reset"]
+        ent = br_recs[0]["baseline_reset"][0] if br_recs \
+            and br_recs[0].get("baseline_reset") else {}
+        case("baseline-reset record: new run_type, entry pins the refresh "
+             "commit + content sha, provenance and ruling VERBATIM, "
+             "reset_by operator",
+             len(br_recs) == 1 and ent.get("view") == "wiki/b.md"
+             and ent.get("refresh_commit") == refresh_sha
+             and ent.get("provenance", "").startswith("fixture photograph")
+             and ent.get("ruling") == "reset the window"
+             and ent.get("reset_by") == "operator", br_recs)
+        case("baseline-reset pin matches the refresh commit's actual "
+             "content (git-show recomputed, never the worktree)",
+             __import__("hashlib").sha256(subprocess.run(
+                 ["git", "-C", repo_br, "show",
+                  "%s:wiki/b.md" % refresh_sha],
+                 capture_output=True, text=True, encoding="utf-8")
+                 .stdout.encode("utf-8")).hexdigest()
+             == ent.get("view_sha256"))
+        buf_g6i = []
+        case("a second reset of the same (view, refresh_commit) refuses -- "
+             "caught by G6-identical in the spec's refusal order (the "
+             "newest stamp already pins the refresh commit itself); G7 "
+             "remains the backstop for the pair",
+             execute_baseline_reset(repo_br, "wiki/b.md", None, refresh_sha,
+                                    "the import", "again",
+                                    out=buf_g6i.append) == EXIT_FAIL
+             and any("G6" in ln and "refresh commit itself" in ln
+                     for ln in buf_g6i), "; ".join(buf_g6i))
+        # engine-authored history: a run commit (adds receipts/journal/)
+        cseq_g = plant_seq103(repo_br, "rejected")
+        run_sha_g = _find_run_commit(repo_br, cseq_g)
+        case("G4: a journaled run commit refuses (engine-authored history "
+             "is never an import)",
+             execute_baseline_reset(repo_br, "wiki/a.md", None, run_sha_g,
+                                    "the import", "reset it",
+                                    out=silent) == EXIT_FAIL)
+        # G6 refuse direction: wiki/a.md's newest stamp (a set-aside pinned
+        # at the run commit) is a DESCENDANT of the photograph -- the
+        # baseline already advanced past it; a reset would regress it.
+        rc = execute_set_aside(repo_br, cseq_g, "wiki/a.md",
+                               "let it stand", out=silent)
+        buf_g6 = []
+        case("G6 (no-rewind, refuse direction): a stamp pinning a "
+             "DESCENDANT of the refresh commit refuses the reset -- the "
+             "baseline-already-advanced shape",
+             rc == EXIT_OK
+             and execute_baseline_reset(repo_br, "wiki/a.md", None,
+                                        refresh_sha, "the import",
+                                        "reset it",
+                                        out=buf_g6.append) == EXIT_FAIL
+             and any("G6" in ln for ln in buf_g6), "; ".join(buf_g6))
+        # G6 proceed direction + a LATER photograph: wiki/b.md's newest
+        # stamp is the reset at refresh_sha, a STRICT ANCESTOR of photo2.
+        write(os.path.join(repo_br, "wiki", "b.md"),
+              "# View B\n\nsecond photograph body b\n")
+        _git(repo_br, "add", "-A")
+        _git(repo_br, "commit", "-qm", "second photograph")
+        photo2_sha = _git(repo_br, "rev-parse", "HEAD")[1].strip()
+        case("G6 (proceed direction): a stamp pinning a STRICT ANCESTOR "
+             "of the refresh commit proceeds -- a LATER photograph may "
+             "reset again (G7 keys the pair)",
+             execute_baseline_reset(repo_br, "wiki/b.md", None, photo2_sha,
+                                    "second fixture photograph",
+                                    "advance to the new photograph",
+                                    out=silent) == EXIT_OK)
+        # bulk form: one passing view, two refused with guards named
+        write(os.path.join(repo_br, "views.txt"),
+              "wiki/c.md\nwiki/a.md\nwiki/nope.md\n")
+        _git(repo_br, "add", "-A")
+        _git(repo_br, "commit", "-qm", "views list")
+        buf_blk = []
+        rc = execute_baseline_reset(repo_br, None, "views.txt", refresh_sha,
+                                    "fixture photograph, bulk",
+                                    "bulk reset", out=buf_blk.append)
+        br_recs2 = [r for r in load_journal(repo_br).values()
+                    if r.get("run_type") == "baseline-reset"]
+        newest_blk = max(br_recs2, key=lambda r: r.get("seq", 0))
+        case("bulk --views-file: the passing view resets, exit 0",
+             rc == EXIT_OK
+             and [e["view"] for e in newest_blk["baseline_reset"]]
+             == ["wiki/c.md"], "; ".join(buf_blk))
+        case("bulk --views-file: the record's refused[] names every view "
+             "that did not move and why (journal-only truth includes the "
+             "refusals)",
+             sorted((rj["view"], rj["guard"])
+                    for rj in newest_blk.get("refused") or [])
+             == [("wiki/a.md", "G6"), ("wiki/nope.md", "G5")],
+             newest_blk.get("refused"))
+        # G6 fail-closed directions the ancestry walk cannot resolve:
+        # a stamp pinning an UNRESOLVABLE commit, and a stamp pinning NO
+        # commit at all -- both refuse, never guess.
+        write(os.path.join(repo_br, "wiki", "d.md"),
+              "# View D\n\nphotograph body d\n")
+        write(os.path.join(repo_br, "wiki", "e.md"),
+              "# View E\n\nphotograph body e\n")
+        _git(repo_br, "add", "-A")
+        _git(repo_br, "commit", "-qm", "third photograph (d + e)")
+        photo3_sha = _git(repo_br, "rev-parse", "HEAD")[1].strip()
+        core_g6 = _core()
+        bogus = core_g6.minimal_record(
+            "verify-adjudication",
+            _git(repo_br, "rev-parse", "HEAD")[1].strip())
+        bogus["run_window"] = {"start": "t0", "end": "t1"}
+        bogus["absorption_adjudicated"] = [
+            {"view": "wiki/d.md", "adjudicates_seq": 1, "at": "t",
+             "ruling": "fixture", "adjudicated_by": "operator",
+             "baseline_commit": "0" * 40, "view_sha256": "a" * 64},
+            {"view": "wiki/e.md", "adjudicates_seq": 1, "at": "t",
+             "ruling": "fixture", "adjudicated_by": "operator"}]
+        _bseq, bpath = core_g6.append_record(repo_br, bogus)
+        core_g6.stage_only_commit(
+            repo_br, [os.path.relpath(bpath, repo_br).replace(os.sep, "/")],
+            "bogus-pin adjudication fixture")
+        buf_g6u = []
+        case("G6 fail-closed: a stamp pinning an UNRESOLVABLE commit "
+             "refuses the reset (ancestry cannot be determined)",
+             execute_baseline_reset(repo_br, "wiki/d.md", None, photo3_sha,
+                                    "the import", "reset it",
+                                    out=buf_g6u.append) == EXIT_FAIL
+             and any("G6" in ln and "unresolvable" in ln
+                     for ln in buf_g6u), "; ".join(buf_g6u))
+        buf_g6n = []
+        case("G6 fail-closed: a stamp pinning NO commit refuses the reset "
+             "(a pin-less stamp is incomparable, never treated as absent)",
+             execute_baseline_reset(repo_br, "wiki/e.md", None, photo3_sha,
+                                    "the import", "reset it",
+                                    out=buf_g6n.append) == EXIT_FAIL
+             and any("G6" in ln and "pins no commit" in ln
+                     for ln in buf_g6n), "; ".join(buf_g6n))
+        # a reset closes NO verdict row: a fresh rejected leg stays
+        # open-blocking through a later reset of a DIFFERENT view.
+        cseq_o = plant_seq103(repo_br, "rejected")
+        rc = execute_baseline_reset(repo_br, "wiki/c.md", None, photo2_sha,
+                                    "second fixture photograph",
+                                    "advance c too", out=silent)
+        lines_o = []
+        execute_verify_ledger(repo_br, out=lines_o.append)
+        case("a reset record closes NO verdict row (the fresh rejected "
+             "leg still reads open-blocking after a later reset -- a "
+             "reset adjudicates nothing)",
+             rc == EXIT_OK
+             and any("open-blocking" in ln for ln in lines_o
+                     if "wiki/a.md" in ln), "\n".join(lines_o))
+        # G7 reached on its own ground: wiki/c.md was reset at photo2; land
+        # a NEWER stamp pinning a strict ANCESTOR of photo2 (the v3.0-107
+        # regression shape), so a second photo2 reset passes G5 AND G6 --
+        # only G7's (view, refresh_commit) memory refuses the duplicate.
+        regress = _core().minimal_record(
+            "verify-adjudication",
+            _git(repo_br, "rev-parse", "HEAD")[1].strip())
+        regress["run_window"] = {"start": "t0", "end": "t1"}
+        regress["absorption_adjudicated"] = [
+            {"view": "wiki/c.md", "adjudicates_seq": 1, "at": "t",
+             "ruling": "fixture regression stamp",
+             "adjudicated_by": "operator",
+             "baseline_commit": refresh_sha, "view_sha256": "b" * 64}]
+        _rseq, rpath = _core().append_record(repo_br, regress)
+        _core().stage_only_commit(
+            repo_br, [os.path.relpath(rpath, repo_br).replace(os.sep, "/")],
+            "regression-stamp fixture")
+        buf_g7 = []
+        case("G7 refuses on its own ground (G5 and G6 both pass -- the "
+             "newest stamp pins a strict ancestor -- and the "
+             "(view, refresh_commit) pair is already on the journal)",
+             execute_baseline_reset(repo_br, "wiki/c.md", None, photo2_sha,
+                                    "the import", "again",
+                                    out=buf_g7.append) == EXIT_FAIL
+             and any("G7" in ln and "one ruling per fact" in ln
+                     for ln in buf_g7), "; ".join(buf_g7))
+        # G7 intra-invocation: the same view twice in ONE --views-file must
+        # not journal the same (view, refresh_commit) pair twice. Every
+        # line -- repeats included -- walks G5->G6->G7, so the passing
+        # view's repeat refuses under G7 (the pair already resets in this
+        # record) while a repeated MISSING view earns G5 both times.
+        write(os.path.join(repo_br, "views-dup.txt"),
+              "wiki/b.md\nwiki/b.md\nwiki/nope.md\nwiki/nope.md\n")
+        _git(repo_br, "add", "-A")
+        _git(repo_br, "commit", "-qm", "dup views list")
+        rc = execute_baseline_reset(repo_br, None, "views-dup.txt",
+                                    photo3_sha, "third fixture photograph",
+                                    "advance b", out=silent)
+        dup_rec = max((r for r in load_journal(repo_br).values()
+                       if r.get("run_type") == "baseline-reset"),
+                      key=lambda r: r.get("seq", 0))
+        case("G7 intra-invocation: a view listed twice in one --views-file "
+             "journals ONE entry, the repeat refused under G7 after "
+             "re-walking G5/G6 (one ruling per fact)",
+             rc == EXIT_OK
+             and [e["view"] for e in dup_rec["baseline_reset"]]
+             == ["wiki/b.md"]
+             and ("wiki/b.md", "G7") in
+             [(rj["view"], rj["guard"])
+              for rj in dup_rec.get("refused") or []], dup_rec)
+        case("...and a repeated MISSING view earns its G5 refusal on every "
+             "line (the guard chain runs per line; no pre-check shadows "
+             "G5/G6)",
+             [(rj["view"], rj["guard"])
+              for rj in dup_rec.get("refused") or []]
+             == [("wiki/b.md", "G7"), ("wiki/nope.md", "G5"),
+                 ("wiki/nope.md", "G5")], dup_rec.get("refused"))
+        case("reconciliation stays clean across resets (no blocking "
+             "state minted)", reconcile_state(repo_br)["blocked"] is False)
+        case("journal chain intact across the whole battery",
+             _core().check_chain(repo_br)
+             == len(load_journal(repo_br)))
+    finally:
+        shutil.rmtree(repo_br, ignore_errors=True)
 
     # v3.0-63: deferred claims ride the summary block, named as
     # pending_cascade-bound.
@@ -3980,6 +4876,10 @@ def self_test():                                            # noqa: C901
          "return execute_revert(" in main_src)
     case("main() dispatches --verify-ledger to execute_verify_ledger",
          "return execute_verify_ledger(" in main_src)
+    case("main() dispatches --baseline-reset to execute_baseline_reset",
+         "return execute_baseline_reset(" in main_src)
+    case("main() passes --union-event through to execute_set_aside",
+         "union_event=opts[\"union-event\"]" in main_src)
 
     # ------------------------------------------------------- K. exit mapping
     case("main() with no arguments is inconclusive (exit 2)",
@@ -4016,7 +4916,13 @@ def main(argv):
                               reason=opts["reason"])
     if opts["mode"] == "set-aside":
         return execute_set_aside(opts["root"], opts["seq"], opts["view"],
-                                 opts["ruling"])
+                                 opts["ruling"],
+                                 union_event=opts["union-event"])
+    if opts["mode"] == "baseline-reset":
+        return execute_baseline_reset(opts["root"], opts["view"],
+                                      opts["views-file"],
+                                      opts["refresh-commit"],
+                                      opts["provenance"], opts["ruling"])
     if opts["mode"] == "verify-ledger":
         return execute_verify_ledger(opts["root"], since=opts["since"])
     print(USAGE)

@@ -185,7 +185,7 @@ cross-vendor check or your recorded ruling; nothing recovers silently).
 ## v3.0.37 → v3.0.38 (the scanner stops blocking its own adoption)
 
 One file, no **[your call]** entries — a tightening-preserving false-positive fix
-(backlog v3.0-104, surfaced live at the aces-fork adoption 2026-08-12).
+(backlog v3.0-104, surfaced live at a fork adoption 2026-08-12).
 
 1. **Copy the updated scanner** (shell copy, the hooks dir is write-guarded):
    `cp <template>/core/security/hooks/scan-staged-secrets.sh core/security/hooks/` and
@@ -199,6 +199,61 @@ One file, no **[your call]** entries — a tightening-preserving false-positive 
    construction: agents are mechanically barred from writing anywhere under
    `core/security/hooks/` (the v3.0.36 write-guard), and the same bytes under any OTHER
    path still block — both directions battery-pinned. Nothing else loosens.
+
+## v3.0.38 → v3.0.39 (the two verify-lifecycle doors: union-leg set-aside + operator baseline-reset)
+
+If you run the knowledge-os engine. Drop-over copies at adoption time; both doors are
+**operator verbs at use time** — every act through them is your recorded ruling, journaled
+verbatim, and a session whose work is being verified never runs either one (the
+no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS §7).
+
+1. **Copy the two engine files** into your `deploy/`: `compile-driver.py` (the
+   `--set-aside --union-event` addressing mode, the `--baseline-reset` verb with guard
+   chain G1–G7, and the verify-ledger union-row fix) and `compile-v2.py` (the trigger-state
+   union skip — REQUIRED, per the design's cross-vendor correction — plus the baseline
+   ladder's third rung and its packet naming). Run each `--self-test` to confirm
+   (253/225 at this template's HEAD).
+2. **Copy `engine/OPERATIONS.md`** — §7's BLOCKED/RECORDED rows now name the union
+   addressing form, the ADJUDICATED row names the `union:<event>` subject, the baseline
+   paragraph carries the third rung, and the no-self-adjudication paragraph extends the
+   bright line to `--baseline-reset`. No new state; the eight-state table and "there is no
+   third disposition" stand unchanged.
+3. **What door 105 unlocks:** a union no-op leg that completed with a genuine non-confirm
+   verdict (`--verify-ledger` rows reading `union:raw/... open-blocking` forever) is now
+   addressable: `--set-aside --seq N --union-event <raw path> --ruling "<your words>"`
+   closes the row (ledger `set-aside`, drill ADJUDICATED). No baseline moves — a union leg
+   absorbed nothing. The mixed-run `--reverify` decline is byte-untouched: adjudicating a
+   union row is not a re-fire ticket for its run's other legs.
+4. **What door 106 unlocks:** after an out-of-engine corpus refresh (a photograph that
+   rewrote articles with no per-event provenance), `--baseline-reset --view <path>` (or
+   `--views-file <list>`) `--refresh-commit <sha> --provenance "<what/when/where>"
+   --ruling "<your words>"` pins the verify baseline at the refresh commit, ending the
+   guaranteed-false window-rejection class for those articles' FUTURE verifies. The verb is
+   scope-locked to declared imports (the commit must exist in history, be an ancestor of
+   HEAD, and not be engine-authored), refuses to rewind past any stamp the lifecycle
+   already earned (G6), and journals every bulk refusal by name.
+5. **Honest boundaries, so they're no surprise:** a union set-aside advances no baseline;
+   a baseline reset closes no open verdict row (prior rejections still each cost a ruling)
+   and verifies nothing — packets open "(baseline: reset to imported snapshot by operator
+   ruling, not machine-verified — <your provenance>, journal seq N)"; T1 serving,
+   `consumed_status`, and migration-audit debt are untouched by both doors; a view whose
+   stamp is incomparable with the refresh commit fails closed (the remedy is a fresh
+   photograph commit, not a guard exception).
+6. **The dogfood fork's close-out, previewed (runs in the fork's own session after it
+   adopts this release — spec §7.2 as amended by its §10, the 2026-08-17 operator
+   ruling):** the two standing union rows close by two `--set-aside --union-event`
+   rulings (runs 122/124 — the ledger's exit census moves 2 → 0 open-blocking,
+   discharging cutover eligibility criterion 2's asterisk), then a bulk
+   `--baseline-reset --views-file` over the refreshed views at photograph commit
+   `1f41621` — with **one flight-plan article EXCLUDED from the list (and from any
+   per-view reset) by operator ruling** (named in the spec's §10 amendment): the fork's
+   drain left that article's newest stamp pinning pre-photograph content one journal seq
+   AFTER its run-204 post-photograph adjudication, so a reset would proceed and silently
+   rewind behind run 204 (the v3.0-107 shape; G6 cannot see it — the stamp it compares
+   against already pre-dates the photograph). Views whose stamps already sit past the
+   photograph (`memory-engine` among them — its runs post-date the photograph commit)
+   are EXPECTED in the record's `refused[]` under G6; those refusals appearing is part
+   of the acceptance, not a failure.
 
 ## v3.0.33 → v3.0.34 (housekeeping + the trajectory guard)
 

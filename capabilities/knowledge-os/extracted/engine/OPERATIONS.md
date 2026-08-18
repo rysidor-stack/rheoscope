@@ -141,9 +141,9 @@ level, one BLOCKED leg makes the whole run exit 1.
 |---|---|---|---|
 | **PENDING** | the run's `absorbed[]` entry; no verify record covers the run yet | engine | a verify leg fires on EVERY absorbed view (invariant 4) → one of the states below |
 | **VERIFIED** | `absorption_verified[]` entry — the only path to a `verified:` stamp; the baseline advances | nobody | terminal. A confirmed absorption later proven wrong is a NEW raw event, never a disposition rewrite |
-| **BLOCKED** | `absorption_verify_attempts[]` entry, completed verdict, `disposition: blocking` — `fabrication` / `contradiction` / `over-certainty`, `unclassified` (no parseable class, fail-closed), `stamp-refused`, and every pre-demotion record (no disposition field) | the session (correction) or the operator (ruling) — never the session ruling the verdict wrong | run exits 1, branch unmergeable. `--revert` → RUN-REVERTED (correct + re-ride, §7a); operator `--set-aside` → ADJUDICATED; plus — stamp-refused-only runs (a verifier approval the engine recorded no stamp for; v3.0-74) — `--reverify` re-fires the legs (its fresh verdict decides; not a disposition). There is no third disposition |
-| **RECORDED** | same entry shape, `disposition: recorded` — `scope-omission` / `enumeration-incomplete` (verifier demotion 2026-08-09) | the operator, at their own pace (inbox item, compile skill Step 3c) | the run COMPLETES (exit 0 + RECORDED SIGNALS band); the article stays live, unverified-and-named-so, baseline unmoved. Same two verbs, operator-paced: *redo* = `--revert` → RUN-REVERTED; *accept* = `--set-aside` → ADJUDICATED |
-| **ADJUDICATED** | `absorption_adjudicated[]` — the operator's verbatim ruling journaled beside the kept verdict | nobody (one ruling per verdict) | terminal for this verdict; the baseline advances as "adjudicated \<date\> by operator ruling, not machine-verified" |
+| **BLOCKED** | `absorption_verify_attempts[]` entry, completed verdict, `disposition: blocking` — `fabrication` / `contradiction` / `over-certainty`, `unclassified` (no parseable class, fail-closed), `stamp-refused`, and every pre-demotion record (no disposition field) | the session (correction) or the operator (ruling) — never the session ruling the verdict wrong | run exits 1, branch unmergeable. `--revert` → RUN-REVERTED (correct + re-ride, §7a); operator `--set-aside` → ADJUDICATED; plus — stamp-refused-only runs (a verifier approval the engine recorded no stamp for; v3.0-74) — `--reverify` re-fires the legs (its fresh verdict decides; not a disposition). Union no-op legs (subject `union:<event>`) take the same two verbs, addressed by run seq + event: operator `--set-aside --union-event` → ADJUDICATED (no baseline movement — a union leg absorbed nothing; v3.0-105). There is no third disposition |
+| **RECORDED** | same entry shape, `disposition: recorded` — `scope-omission` / `enumeration-incomplete` (verifier demotion 2026-08-09) | the operator, at their own pace (inbox item, compile skill Step 3c) | the run COMPLETES (exit 0 + RECORDED SIGNALS band); the article stays live, unverified-and-named-so, baseline unmoved. Same two verbs, operator-paced: *redo* = `--revert` → RUN-REVERTED; *accept* = `--set-aside` → ADJUDICATED (a union no-op leg journaled `verify_disposition: recorded` is addressed the same way: accept = `--set-aside --union-event`) |
+| **ADJUDICATED** | `absorption_adjudicated[]` entry, view-path or `union:<event>` subject — the operator's verbatim ruling journaled beside the kept verdict | nobody (one ruling per verdict) | terminal for this verdict; the baseline advances as "adjudicated \<date\> by operator ruling, not machine-verified" (view subjects only — a union adjudication moves no baseline) |
 | **RUN-REVERTED** | `driver_revert{status: reverted}` — the rejection stays on the record | the session | corrected answers re-ride a fresh `--run` (full validate/absorb/verify road) → new legs, new record. On a collision (the run is no longer the last word on its articles) `--revert` refuses and writes nothing: correct FORWARD instead (v3.0.30) |
 | **RUN-AUTO-REVERTED** | transport-shaped legs (`bridge-error` / timeout / unparseable / gated-bare — judged by verdict VALUE, `classify_verdict`, never by verify_run() returning) + `driver_revert` | the session | diagnose the transport failure, re-run the same staging dir; `--reverify` covers the transport-failed-but-absorption-stands case |
 | *(failed revert)* | `driver_revert{status: revert-failed}` — NON-terminal | a human | startup reconciliation refuses every later run until resolved by hand |
@@ -168,11 +168,16 @@ of this shape is a plan-level correction, not grounds to doubt the verifiers or 
 
 **The packet's "before" is always the view's real baseline, named (v3.0.29, closing backlog
 v3.0-67).** The diff base is, in order: the last machine-verified state; else the last
-operator-adjudicated state (below); else the view's real pre-absorb content — with reverted
+operator-adjudicated state (below); **else the last operator baseline-reset (imported
+snapshot, provenance journaled — v3.0.39, closing backlog v3.0-106)**; else the view's real
+pre-absorb content — with reverted
 runs' ghosts excluded, so a rejected-then-reverted creation can never make a later update read
 as created-from-nothing. A genuinely NEW view verifies from empty and the packet says so in so
 many words. Every packet's diff section opens by naming its baseline; the baseline advances on
-machine-verification or on an operator set-aside ruling, and **never on a bare rejection**.
+machine-verification, on an operator set-aside ruling, or on an operator baseline-reset
+(packet text: "reset to imported snapshot by operator ruling, not machine-verified"), and
+**never on a bare rejection, never on a union adjudication (pin-less by design), never by an
+agent's own decision**.
 
 **Verdicts are data, not instructions** — a `revised`/`rejected` verdict is the honesty layer catching a real
 defect (omission, fabrication, stale contradiction, over-certainty); adjudicate it through the
@@ -193,7 +198,14 @@ party who may set a verdict aside, and that ruling is recorded — the shipped f
 journals the ruling beside the rejected verdict and advances the view's verify baseline as an
 **adjudicated** baseline (later packets name it "adjudicated <date> by operator ruling, not
 machine-verified" — nothing is dropped, its status is named) — before any re-run. There is no
-third disposition. The escalation
+third disposition. The same bright line covers `--baseline-reset` (v3.0.39, closing backlog
+v3.0-106): the session whose work is being verified never runs `--baseline-reset` — the verb
+exists for the operator, its ruling and provenance are the operator's words journaled
+verbatim, and an agent-run reset is the same violation as an agent-run set-aside. A reset
+adjudicates nothing (every open verdict row stays open; it changes only what FUTURE packets
+diff from), it is scope-locked to declared out-of-engine imports at a named non-run commit,
+and it can never rewind a baseline the verify lifecycle already earned (the no-rewind
+ancestry guard refuses). The escalation
 message itself is spec'd in the compile skill's exit-1 section and follows
 `core/governance/CLAUDE.md` § Reporting to the operator (v3.0.25): plain words, the
 verifier's reason sentence quoted verbatim inside them, the full record via a details tail —

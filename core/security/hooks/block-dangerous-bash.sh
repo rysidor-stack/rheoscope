@@ -28,6 +28,17 @@ set -euo pipefail
 
 INPUT=$(cat)
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // ""')
+# Quote-normalized twin for pattern matching (v3.0.41, cross-vendor catch): shell
+# quoting is invisible to the shell's own word-splitting -- `git 'commit' --no-verify`
+# IS `git commit --no-verify` -- but a literal regex never sees it. Stripping quote
+# characters before matching kills that entire evasion class in one move. Honest
+# boundary, stated where the patterns live: a regex tier is a TRIPWIRE against
+# straightforward and quoted spellings, never a categorical bar on an adversarial
+# composer (token concatenation, $(echo ...), variable indirection remain expressible;
+# so does simply not using the mediated tool). Matching the NORMALIZED string can only
+# widen what's caught; the -n-in-a-commit-message class of false positive stays the
+# accepted deny-over-ask trade (v3.0.36).
+COMMAND_NORM=$(printf '%s' "$COMMAND" | tr -d "'\"")
 
 HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ALLOWLIST="$HOOK_DIR/egress-allowlist.txt"
@@ -43,12 +54,17 @@ DENY_PATTERNS=(
   # a session never reaches it. Commit-scoped on purpose -- `git push -n` is a
   # dry-run, not a bypass, and stays untouched. The space after `commit` is
   # load-bearing: `git commit-tree -n` / `git commitment -n` are different words
-  # and must not match (cross-vendor review catch, 2026-08-11).
-  'git[[:space:]]+commit[[:space:]]([^|;&]*[[:space:]])?(--no-verify|-n)([[:space:]]|$)'
+  # and must not match (cross-vendor review catch, 2026-08-11). The optional
+  # middle group before `commit` covers git GLOBAL options -- `git -C <repo>
+  # commit --no-verify`, `git -c k=v commit -n` -- which the original
+  # git-adjacent form missed (cross-vendor review catch, 2026-08-17, v3.0.41;
+  # the group excludes command separators so an unrelated later command's
+  # `commit` cannot be reached across a pipe or `;`).
+  'git[[:space:]]+([^|;&]*[[:space:]])?commit[[:space:]]([^|;&]*[[:space:]])?(--no-verify|-n)([[:space:]]|$)'
 )
 
 for pat in "${DENY_PATTERNS[@]}"; do
-  if echo "$COMMAND" | grep -Eqi "$pat"; then
+  if echo "$COMMAND_NORM" | grep -Eqi "$pat"; then
     echo "Blocked: command matches denied pattern '$pat'. Destructive commands are denied by policy (unrecoverable -- the v3.0.19 doctrine's deny class). This tier has no allowlist and no ask; if the operation is truly intended, the operator runs it themselves, deliberately." >&2
     exit 2
   fi
@@ -92,7 +108,7 @@ ASK_PATTERNS=(
 for entry in "${ASK_PATTERNS[@]}"; do
   label="${entry%%|*}"
   pat="${entry#*|}"
-  if echo "$COMMAND" | grep -Eqi "$pat"; then
+  if echo "$COMMAND_NORM" | grep -Eqi "$pat"; then
     # Standing allowance? (operator-committed file; ASK tier only)
     if [ -f "$ALLOWLIST" ]; then
       while IFS= read -r line || [ -n "$line" ]; do

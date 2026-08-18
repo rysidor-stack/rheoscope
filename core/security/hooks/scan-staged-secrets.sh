@@ -74,14 +74,20 @@ PLACEHOLDER_RE='EXAMPLE|REDACTED|PLACEHOLDER|CHANGE[-_]?ME|your-[a-z0-9-]+-here|
 PATH_BLOCK_RE='(^|/)(\.env(\..*)?|[^/]*\.(pem|ppk)|credentials\.json)$'
 PATH_KEY_RE='(^|/)[^/]*\.key$'
 PATH_ALLOW_RE='(^|/)\.env\.(example|sample)$'
-# The perimeter's own fixture dir -- hard-coded, never configurable. The
-# scanner's own source file is exempt at its canonical path only (v3.0-104:
-# its pattern table and self-test strings look secret-shaped to itself, so it
-# blocked the very commit that adopts it on every instance; safe to exempt
-# because agents are mechanically barred from writing anywhere under
-# core/security/hooks/ -- the v3.0-98(a) write-guard -- so this file cannot
-# be used as a smuggling channel).
-EXEMPT_RE='(^|/)core/security/hooks/(test-inputs/|scan-staged-secrets\.sh$)'
+# The perimeter's own fixture dir -- hard-coded, never configurable.
+EXEMPT_RE='(^|/)core/security/hooks/test-inputs/'
+# The scanner's own source at its canonical path gets the KNOWN-OWN-LINES rule
+# instead of an exemption (v3.0-104 fixed the adoption self-block; v3.0-109
+# caught the fix's hole: a blanket path exemption composed with the
+# write-guard's shell-path honest limit into an unscanned commit lane). Rule:
+# added lines that exist VERBATIM in the running scanner script ($0 -- the
+# installed hook at commit time) are its own known content and pass; every
+# other added line is scanned normally. Adoption passes (the staged file IS
+# the just-installed hook); an appended or embedded secret is never in the
+# running script's text, so it blocks. A session that can rewrite the hook
+# itself can neuter any pre-commit defense -- outside a hook's threat model;
+# the tracked-file lane is what this closes.
+OWN_PATH_RE='(^|/)core/security/hooks/scan-staged-secrets\.sh$'
 
 _fail() {
   echo "COMMIT BLOCKED by scan-staged-secrets.sh: $1" >&2
@@ -95,7 +101,14 @@ scan_repo() {
   local repo="$1"
   local paths added line label pat region
 
-  paths=$(git -C "$repo" diff --cached --name-only --diff-filter=ACR 2>/dev/null) || return 0
+  # v3.0-110: ACMR, not ACR -- the original perimeter enumerated Added/Copied/
+  # Renamed only, so a secret pasted into an already-tracked file was NEVER
+  # scanned (caught 2026-08-17 by the v3.0-109 fix's end-to-end evidence: the
+  # real hook-mediated append-tamper commit passed while every direct-call test
+  # staged new files). Class 4 (credential files by path) also wants M: a
+  # tracked file RENAMED onto a credential name arrives as R, but content
+  # landing in an existing .env-class path must block too.
+  paths=$(git -C "$repo" diff --cached --name-only --diff-filter=ACMR 2>/dev/null) || return 0
 
   # ---- class 4: credential files by path --------------------------------------
   while IFS= read -r p; do
@@ -115,6 +128,12 @@ EOF
     echo "$p" | grep -Eq "$EXEMPT_RE" && continue
     added=$(git -C "$repo" diff --cached -U0 -- "$p" 2>/dev/null | grep -E '^\+' | grep -Ev '^\+\+\+' | cut -c2-)
     [ -z "$added" ] && continue
+    if echo "$p" | grep -Eq "$OWN_PATH_RE"; then
+      # KNOWN-OWN-LINES (v3.0-109): keep only added lines NOT present verbatim
+      # in the running script; those residual lines are scanned normally.
+      added=$(echo "$added" | grep -Fxv -f "$0" || true)
+      [ -z "$added" ] && continue
+    fi
     for entry in "${CONTENT_PATTERNS[@]}"; do
       label="${entry%%|*}"
       pat="${entry#*|}"
@@ -208,11 +227,96 @@ self_test() {
   # Same bytes OUTSIDE the exempt path block (the exemption is the path, not the bytes)
   mkrepo; stage "elsewhere/fx.txt" "-----BEGIN RSA PRIVATE KEY-----";                      expect "fixture bytes outside the exempt dir still block" 1
 
-  # v3.0-104: the scanner's own source file commits cleanly at its canonical
-  # path (adoption self-block fix) -- but the same pattern-shaped bytes under
-  # the scanner's NAME anywhere else still block (path exemption, not name)
-  mkrepo; stage "core/security/hooks/scan-staged-secrets.sh" "PAT='-----BEGIN RSA PRIVATE KEY-----'"; expect "the scanner's own source at its canonical path passes" 0
+  # v3.0-104 + v3.0-109: the KNOWN-OWN-LINES rule at the canonical path. The
+  # verifier's acceptance criterion made executable: adoption passes; every
+  # agent-reachable tamper-and-commit path for this one file blocks.
+  mkrepo; mkdir -p "$repo/core/security/hooks"; cp "$0" "$repo/core/security/hooks/scan-staged-secrets.sh"
+  git -C "$repo" add core/security/hooks/scan-staged-secrets.sh;                          expect "adoption: the scanner's own real bytes at the canonical path pass" 0
+  mkrepo; mkdir -p "$repo/core/security/hooks"; cp "$0" "$repo/core/security/hooks/scan-staged-secrets.sh"
+  printf 'k=sk-ant-%s\n' "$(printf 'z%.0s' $(seq 1 24))" >> "$repo/core/security/hooks/scan-staged-secrets.sh"
+  git -C "$repo" add core/security/hooks/scan-staged-secrets.sh;                          expect "tamper: own bytes PLUS an appended secret line block (append AND delete/re-add shapes)" 1
+  mkrepo; stage "core/security/hooks/scan-staged-secrets.sh" "PAT='-----BEGIN RSA PRIVATE KEY-----'"; expect "a foreign pattern-shaped line alone at the canonical path blocks (no free pass from path)" 1
   mkrepo; stage "tools/scan-staged-secrets.sh" "PAT='-----BEGIN RSA PRIVATE KEY-----'";    expect "scanner-named file OUTSIDE the canonical path still blocks" 1
+
+  # v3.0-110 regression pins: MODIFIED tracked files are scanned (the original
+  # ACR enumeration never saw them -- both directions)
+  mkrepo; stage "doc.md" "hello, nothing secret"
+  git -C "$repo" -c core.hooksPath=/dev/null commit -q -m base >/dev/null 2>&1
+  printf 'tok: ghp_%s\n' "$(printf 'a%.0s' $(seq 1 36))" >> "$repo/doc.md"
+  git -C "$repo" add doc.md;                                                              expect "a secret ADDED TO AN EXISTING tracked file blocks (v3.0-110)" 1
+  mkrepo; stage "doc.md" "hello"
+  git -C "$repo" -c core.hooksPath=/dev/null commit -q -m base >/dev/null 2>&1
+  printf 'more ordinary prose\n' >> "$repo/doc.md"
+  git -C "$repo" add doc.md;                                                              expect "an ordinary modification to a tracked file passes" 0
+
+  # v3.0-109 round-2 operational evidence (cross-vendor demand, 2026-08-17):
+  # END-TO-END through a real `git commit` with THIS scanner installed as the
+  # repo's .git/hooks/pre-commit -- not a direct scan_repo call. Covers the
+  # adoption commit, the append-tamper commit, and the delete-then-re-add
+  # commit sequence as three real hook-mediated commits.
+  e2e_repo=$(mktemp -d)
+  git -C "$e2e_repo" init -q
+  git -C "$e2e_repo" config user.email t@t; git -C "$e2e_repo" config user.name t
+  git -C "$e2e_repo" config core.autocrlf false
+  mkdir -p "$e2e_repo/core/security/hooks"
+  cp "$0" "$e2e_repo/core/security/hooks/scan-staged-secrets.sh"
+  cp "$0" "$e2e_repo/.git/hooks/pre-commit"; chmod +x "$e2e_repo/.git/hooks/pre-commit"
+  git -C "$e2e_repo" add core/security/hooks/scan-staged-secrets.sh
+  total=$((total+1))
+  if git -C "$e2e_repo" commit -q -m adoption >/dev/null 2>&1; then
+    case_ "E2E: real hook-mediated ADOPTION commit of own file succeeds" ok
+  else
+    case_ "E2E: real hook-mediated ADOPTION commit of own file succeeds" XX "commit refused"
+  fi
+  printf 'k=sk-ant-%s\n' "$(printf 'q%.0s' $(seq 1 24))" >> "$e2e_repo/core/security/hooks/scan-staged-secrets.sh"
+  git -C "$e2e_repo" add core/security/hooks/scan-staged-secrets.sh
+  total=$((total+1))
+  if git -C "$e2e_repo" commit -q -m tamper >/dev/null 2>&1; then
+    case_ "E2E: real hook-mediated APPEND-TAMPER commit is refused" XX "commit succeeded"
+  else
+    case_ "E2E: real hook-mediated APPEND-TAMPER commit is refused" ok
+  fi
+  # (round-2 verifier catch: after the refused commit the secret stays STAGED,
+  # so the naive cleanup left `git rm` failing and the "re-add" case was really
+  # a second modified-file block. Restore index+worktree from HEAD, assert the
+  # removal commit REALLY lands, assert the re-add is REALLY an A-shape.)
+  git -C "$e2e_repo" checkout -q HEAD -- core/security/hooks/scan-staged-secrets.sh
+  git -C "$e2e_repo" rm -q core/security/hooks/scan-staged-secrets.sh
+  total=$((total+1))
+  if git -C "$e2e_repo" commit -q -m "remove scanner" >/dev/null 2>&1 \
+     && [ "$(git -C "$e2e_repo" rev-list --count HEAD)" = "2" ] \
+     && [ -z "$(git -C "$e2e_repo" ls-files core/security/hooks/scan-staged-secrets.sh)" ]; then
+    case_ "E2E: hook-mediated REMOVAL commit lands (deletion is not content)" ok
+  else
+    case_ "E2E: hook-mediated REMOVAL commit lands (deletion is not content)" XX "removal commit did not land cleanly"
+  fi
+  mkdir -p "$e2e_repo/core/security/hooks"
+  { cat "$0"; printf 'k=sk-ant-%s\n' "$(printf 'r%.0s' $(seq 1 24))"; } > "$e2e_repo/core/security/hooks/scan-staged-secrets.sh"
+  git -C "$e2e_repo" add core/security/hooks/scan-staged-secrets.sh
+  total=$((total+1))
+  readd_shape=$(git -C "$e2e_repo" diff --cached --name-status --diff-filter=A | grep -c "scan-staged-secrets.sh")
+  [ "$readd_shape" = "1" ] && readd_shape="A"
+  if [ "$readd_shape" = "A" ] && ! git -C "$e2e_repo" commit -q -m readd >/dev/null 2>&1; then
+    case_ "E2E: real hook-mediated DELETE-THEN-RE-ADD (verified A-shape) with embedded secret is refused" ok
+  else
+    case_ "E2E: real hook-mediated DELETE-THEN-RE-ADD (verified A-shape) with embedded secret is refused" XX "shape=$readd_shape or commit succeeded"
+  fi
+  # v3.0-110 through the REAL hook too: a secret pasted into an ordinary
+  # already-tracked file is refused at an actual commit (round-2 demand).
+  git -C "$e2e_repo" reset -q HEAD -- core/security/hooks/scan-staged-secrets.sh 2>/dev/null || true
+  rm -f "$e2e_repo/core/security/hooks/scan-staged-secrets.sh"
+  printf 'notes line one\n' > "$e2e_repo/notes.md"
+  git -C "$e2e_repo" add notes.md
+  git -C "$e2e_repo" commit -q -m notes >/dev/null 2>&1
+  printf 'tok: ghp_%s\n' "$(printf 's%.0s' $(seq 1 36))" >> "$e2e_repo/notes.md"
+  git -C "$e2e_repo" add notes.md
+  total=$((total+1))
+  if git -C "$e2e_repo" commit -q -m paste >/dev/null 2>&1; then
+    case_ "E2E: secret pasted into an ordinary tracked file refused at a REAL commit (v3.0-110)" XX "commit succeeded"
+  else
+    case_ "E2E: secret pasted into an ordinary tracked file refused at a REAL commit (v3.0-110)" ok
+  fi
+  rm -rf "$e2e_repo" 2>/dev/null || true
 
   # Cross-vendor review regressions (2026-08-11): a placeholder match must never
   # shadow a later REAL value of the same class in the same file

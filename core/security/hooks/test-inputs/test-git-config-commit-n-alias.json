@@ -1,0 +1,5 @@
+{
+  "tool_input": {
+    "command": "git -c user.email=x@y commit -n -m \"msg\""
+  }
+}

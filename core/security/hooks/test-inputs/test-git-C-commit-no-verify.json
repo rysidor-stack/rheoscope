@@ -1,0 +1,5 @@
+{
+  "tool_input": {
+    "command": "git -C C:/some/repo commit --no-verify -m \"msg\""
+  }
+}

@@ -416,6 +416,18 @@ for cap in "${VALID_CAPS[@]}"; do
             # (never the live wiki/ locations -- by design, per its own docstring), in a format
             # that doesn't match § 11's documented empty states. So these are generated inline
             # here, matching § 11 verbatim.
+            # Live trigger register (v3.0-101(b), operator-ratified 2026-08-17): the
+            # register ships as .example only, so check-triggers degraded with "no
+            # trigger register" on every instance that never hand-adopted it -- the
+            # watched-promise machinery was dark by default. Instantiate the live file
+            # from the example ONCE (never overwrite an existing register: its rows may
+            # carry instance history). Rows are propose-only by contract -- a live
+            # register arms nothing; it only lets sensors report.
+            if [[ ! -e "$SCRIPT_ROOT/deploy/trigger-register.yaml" && -e "$SCRIPT_ROOT/deploy/trigger-register.yaml.example" ]]; then
+                cp "$SCRIPT_ROOT/deploy/trigger-register.yaml.example" "$SCRIPT_ROOT/deploy/trigger-register.yaml"
+                info "created (live from example): deploy/trigger-register.yaml"
+            fi
+
             mkdir -p "$SCRIPT_ROOT/wiki"
 
             if [[ ! -e "$SCRIPT_ROOT/wiki/HEALTH.md" ]]; then

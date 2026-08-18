@@ -28,7 +28,7 @@ exactly as documented here.
 
 Read `CLAUDE.md` at the project root, then `docs/wiki-schema.md` — unless already read this session (they're in context; don't re-read them). Those files govern everything. Do not proceed without having read them. Pay particular attention to:
 
-- The Roadmap Article Format section (assumption table columns, assumption types)
+- §5 "Roadmap Articles (`roadmap/`)" (the roadmap article template, assumption table columns, and the Assumption Types table — v3.0-102: an earlier revision cited a "Roadmap Article Format" section that exists nowhere; §5 is the real home)
 - The REVIEW.md Schema section (entry format, severity windows, `audit` type)
 - The Orchestrator Cadences section (/audit runs every 1-2 weeks)
 
@@ -51,6 +51,27 @@ Read every file in `roadmap/` (excluding `INDEX.md`). For each roadmap article:
 - Note the phase's overall status — `active`, `completed`, `blocked`, `future`. An audit of a `future` phase is lower priority than a `blocked` or `active` one.
 
 Build a working list: `(roadmap_article, assumption_number, assumption_row)` for every assumption across every roadmap article.
+
+**If the working list is EMPTY — the no-table mode (v3.0-102(a)).** On real projects whose
+roadmap was authored through the assessment/preflight flow rather than hand-copied from
+§5's template, articles may carry no assumption table at all. That is a wall, not a
+license to invent: **never fabricate assumptions to grade** (the silence rule). Instead,
+run the honest no-op — the v3.0-97 zero-legs pattern:
+
+1. Complete the inventory anyway: list every roadmap article with its phase/status, and
+   state per article that no assumption table exists.
+2. Skip Steps 3–4 (there is nothing to grade) and write the audit receipt saying exactly
+   that: articles inventoried, zero assumption tables found, zero assumptions graded.
+   A truthful receipt satisfies the audit cadence — the "audit overdue" flag stops firing
+   against a run that could only have fabricated.
+3. The receipt's FIX line points at the remedy: each article needs its assumption table
+   minted per `docs/wiki-schema.md` §5 (even a single starter row with
+   `Status: unvalidated` gives the next /audit a real object). Surface that as a
+   decision-inbox item for the operator; minting tables is authoring work with operator
+   input, never something /audit does unilaterally.
+
+Articles WITH tables grade normally in the same run — the no-table note is per-article,
+and one bare article never blocks grading the others.
 
 ## Step 3 — Build Evidence Index
 

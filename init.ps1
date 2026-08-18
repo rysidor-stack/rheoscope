@@ -519,6 +519,22 @@ foreach ($cap in $validCaps) {
         }
     }
 
+    # Live trigger register (v3.0-101(b), operator-ratified 2026-08-17): the register
+    # ships as .example only, so check-triggers degraded with "no trigger register" on
+    # every instance that never hand-adopted it. Instantiate the live file from the
+    # example ONCE (never overwrite an existing register: its rows may carry instance
+    # history). Rows are propose-only by contract -- a live register arms nothing; it
+    # only lets sensors report. Identical to init.sh; runs AFTER the deploy copy above
+    # so the example exists on a fresh instance.
+    if ($cap -eq 'knowledge-os') {
+        $trigRegPath = Join-Path $scriptRoot 'deploy/trigger-register.yaml'
+        $trigRegExample = Join-Path $scriptRoot 'deploy/trigger-register.yaml.example'
+        if ((-not (Test-Path $trigRegPath)) -and (Test-Path $trigRegExample)) {
+            Copy-Item $trigRegExample $trigRegPath
+            Info "created (live from example): deploy/trigger-register.yaml"
+        }
+    }
+
     # Capability-internal deferred recipes
     $deferredDir = Join-Path $scriptRoot "capabilities/$cap/deferred"
     if (Test-Path $deferredDir) {

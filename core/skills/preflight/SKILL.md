@@ -35,6 +35,16 @@ While interviewing:
 - **Sharpen fuzzy language.** When a term is vague or overloaded, propose a precise canonical one: "You're saying 'account' — do you mean the Customer or the User?"
 - **Stress-test with concrete scenarios.** Invent scenarios that probe edge cases and force precision about the boundaries between concepts.
 - **Cross-reference every claim.** When the operator states how something works, check whether the project's artifacts — and, for system claims, the deliverable itself — agree. Surface contradictions: "The roadmap says X is the source of truth for Y, but you just said Z owns it — which is right?"
+- **Ask the manifest question — mandatory when the artifact plans a build increment
+  (v3.0-101(a)).** "Which behavioral-manifest layers does this increment touch, and do
+  they exist under `manifests/`?" The doctrine's own on-touch rule
+  (`core/methodology/manifest-driven-builds.md` §6, `manifest-format.md` §2) is quoted,
+  not reinvented: create manifests for the layers the increment touches; retrofit per
+  surface, on touch — never a reason to delay the build. When the touched surface has no
+  manifest, the answer lands in the artifact as an explicit line item (extract it in this
+  increment, or the operator's recorded decision not to) — silence is the one
+  non-answer. Skip only when the artifact plans no build increment (governance-only
+  docs), and say so.
 
 ### 3. Challenge scope (RTDT)
 

@@ -182,6 +182,32 @@ cross-vendor check or your recorded ruling; nothing recovers silently).
    matters). `audit-pending` never advances. No journal rewrite, no backfill from
    artifacts, nothing loosens.
 
+## v3.0.39 → v3.0.40 (housekeeping: /audit's honest empty mode, the manifest question, the live trigger register)
+
+Three closed promises, one **[your call]** entry. All copies are drop-over.
+
+1. **Re-copy the /audit skill** (`.claude/skills/audit/` from the template's
+   `capabilities/knowledge-os/extracted/audit/`, rendered): Step 0's schema citation now
+   points at the real §5 heading, and Step 2 gains the no-table mode — a roadmap with no
+   assumption tables gets an honest inventory receipt (satisfying the audit cadence)
+   plus a decision-inbox item to mint tables, instead of "nothing to grade" against a
+   live overdue flag (v3.0-102(a)/(c)).
+2. **Re-copy the /preflight and /flight-plan skills** (`core/skills/preflight/`,
+   `core/skills/flight-plan/` rendered): both now carry the mandatory manifest question
+   at build-increment planning ("which manifest layers does this increment touch, and do
+   they exist?") with the doctrine's own on-touch rule quoted — asked-and-answered in
+   /preflight satisfies /flight-plan (v3.0-101(a)). Roadmap-authoring guidance
+   (`docs/recipes/kickoff-orchestration/roadmap.RECIPE.md`) now mints the §5 assumption
+   table at article birth, starter row minimum (v3.0-102(b)).
+3. **[your call] Instantiate the live trigger register** (v3.0-101(b) — init now does
+   this for fresh projects; adopting instances decide it deliberately because it changes
+   what the next sweep reports): `cp deploy/trigger-register.yaml.example
+   deploy/trigger-register.yaml` (skip if you already have one — never overwrite). Rows
+   are propose-only by contract: a live register arms nothing, it only lets the
+   trigger sensor report instead of degrading with "no register, nothing to report."
+4. **No action:** the dev-side mirror-publish driver (v3.0-96(b)) is maintainer tooling
+   and never ships.
+
 ## v3.0.37 → v3.0.38 (the scanner stops blocking its own adoption)
 
 One file, no **[your call]** entries — a tightening-preserving false-positive fix

@@ -31,7 +31,12 @@ Designed in v1 build plan Phase 4 (v1 lines 1246–1362). Drafted but never vali
 The v1 design has these steps:
 1. Read CLAUDE.md, project.yaml, skeleton governance, skeleton roadmap.
 2. Interview operator per phase: assumptions (with types), dependencies, blockers.
-3. Author each phase article in full.
+3. Author each phase article in full. **Every phase article ships with its §5 assumption
+   table at birth (v3.0-102(b))** — the exact `#/Assumption/Type/Status/Evidence/Wiki
+   Source` shape from `wiki-schema.md` §5. When the interview yields no confirmed
+   assumptions yet, mint at least one starter row with `Status: unvalidated` from the
+   phase's own premise — /audit's object of study must exist from the article's first
+   commit, or every future audit reports "nothing to grade" against a live cadence flag.
 4. Cross-phase risk scan: surface dependencies and shared assumptions.
 5. Update CONTEXT.md inline as terms sharpen.
 6. Write receipt, append to changelog.

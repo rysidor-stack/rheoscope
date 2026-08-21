@@ -1,11 +1,11 @@
 ---
 name: log-backlog
-description: Append a new entry to harness-backlog.md with the next available version-relative number (v<template_version>-N, read from project.yaml at runtime), following the file's documented format. Use whenever a harness-template issue (not project content) surfaces during work and needs to be captured for upstream contribution.
+description: Append a new entry to harness-backlog.md with the next available instance-namespaced number (<project_slug>-N, read from project.yaml at runtime), and file it to the fleet's upstream issue inbox when project.yaml declares one (backlog_upstream). Use whenever a harness-template issue (not project content) surfaces during work and needs to be captured for upstream contribution.
 ---
 
 # /log-backlog
 
-Append a single new entry to `harness-backlog.md` per the file's documented entry format. Entries are numbered `v<template_version>-N` — the version prefix is **read at runtime, never hardcoded** (see Steps). This skill is the operational ritual for the harness-backlog logging discipline declared in `core/governance/CLAUDE.md` § Session discipline.
+Append a single new entry to `harness-backlog.md` per the file's documented entry format, and — when `project.yaml` declares a `backlog_upstream` repo — file the same entry to the fleet's shared issue inbox so it reaches the template maintainer without a manual relay. Entry prefixes are **read at runtime, never hardcoded** (see Steps). This skill is the operational ritual for the harness-backlog logging discipline declared in `core/governance/CLAUDE.md` § Session discipline.
 
 ## When to use
 
@@ -45,11 +45,11 @@ If any required field is missing from the invocation, ask the operator before wr
 
 ## Steps
 
-1. **Determine the version prefix at runtime.** Read `template_version` from `project.yaml` at the project root (e.g. `2.0` → prefix `v2.0`). In the harness template repo itself (where no instantiated `project.yaml` exists), read the root `VERSION` file instead. Never guess the prefix or copy it from an older entry — a project that migrated harness versions logs new entries under its new version.
-2. **Read `harness-backlog.md`** at the project root to find the highest existing N **for the current version prefix**. The new entry's number is N+1; if no entry carries the current prefix yet, start at 1 (numbering restarts per version).
+1. **Determine the entry prefix at runtime (v3.0.44 — instance-namespaced numbering, backlog v3.0-128).** In an instantiated project, read `project_slug` from `project.yaml`: the prefix is the slug itself (entries read `<project_slug>-N`, e.g. `example-project-4`). In the harness template repo itself (no instantiated `project.yaml`), the prefix stays `v<VERSION>` from the root `VERSION` file — upstream canon numbering is unchanged. Never guess the prefix or copy it from an older entry. **Why the slug:** three instances in one week minted local numbers colliding with upstream's — a slug prefix makes collision impossible by construction. Existing local entries under old `v<version>-N` numbers keep their numbers forever (stable-numbering rule); only NEW entries use the slug.
+2. **Read `harness-backlog.md`** at the project root to find the highest existing N **for the current prefix**. The new entry's number is N+1; if no entry carries the current prefix yet, start at 1.
 3. **Compose the entry** using the file's canonical format:
    ```markdown
-   ### v<template_version>-<N> — <Title>
+   ### <prefix>-<N> — <Title>
    - **Surfaced:** <date and context>
    - **Where:** <file paths>
    - **Severity:** <severity>
@@ -59,29 +59,63 @@ If any required field is missing from the invocation, ask the operator before wr
    - **References:** <links to commits / docs / session logs>
    ```
 4. **Append to the appropriate section** of `harness-backlog.md`. Default: append after the last existing entry in the most recent project section. If creating a new section is warranted (e.g., the project entered a new phase), confirm with the operator before adding a section header.
-5. **Echo to the operator:** the entry number, title, and a one-line summary of what was logged. Confirm that the append landed.
-6. **Do NOT modify other entries.** Each invocation appends one entry. Editing existing entries is out of scope (see Anti-patterns).
+5. **File upstream (v3.0.44, backlog v3.0-128) — only when `backlog_upstream` is set in `project.yaml`.** After the local append lands, run:
+   `gh issue create --repo <backlog_upstream> --title "[<prefix>] <title>" --body-file <tempfile> --label fleet-backlog`
+   where the tempfile is the origin line (`Filed from: <git remote get-url origin>`) followed by
+   the entry exactly as it stands at filing time — i.e. before the issue URL is added back to
+   References, which necessarily happens after the issue exists. Local and upstream then differ
+   by exactly that one URL line, by design.
+   and record the returned issue URL in the entry's **References** field. (Completing the
+   just-written entry's own fields within the same invocation is part of composing that
+   entry — the append-only rule forbids touching OTHER entries, not finishing this one.)
+   Rules for this step:
+   - The LOCAL append is the source of truth and always happens first — upstream is a copy, never the only home.
+   - VISIBILITY CHECK IS MECHANICAL, not assumed: before filing, run
+     `gh repo view <backlog_upstream> --json visibility` and proceed ONLY on `PRIVATE`.
+     Anything else — `PUBLIC`, `INTERNAL`, an error, an ambiguous answer — means no
+     filing: mark the entry `- **Upstream:** filing refused (<reason> <date>)` and tell
+     the operator. Backlog entries may carry venture content; fail closed.
+   - ANY failure of the `gh` filing itself — no gh, no auth, offline, permission denied,
+     issues disabled, rate-limited, repo not found, anything — degrades the same way:
+     append `- **Upstream:** filing pending (<reason> <date>)` to the local entry and
+     move on. Failure text is never pasted into chat verbatim if it echoes the entry
+     body; summarize the reason instead. Any later session that sees a pending marker
+     may retry and replace the marker with the URL.
+   - The issue body's FIRST line states the origin: `Filed from: <git remote get-url origin>` —
+     so two instances that ever shared a slug remain distinguishable upstream (fleet slug
+     uniqueness is the maintainer's registry duty, but the origin line makes a collision
+     inconvenient rather than ambiguous).
+   - Delete any temp file used for `--body-file` after the call.
+   - If the `fleet-backlog` label doesn't exist upstream, file without the label rather than failing.
+   - No secrets in the entry body, same as any commit — the entry travels to a remote.
+   - One invocation, one filing: concurrency within an instance is governed by the
+     single-writer session discipline, same as every other repo write.
+   When `backlog_upstream` is absent, skip this step entirely (local-only is the designed fallback, not an error).
+6. **Echo to the operator:** the entry number, title, a one-line summary, and — when step 5 ran — the upstream issue URL (or the pending marker). Confirm that the append landed.
+7. **Do NOT modify other entries.** Each invocation appends one entry. Editing existing entries is out of scope (see Anti-patterns).
 
 ## Rules
 
 - **Append-only.** Never rewrite, merge, or delete existing entries during a `/log-backlog` run.
 - **One entry per invocation.** If the operator has multiple issues, run the skill once per issue. Batching corrupts the audit trail.
 - **Don't auto-detect.** This skill logs an issue someone is explicitly raising. Suspicions in Claude's context that haven't been operator-endorsed don't qualify.
-- **Stable numbering.** Once a `v<template_version>-N` number is assigned, it's permanent. If a later entry supersedes an earlier one, add a `Supersedes: v<version>-N` field on the new entry (cross-version supersession is fine); leave the original intact.
+- **Stable numbering.** Once a number is assigned (old `v<version>-N` or new `<slug>-N` alike), it's permanent. If a later entry supersedes an earlier one, add a `Supersedes:` field naming it on the new entry; leave the original intact. Never renumber old entries to the slug scheme.
+- **Upstream is additive.** Step 5 never replaces the local file; a project with no `backlog_upstream` key, no `gh`, or no network is fully functional local-only.
 
 ## Anti-patterns
 
 - **Logging the same issue twice.** Before writing, scan existing entries by title or symptom. If a near-duplicate exists, surface it to the operator and ask whether to extend the existing entry's References field (manual edit; not via this skill) or skip.
 - **Logging project-content issues.** A bug in this project's own deliverables or content is project-content; a bug in the harness's `/preflight` skill template is harness-template. The test: would this issue persist for ANY project instantiated from this harness, or is it specific to this one?
 - **Editing fields after writing.** If an entry needs revision (typo, new evidence, severity change), make the edit manually — `/log-backlog` doesn't update existing entries. Or supersede with a new entry as above.
-- **Skipping the read steps.** Always read `project.yaml` (for the version prefix) and `harness-backlog.md` (for the next N under that prefix) first. Don't guess either from memory — a stale prefix re-creates exactly the frozen-version drift this discipline was redesigned to kill.
+- **Skipping the read steps.** Always read the prefix source (`project.yaml` in an instance; the root `VERSION` file in the template repo, where no instantiated `project.yaml` exists) and `harness-backlog.md` (for the next N under that prefix) first. Don't guess either from memory — a stale prefix re-creates exactly the frozen-version drift this discipline was redesigned to kill.
 
 ## Output convention
 
 After successful append, output:
 
 ```
-Logged v<template_version>-<N> — <title>. Severity: <severity>. Where: <file paths>.
+Logged <prefix>-<N> — <title>. Severity: <severity>. Where: <file paths>.
+Upstream: <issue URL | "filing pending" | "not configured">.
 
 Next step: <if the operator should commit or amend, name it; otherwise omit>.
 ```

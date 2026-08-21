@@ -255,6 +255,25 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
    are EXPECTED in the record's `refused[]` under G6; those refusals appearing is part
    of the acceptance, not a failure.
 
+## v3.0.43 → v3.0.44 (the fleet backlog inbox: /log-backlog files upstream, numbering stops colliding)
+
+Skill prose + one optional project.yaml key, no engine code, no **[your call]** entries —
+operator-ratified design (backlog v3.0-128, "I like option a" 2026-08-19).
+
+1. **Re-render the skill**: copy the template's
+   `core/skills/log-backlog/SKILL.md.template` over your installed
+   `/log-backlog` skill (render the `.template` per your instance's skill wiring).
+   Two behavior changes: NEW entries are numbered `<project_slug>-N` (collision-proof
+   across the fleet; your EXISTING entries keep their old numbers forever — never
+   renumber), and when `project.yaml` carries `backlog_upstream`, each new entry is
+   also filed as a GitHub issue in that repo (local file remains the source of truth;
+   offline degrades to a pending marker, never a failure).
+2. **Add the key** to `project.yaml` (optional — skip it and the skill stays
+   local-only): `backlog_upstream: "<owner>/<private-repo>"`. It must be a PRIVATE
+   repo — backlog entries may carry venture content; the skill refuses public ones.
+3. **Requires** the `gh` CLI authenticated on the machine for upstream filing; without
+   it everything still works local-only.
+
 ## v3.0.42 → v3.0.43 (the egress ask stops taxing local one-liners)
 
 One hook + its docs, no **[your call]** entries — an operator-ratified tuning of the ASK
@@ -271,10 +290,13 @@ one-liners trains a reflexive Allow, which erodes the tier it was meant to stren
    token-absent egress spelling that previously prompted now passes; that regression
    IS the ratified trade (prompt fatigue was training a reflexive Allow), and the
    token list is a floor of common spellings, not an enumeration.
-2. **Fixtures:** copy the two new passing fixtures
-   `core/security/hooks/test-inputs/test-py-c-local-passing.json` and
-   `test-node-e-local-passing.json` (the ASK-direction fixtures `test-py-c.json` /
-   `test-node-e.json` already carry network tokens and are unchanged).
+2. **Fixtures:** copy the FOUR new fixtures (prose previously said two — corrected
+   2026-08-19, caught by the aces adoption): passing pair
+   `core/security/hooks/test-inputs/test-py-c-local-passing.json` +
+   `test-node-e-local-passing.json`, ASK-direction pair
+   `test-py-c-from-http-import.json` + `test-node-e-node-https.json` (these two are
+   also NEW in this release; the pre-existing `test-py-c.json` / `test-node-e.json`
+   already carried network tokens and are unchanged).
 3. **Verify the copy in one command** (new in v3.0.43): `bash
    core/security/hooks/block-dangerous-bash.sh --self-test` → expect
    `84 passed, 0 failed`. The driver is embedded in the hook (the sibling pattern to

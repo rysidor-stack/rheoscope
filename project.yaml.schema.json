@@ -39,9 +39,15 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "knowledge-os": { "type": "boolean" },
-        "stress-testing": { "type": "boolean" },
-        "code-conventions": { "type": "boolean" }
+        "knowledge-os": {
+          "type": "boolean"
+        },
+        "stress-testing": {
+          "type": "boolean"
+        },
+        "code-conventions": {
+          "type": "boolean"
+        }
       }
     },
     "personnel": {
@@ -50,7 +56,12 @@
       "description": "At least one personnel entry. Each is identity + role + domain-ownership.",
       "items": {
         "type": "object",
-        "required": ["tag", "name", "role", "domains_owned"],
+        "required": [
+          "tag",
+          "name",
+          "role",
+          "domains_owned"
+        ],
         "additionalProperties": false,
         "properties": {
           "tag": {
@@ -58,21 +69,38 @@
             "pattern": "^[a-z0-9][a-z0-9-]*$",
             "description": "Short identifier used as a raw-file source tag."
           },
-          "name": { "type": "string", "minLength": 1 },
-          "role": { "type": "string", "minLength": 1 },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "role": {
+            "type": "string",
+            "minLength": 1
+          },
           "domains_owned": {
             "type": "array",
             "minItems": 1,
             "description": "Wiki subdirectories this person is review authority for. Use ['*'] for all-domains.",
-            "items": { "type": "string", "minLength": 1 }
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       }
     },
     "neutral_source_tags": {
       "type": "array",
-      "default": ["session", "ref", "field", "system"],
-      "items": { "type": "string", "minLength": 1 }
+      "default": [
+        "session",
+        "ref",
+        "field",
+        "system"
+      ],
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "wiki_domains": {
       "type": "array",
@@ -80,12 +108,29 @@
       "description": "Wiki subdirectory definitions (only meaningful when capabilities.knowledge-os is true).",
       "items": {
         "type": "object",
-        "required": ["name", "default_scope", "description"],
+        "required": [
+          "name",
+          "default_scope",
+          "description"
+        ],
         "additionalProperties": false,
         "properties": {
-          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
-          "default_scope": { "type": "string", "enum": ["domain", "build", "mixed"] },
-          "description": { "type": "string", "minLength": 1 }
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "default_scope": {
+            "type": "string",
+            "enum": [
+              "domain",
+              "build",
+              "mixed"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },
@@ -94,11 +139,20 @@
       "default": [],
       "items": {
         "type": "object",
-        "required": ["path", "description"],
+        "required": [
+          "path",
+          "description"
+        ],
         "additionalProperties": false,
         "properties": {
-          "path": { "type": "string", "minLength": 1 },
-          "description": { "type": "string", "minLength": 1 }
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },
@@ -112,9 +166,18 @@
       "description": "Required when corpus_source is not 'none'. Legacy singular form — projects with more than one execution repo use corpus_sources instead.",
       "additionalProperties": false,
       "properties": {
-        "clone_path": { "type": "string", "minLength": 1 },
-        "branch": { "type": "string", "minLength": 1 },
-        "probe": { "type": "string", "minLength": 1 }
+        "clone_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "probe": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "corpus_sources": {
@@ -123,26 +186,67 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["source", "clone_path", "branch"],
+        "required": [
+          "source",
+          "clone_path",
+          "branch"
+        ],
         "additionalProperties": false,
         "properties": {
-          "id": { "type": "string", "minLength": 1, "description": "Stable short identifier for HEALTH rows and briefings. Defaults to the repo name segment of source." },
-          "source": { "type": "string", "minLength": 1, "description": "org/repo identifier of this execution corpus." },
-          "clone_path": { "type": "string", "minLength": 1, "description": "Local clone used for read-only observation." },
-          "branch": { "type": "string", "minLength": 1, "description": "The deployed branch." },
-          "probe": { "type": "string", "minLength": 1, "description": "Optional enrichment probe (default git-log-since-sha)." }
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable short identifier for HEALTH rows and briefings. Defaults to the repo name segment of source."
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "description": "org/repo identifier of this execution corpus."
+          },
+          "clone_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Local clone used for read-only observation."
+          },
+          "branch": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The deployed branch."
+          },
+          "probe": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional enrichment probe (default git-log-since-sha)."
+          }
         }
       }
     },
     "tier_examples": {
       "type": "object",
-      "required": ["T1", "T2", "T3", "T4"],
+      "required": [
+        "T1",
+        "T2",
+        "T3",
+        "T4"
+      ],
       "additionalProperties": false,
       "properties": {
-        "T1": { "type": "string", "minLength": 1 },
-        "T2": { "type": "string", "minLength": 1 },
-        "T3": { "type": "string", "minLength": 1 },
-        "T4": { "type": "string", "minLength": 1 }
+        "T1": {
+          "type": "string",
+          "minLength": 1
+        },
+        "T2": {
+          "type": "string",
+          "minLength": 1
+        },
+        "T3": {
+          "type": "string",
+          "minLength": 1
+        },
+        "T4": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "template_version": {
@@ -166,43 +270,74 @@
     "instantiated_capabilities": {
       "type": "array",
       "default": [],
-      "items": { "type": "string", "minLength": 1 }
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "placeholder_scan_exempt": {
       "type": "array",
       "default": [],
       "description": "Relative paths or path-prefixes (from repo root) that init-validate skips when scanning for unresolved {{...}} placeholders. For META docs that legitimately contain literal placeholder syntax (the init scripts, build logs, this example file). A trailing '/' denotes a directory prefix. Operators append project-specific files that document the convention.",
-      "items": { "type": "string", "minLength": 1 }
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "dependency_scan_skip": {
       "type": "array",
       "default": [],
       "description": "Directory NAMES that init-validate's {{...}} placeholder scan skips wherever they appear at any depth (case-sensitive segment match, not prefix). For vendored/generated dirs (node_modules, .next, build, dist, ...) whose third-party content would otherwise yield false unresolved-placeholder failures. The single source both validators (powershell-yaml + yq) read, so both consume the identical set; the match is case-sensitive on both sides and a scalar (non-list) value is ignored by both. .git is always skipped separately. See v3.0-14.",
-      "items": { "type": "string", "minLength": 1 }
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "backlog_upstream": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "description": "Optional. GitHub owner/repo whose Issues serve as the fleet backlog inbox (v3.0-128). When set, /log-backlog files each new entry upstream via `gh issue create` in addition to the local append; when absent, /log-backlog is local-only (the pre-v3.0.44 behavior). Point this at a PRIVATE repo -- backlog entries may carry venture content."
     }
   },
   "allOf": [
     {
       "if": {
         "properties": {
-          "corpus_source": { "not": { "const": "none" } }
+          "corpus_source": {
+            "not": {
+              "const": "none"
+            }
+          }
         },
-        "required": ["corpus_source"]
+        "required": [
+          "corpus_source"
+        ]
       },
       "then": {
-        "required": ["corpus_config"],
+        "required": [
+          "corpus_config"
+        ],
         "properties": {
           "corpus_config": {
-            "required": ["clone_path", "branch"]
+            "required": [
+              "clone_path",
+              "branch"
+            ]
           }
         }
       }
     },
     {
-      "if": { "required": ["corpus_sources"] },
+      "if": {
+        "required": [
+          "corpus_sources"
+        ]
+      },
       "then": {
         "properties": {
-          "corpus_source": { "const": "none" }
+          "corpus_source": {
+            "const": "none"
+          }
         }
       }
     }

@@ -5,6 +5,9 @@
 # ---- Identity ----
 project_name: "Example Project"
 project_slug: "example-project"
+# Optional fleet-backlog inbox (v3.0-128): a PRIVATE GitHub owner/repo whose Issues
+# receive /log-backlog entries in addition to the local file. Absent = local-only.
+# backlog_upstream: "your-org/your-private-template-repo"
 project_description: "One sentence describing what this project is."
 
 # ---- Capabilities (Decision V2-4: inclusion is the toggle) ----

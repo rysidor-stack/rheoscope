@@ -255,6 +255,28 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
    are EXPECTED in the record's `refused[]` under G6; those refusals appearing is part
    of the acceptance, not a failure.
 
+## v3.0.44 → v3.0.45 (ADR #11 Release 1: cite-don't-copy + the read-only retirement manifest)
+
+The first of three releases under ADR #11 (view retirement / forget-down, locked
+2026-08-21). Nothing here writes to a view; no engine contract changes yet. No **[your
+call]** entries.
+
+1. **The convention (v3.0-131):** re-render `.claude/skills/compile/SKILL.md` from the
+   template (Step 2.5 gains "views cite decisions; they do not copy them") and re-copy
+   `docs/wiki-schema.md` (§3: over-cap = retirement candidate, not split; cite-don't-copy).
+   Instance-side this is a reading change: stop minting `## <Decision> (locked DATE)`
+   sections; existing ones stay until Release 2's verb retires them on your ruling.
+2. **The instrument:** copy `deploy/retire-manifest.py` (the deploy/ copy loop covers it).
+   Run `py deploy/retire-manifest.py --self-test` (expect 14/14), then
+   `py deploy/retire-manifest.py --root . --md retirement-manifest.md` — READ-ONLY; it
+   tells you per over-cap view what retirement would do (spans, candidate modes, inbound
+   citations from the complete registered universe, predicted sizes, reachability). If
+   it exits 2 INCONCLUSIVE, your registration chain is unreadable — fix that first; the
+   design refuses to retire without a known citation universe.
+3. Nothing else: the retirement verb (Release 2) and the growth brake (Release 3) are
+   separate releases with their own reviews; no retirement runs until the operator-ruling
+   channel is proven unforgeable (v3.0-120).
+
 ## v3.0.43 → v3.0.44 (the fleet backlog inbox: /log-backlog files upstream, numbering stops colliding)
 
 Skill prose + one optional project.yaml key, no engine code, no **[your call]** entries —

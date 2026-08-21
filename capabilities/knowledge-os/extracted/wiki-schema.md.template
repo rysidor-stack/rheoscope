@@ -112,7 +112,8 @@ Any personnel corrections to compiled content (see § 13 Conflict Resolution).
 ### Naming
 
 - Lowercase, hyphen-separated: `api-endpoints.md`, `customer-flow.md`.
-- One article per topic. If an article exceeds ~300 lines, split it.
+- One article per topic. Articles are **bounded views over the ledger** (engine caps in `deploy/engine-caps.yaml`; `deploy/check-caps.py` reports over-cap views). An over-cap article is a **retirement** candidate (ADR #11: move finished detail to the ledger or the cold tier, keep the current slice + a link) — not a split candidate; splitting conserves mass and was shown to leave the parts over cap. `deploy/retire-manifest.py` (read-only) shows what retirement would do to any view before the verb runs.
+- **Cite decisions, do not copy them.** A dated decision or ruling enters an article as current-state text plus a link to its `raw/` event — never as a permanent `## <Decision> (locked DATE)` section transcribing the event. History lives in `raw/`; the article is the current slice (v3.0-131; see the compile skill's Step 2.5 doctrine).
 - Connection articles (cross-domain topics) live at `wiki/connections/TOPIC-A--TOPIC-B.md` (double-hyphen separator) if a `connections` domain is declared in `wiki_domains`.
 
 ### Scope Tags

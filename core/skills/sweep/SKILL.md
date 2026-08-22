@@ -139,6 +139,29 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     (no trust.py)". Nothing in the class present = one silent line skipped, never a finding
     (absent allowlist means every egress asks — the tightest state).
 
+18. **Egress log surfacing** (v3.0.47, backlog v3.0-134 / v3.0-136a) — if
+    `.claude/egress-log.jsonl` exists: read the rows appended since the previous sweep receipt's
+    timestamp (no prior receipt = all rows) and put ONE table in the briefing, grouped by host:
+    host · calls · kinds (`egress` allowed-and-logged in an attended session, `egress-ask`
+    asked in an unattended run, `destructive-deny`, `trust-deny`) · first/last seen · one
+    example command. Hosts never seen in any earlier sweep are marked **new**. This is the
+    after-the-fact review that replaced the per-call ask in attended sessions: the operator
+    reads where sessions reached out, at their own pace. Phrased per the reporting contract: a
+    NEW host is a Worth-knowing item ("sessions reached <host> N times this week — expected?");
+    any `trust-deny` or `destructive-deny` row is a NEEDS-YOU item (a session tried to write a
+    trust surface or run a destructive command — what, when, which command). Telemetry line
+    (v3.0-136a): asks since last sweep and the running total; an ASK tier nobody ever declines is
+    a rubber stamp — the count is what makes that visible. Log absent = one silent line skipped.
+    The table is mechanical, never summarized from memory — build it with:
+    `jq -r --arg since "<prev-receipt-ts>" 'select(.ts > $since) | [.host, .kind, .ts, .command] | @tsv' .claude/egress-log.jsonl | sort`
+    then group by host (`cut -f1 | sort | uniq -c`), and the telemetry line with
+    `jq -r 'select(.kind=="egress-ask") | .ts' .claude/egress-log.jsonl | wc -l`. Stated
+    boundary (inherited from v3.0.43): the hook logs egress-SHAPED commands — named tools,
+    PowerShell egress cmdlets, inline `-c`/`-e` with a network token; a script file that
+    reaches the network (`python build.py`) was never in the tier and produces no row. The
+    upgrade path that closes that is OS-level per-process egress control, recorded in the
+    2026-08-22 five-pass run, not a regex.
+
 This ordering follows the engine's own loop doctrine (`docs/engine/OPERATIONS.md` § "The
 loop"): readiness before content, structural sensors before behavioral ones, deterministic
 checks before anything judgment-based — cheapest, most-foundational signal first, so a reader

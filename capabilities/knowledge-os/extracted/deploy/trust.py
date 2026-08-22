@@ -246,7 +246,10 @@ def signing_mode(repo):
     if not m:
         return "warn", "trust_surface_signing not set -- default warn"
     v = m.group(1).lower()
-    if v in ("warn", "required"):
+    if v in ("warn", "required", "visible"):
+        # `visible` (v3.0.47, backlog v3.0-135 mechanics; default flip stays T1): no
+        # signature required, nothing warned -- committed-identity, the append-only
+        # journal, the first-parent reader and the rewind detector still run as SENSORS.
         return v, "project.yaml trust_surface_signing: %s" % v
     return "required", ("project.yaml trust_surface_signing has unrecognized value %r "
                         "-- failing closed to required" % m.group(1))
@@ -945,6 +948,9 @@ def gate_artifact(repo, path, mode=None, content=None):
     if s["ok"]:
         return {"ok": True, "refuse": None, "warnings": [], "mode": mode, "signed": s,
                 "head": head, "blob": blob}
+    if mode == "visible":
+        return {"ok": True, "refuse": None, "warnings": [], "mode": mode, "signed": s,
+                "head": head, "blob": blob}
     msg = "trust-surface %s is not operator-signed: %s" % (rel, s["reason"])
     if mode == "required":
         return {"ok": False, "refuse": msg + " (trust_surface_signing: required)",
@@ -1230,6 +1236,15 @@ def self_test():
         write(r1, "project.yaml", "trust_surface_signing: maybe\n")
         case("signing_mode: unrecognized value fails CLOSED to required",
              signing_mode(r1)[0] == "required")
+        write(r1, "project.yaml", "trust_surface_signing: visible\n")
+        gv = gate_artifact(r1, "deploy/evidence/operator-grant.md")
+        case("visible mode: unsigned committed artifact accepted with NO warning (sensors only)",
+             signing_mode(r1)[0] == "visible" and gv["ok"] and gv["warnings"] == []
+             and gv["blob"] is not None, str(gv))
+        write(r1, "deploy/evidence/operator-grant.md", "Verbatim grant: \"tampered\"\n")
+        gv = gate_artifact(r1, "deploy/evidence/operator-grant.md")
+        case("visible mode: an UNCOMMITTED change is still refused", not gv["ok"], str(gv))
+        git(r1, "reset", "-q", "--hard")
         os.remove(os.path.join(r1, "project.yaml"))
         ps = pin_status(r1)
         case("pin_status: sk-only pin has zero non-sk keys", ps["present"] and not ps["non_sk"])

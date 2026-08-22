@@ -8,14 +8,17 @@
 #   DENY (exit 2): destructive commands -- rm -rf /, git reset --hard, and the
 #     root-targeting Remove-Item analog. Unrecoverable; there is no legitimate
 #     unattended "yes", so this tier has no allowlist and no ask.
-#   ASK (exit 0 + PreToolUse "ask" JSON): network egress -- the named tools,
-#     the PowerShell egress cmdlets/aliases, and inline interpreter one-liners.
-#     Egress is reviewable-before-run: the operator sees the exact command and
-#     approves or declines that one call. In an unattended session nobody
-#     answers, so an unanswered ask FAILS CLOSED -- the perimeter holds exactly
-#     where prompt-injection risk is highest. The old behavior (hard deny) sent
-#     authorized work into "disable the hook and restart", which drops the
-#     whole perimeter to make one call.
+#   ASK (exit 0 + PreToolUse "ask" JSON) -- UNATTENDED RUNS ONLY since v3.0.47
+#     (backlog v3.0-134): network egress -- the named tools, the PowerShell
+#     egress cmdlets/aliases, and inline interpreter one-liners carrying a
+#     network token. In an unattended run nobody answers, so the ask FAILS
+#     CLOSED -- the perimeter holds exactly where prompt-injection risk is
+#     highest. In an ATTENDED session the same call is ALLOWED and LOGGED
+#     (.claude/egress-log.jsonl, surfaced by /sweep step 18): the per-call
+#     prompt was never a bar against a deliberate composer and its tax trained
+#     a reflexive Allow (v3.0-124); after-the-fact review replaces it. The
+#     v3.0.33 history: hard deny -> ask (v3.0-95); ask -> log-and-surface when
+#     attended (v3.0-134, the 2026-08-22 five-pass run).
 # STANDING ALLOWANCES: egress-allowlist.txt beside this script, one extended
 # regex per line (comments #, blanks ignored). A command matching a line is
 # allowed silently -- "yes once per destination", recorded in a reviewable
@@ -35,9 +38,21 @@ set -euo pipefail
 # over every committed fixture against its pinned expectation. Intercepted
 # BEFORE the stdin read, so the PreToolUse path is byte-unaffected.
 if [ "${1:-}" = "--self-test" ]; then
-  SELF_PATH="${BASH_SOURCE[0]}"
-  SELF_DIR=$(cd "$(dirname "$SELF_PATH")" && pwd)
+  ORIG_PATH="${BASH_SOURCE[0]}"
+  SELF_DIR=$(cd "$(dirname "$ORIG_PATH")" && pwd)
+  # v3.0.47: run the board from a TEMP TREE shaped like the repo, so the hook's fixed
+  # relative log path (repo/.claude/egress-log.jsonl) lands in the temp tree, never in
+  # the real one -- the same copy-to-scratch pattern the README uses for allowlist tests.
+  TT=$(mktemp -d)
+  mkdir -p "$TT/core/security/hooks"
+  cp "$ORIG_PATH" "$TT/core/security/hooks/block-dangerous-bash.sh"
+  [ -f "$SELF_DIR/trust-surfaces.txt" ] && cp "$SELF_DIR/trust-surfaces.txt" "$TT/core/security/hooks/"
+  SELF_PATH="$TT/core/security/hooks/block-dangerous-bash.sh"
+  LOG="$TT/.claude/egress-log.jsonl"
   pass=0; fail=0
+  # Egress cases run UNATTENDED by default (RHEOSCOPE_UNATTENDED=1): that is where the
+  # ASK tier still lives. Attended behaviour (allow + log) is pinned in its own block.
+  export RHEOSCOPE_UNATTENDED=1
   # rc is captured on the line AFTER the assignment and NOTHING may intervene --
   # an intervening command clobbers $? (this bit the v3.0.43 evidence script).
   run_case() {
@@ -166,7 +181,78 @@ if [ "${1:-}" = "--self-test" ]; then
   run_case DENY "'Remove-Item' -Recurse -Force C:\\" 'removeitem-quoted-cmdlet-root'
   run_case DENY "Remove-Item -Recurse '-Force' 'C:\\'" 'removeitem-quoted-flags-root'
 
-  # -- Phase 2: every committed fixture against its pinned expectation.
+  # -- v3.0.47 (v3.0-134): ATTENDED sessions allow egress and LOG it; unattended ASKs.
+  # Each attended case must be silent AND append exactly one row with the right shape.
+  attended_case() {  # cmd label expected_kind expected_allowlisted
+    before=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+    json=$(jq -n --arg c "$1" '{tool_input:{command:$c}}')
+    set +e
+    out=$(printf '%s' "$json" | env -u RHEOSCOPE_UNATTENDED bash "$SELF_PATH" 2>/dev/null)
+    rc=$?
+    set -e
+    after=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+    row=$(tail -n 1 "$LOG" 2>/dev/null || echo '{}')
+    kind=$(printf '%s' "$row" | jq -r '.kind // ""')
+    mode=$(printf '%s' "$row" | jq -r '.mode // ""')
+    allow=$(printf '%s' "$row" | jq -r '.allowlisted | tostring')
+    if [ "$rc" -eq 0 ] && [ -z "$out" ] && [ $((after-before)) -eq 1 ] && [ "$kind" = "$3" ] \
+       && [ "$mode" = "attended" ] && [ "$allow" = "$4" ]; then
+      pass=$((pass+1))
+    else
+      fail=$((fail+1))
+      echo "FAIL [attended $2] rc=$rc out=${out:0:30} rows+=$((after-before)) kind=$kind mode=$mode allow=$allow" >&2
+    fi
+  }
+  attended_case 'curl -s https://api.example.com/v1' 'curl-allowed-logged' egress false
+  attended_case 'wget https://files.example.org/f.tar' 'wget-allowed-logged' egress false
+  attended_case 'Invoke-WebRequest -Uri https://example.com' 'ps-iwr-allowed-logged' egress false
+  attended_case 'python -c "import urllib.request; urllib.request.urlopen(u)"' 'py-urllib-allowed-logged' egress false
+  row=$(tail -n 1 "$LOG"); host=$(printf '%s' "$row" | jq -r '.host')
+  run_case silent 'ls -la' 'plain-attended-noop'   # (unattended export still set; plain never logs)
+  # the host column: the first host-shaped token
+  json=$(jq -n --arg c 'curl -s https://api.example.com/v1/x' '{tool_input:{command:$c}}')
+  printf '%s' "$json" | env -u RHEOSCOPE_UNATTENDED bash "$SELF_PATH" >/dev/null 2>&1 || true
+  host=$(tail -n 1 "$LOG" | jq -r '.host')
+  if [ "$host" = "api.example.com" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL [host-extraction] got=$host" >&2; fi
+  # the standing allowance is logged with allowlisted=true (and never asked, any mode)
+  printf 'curl[[:space:]]+-s[[:space:]]+https://api\\.replicate\\.com/\n' > "$TT/core/security/hooks/egress-allowlist.txt"
+  attended_case 'curl -s https://api.replicate.com/v1/models' 'allowlisted-logged' egress true
+  before=$(wc -l < "$LOG"); run_case silent 'curl -s https://api.replicate.com/v1/models' 'allowlisted-unattended-silent'
+  rm -f "$TT/core/security/hooks/egress-allowlist.txt"
+  # telemetry (v3.0-136a): an unattended ASK and a DENY are logged with their kinds
+  # (join("|") not a "/" literal in the jq filter: MSYS would path-convert a leading slash)
+  before=$(wc -l < "$LOG"); run_case ASK 'curl -s https://api.example.com/v1' 'unattended-ask-logged'
+  if [ "$(tail -n 1 "$LOG" | jq -r '[.kind,.mode]|join("|")')" = "egress-ask|unattended" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL [ask-telemetry] $(tail -n 1 "$LOG")" >&2; fi
+  run_case DENY 'rm -rf /' 'deny-logged'
+  if [ "$(tail -n 1 "$LOG" | jq -r '.kind')" = "destructive-deny" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL [deny-telemetry]" >&2; fi
+  run_case DENY 'echo x > deploy/safe-allowlist.yaml' 'trust-deny-logged'
+  if [ "$(tail -n 1 "$LOG" | jq -r '.kind')" = "trust-deny" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL [trust-deny-telemetry]" >&2; fi
+  # payload permission_mode dontAsk counts as unattended even without the env marker
+  json=$(jq -n --arg c 'curl -s https://api.example.com/v1' '{tool_input:{command:$c},permission_mode:"dontAsk"}')
+  set +e; out=$(printf '%s' "$json" | env -u RHEOSCOPE_UNATTENDED bash "$SELF_PATH" 2>/dev/null); rc=$?; set -e
+  if [ -n "$out" ] && [ "$rc" -eq 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL [dontAsk-is-unattended]" >&2; fi
+  # a log that cannot be written (a FILE where the .claude dir should be) never crashes the
+  # hook and never passes SILENTLY: the attended call falls back to ASK (round-2 catch)
+  LT=$(mktemp -d); mkdir -p "$LT/core/security/hooks"; cp "$SELF_PATH" "$LT/core/security/hooks/"; : > "$LT/.claude"
+  json=$(jq -n --arg c 'curl -s https://api.example.com/v1' '{tool_input:{command:$c}}')
+  set +e; out=$(printf '%s' "$json" | env -u RHEOSCOPE_UNATTENDED bash "$LT/core/security/hooks/block-dangerous-bash.sh" 2>/dev/null); rc=$?; set -e
+  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '"ask"' && printf '%s' "$out" | grep -q 'could not be LOGGED'; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL [log-failure-asks] rc=$rc out=${out:0:60}" >&2; fi
+  json=$(jq -n --arg c 'ls -la' '{tool_input:{command:$c}}')
+  set +e; out=$(printf '%s' "$json" | env -u RHEOSCOPE_UNATTENDED bash "$LT/core/security/hooks/block-dangerous-bash.sh" 2>/dev/null); rc=$?; set -e
+  if [ "$rc" -eq 0 ] && [ -z "$out" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL [log-failure-plain-still-silent] rc=$rc" >&2; fi
+  # ...and an ALLOWLISTED call with an unwritable log asks too (round-3 catch)
+  printf 'curl[[:space:]]+-s[[:space:]]+https://api\.replicate\.com/
+' > "$LT/core/security/hooks/egress-allowlist.txt"
+  json=$(jq -n --arg c 'curl -s https://api.replicate.com/v1/models' '{tool_input:{command:$c}}')
+  set +e; out=$(printf '%s' "$json" | env -u RHEOSCOPE_UNATTENDED bash "$LT/core/security/hooks/block-dangerous-bash.sh" 2>/dev/null); rc=$?; set -e
+  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'Allowlisted egress' ; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL [log-failure-allowlisted-asks] rc=$rc out=${out:0:60}" >&2; fi
+  rm -rf "$LT"
+  # every row is valid JSON with the six fields
+  if jq -e 'select(.ts and .kind and .mode and (.command|type=="string") and (.allowlisted|type=="boolean"))' "$LOG" >/dev/null 2>&1 \
+     && [ "$(jq -c . "$LOG" | wc -l)" = "$(wc -l < "$LOG")" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL [log-shape]" >&2; fi
+
+  # -- Phase 2: every committed fixture against its pinned expectation (UNATTENDED), then
+  #    every ASK fixture again ATTENDED, where it must be silent.
   fixture_expect() {
     case "$1" in
       test-rm-rf.json|test-git-reset-hard.json|test-git-commit-no-verify.json|\
@@ -205,9 +291,22 @@ test-node-e-node-https.json) echo ASK ;;
         echo "FAIL [fixture $b] expected=$exp got=$kind rc=$rc" >&2
       fi
     done
+    for f in "$SELF_DIR"/test-inputs/*.json; do
+      b=$(basename "$f")
+      [ "$(fixture_expect "$b")" = "ASK" ] || continue
+      before=$(wc -l < "$LOG")
+      set +e
+      out=$(env -u RHEOSCOPE_UNATTENDED bash "$SELF_PATH" < "$f" 2>/dev/null)
+      rc=$?
+      set -e
+      after=$(wc -l < "$LOG")
+      if [ "$rc" -eq 0 ] && [ -z "$out" ] && [ $((after-before)) -eq 1 ]          && [ "$(tail -n 1 "$LOG" | jq -r '[.kind,.mode]|join("|")')" = "egress|attended" ]; then pass=$((pass+1)); else
+        fail=$((fail+1)); echo "FAIL [fixture $b attended] expected silent + exactly one egress/attended row, got rc=$rc out=${out:0:30} rows+=$((after-before))" >&2; fi
+    done
   else
     echo "NOTE: test-inputs/ absent -- embedded cases only" >&2
   fi
+  rm -rf "$TT"
 
   echo "block-dangerous-bash self-test: $pass passed, $fail failed"
   [ "$fail" -eq 0 ] || exit 1
@@ -231,6 +330,36 @@ COMMAND_NORM=$(printf '%s' "$COMMAND" | tr -d "'\"")
 HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ALLOWLIST="$HOOK_DIR/egress-allowlist.txt"
 
+# ------------------------------------------------ v3.0.47: log-and-surface (v3.0-134)
+# ATTENDED sessions no longer ASK for egress: the call is allowed and appended to an
+# append-only log the sweep surfaces (one line per new host). UNATTENDED runs keep the
+# ASK, which nobody can answer, so they fail closed exactly as before. Why (the five-pass
+# run of 2026-08-22): the threat on a one-operator harness is a misled or wrong session,
+# not an adaptive adversary; the ask was never a bar against composed spellings and its
+# prompt tax trained a reflexive Allow (v3.0-124). The DENY tier is untouched.
+# Unattended := the scheduled wrappers set RHEOSCOPE_UNATTENDED=1 (standing-loop and
+# nightly-sweep recipes), OR the PreToolUse payload reports permission_mode "dontAsk".
+# The log path is FIXED relative to this script (repo root/.claude/, per-machine,
+# gitignored) -- no env override, because an env-settable path would let a session
+# point the log at /dev/null. Every ASK and every DENY is logged too (v3.0-136 telemetry:
+# a tier nobody ever declines is a rubber stamp).
+PERMISSION_MODE=$(echo "$INPUT" | jq -r '.permission_mode // ""')
+UNATTENDED=0
+if [ -n "${RHEOSCOPE_UNATTENDED:-}" ] || [ "$PERMISSION_MODE" = "dontAsk" ]; then UNATTENDED=1; fi
+LOG_DIR="$HOOK_DIR/../../../.claude"
+LOG_FILE="$LOG_DIR/egress-log.jsonl"
+log_row() {  # kind label allowlisted -> returns 1 when the row could NOT be written
+  local host
+  host=$(printf '%s' "$COMMAND_NORM" | grep -Eoi '([a-z0-9-]+\.)+[a-z]{2,}(:[0-9]+)?' | head -1 || true)
+  mkdir -p "$LOG_DIR" 2>/dev/null || return 1
+  jq -n -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg kind "$1" --arg label "$2" \
+     --arg host "${host:-}" --argjson allow "$3" --arg mode "$([ $UNATTENDED -eq 1 ] && echo unattended || echo attended)" \
+     --arg cmd "$(printf '%s' "$COMMAND" | cut -c1-400)" \
+     '{ts:$ts,kind:$kind,label:$label,host:$host,allowlisted:$allow,mode:$mode,command:$cmd}' \
+     >> "$LOG_FILE" 2>/dev/null || return 1
+  return 0
+}
+
 # ---------------------------------------------------------------- Tier 1: DENY
 # Destructive / unrecoverable. Checked FIRST: a command that both egresses and
 # destroys is denied, never asked.
@@ -253,6 +382,7 @@ DENY_PATTERNS=(
 
 for pat in "${DENY_PATTERNS[@]}"; do
   if echo "$COMMAND_NORM" | grep -Eqi "$pat"; then
+    log_row destructive-deny "$pat" false || true
     echo "Blocked: command matches denied pattern '$pat'. Destructive commands are denied by policy (unrecoverable -- the v3.0.19 doctrine's deny class). This tier has no allowlist and no ask; if the operation is truly intended, the operator runs it themselves, deliberately." >&2
     exit 2
   fi
@@ -320,6 +450,7 @@ if [ $trust_write_shaped -eq 0 ] && printf '%s' "$COMMAND_PATHS" | grep -Eq "$TR
   trust_write_shaped=1
 fi
 if [ $trust_write_shaped -eq 1 ] && printf '%s' "$COMMAND_PATHS" | grep -Eq "$TRUST_RE"; then
+  log_row trust-deny trust-surface false || true
   echo "Blocked: write-shaped command names a TRUST SURFACE (see core/security/hooks/trust-surfaces.txt). Trust surfaces are operator-edited only, outside the session, and committed with \`git commit -S\` under the pinned presence-requiring key; every honest consumer refuses one that is not committed-identical and operator-signed. Read it freely (cat/grep/git show); propose the change in chat." >&2
   exit 2
 fi
@@ -340,6 +471,7 @@ if echo "$COMMAND_NORM" | grep -Eqi '(^|[[:space:]`$(])(remove-item|rm|ri)[[:spa
    && echo "$COMMAND_NORM" | grep -Eqi -- '-recurse\b' \
    && echo "$COMMAND_NORM" | grep -Eqi -- '-force\b' \
    && echo "$COMMAND_NORM" | grep -Eqi -- "$ROOT_TARGET_RE"; then
+  log_row destructive-deny removeitem-root false || true
   echo "Blocked: command matches denied pattern 'Remove-Item -Recurse -Force <drive/posix root>'. Root-targeting recursive force-deletes are denied by policy (unrecoverable). This tier has no allowlist and no ask." >&2
   exit 2
 fi
@@ -406,16 +538,32 @@ for entry in "${ASK_PATTERNS[@]}"; do
         fi
         ;;
     esac
-    # Standing allowance? (operator-committed file; ASK tier only)
+    # Standing allowance? (operator-committed file; ASK tier only) -- logged, never asked
     if [ -f "$ALLOWLIST" ]; then
       while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in ''|'#'*) continue ;; esac
         if echo "$COMMAND" | grep -Eq -- "$line"; then
+          # logged like any other egress; an unwritable log falls back to ASK here too
+          # (cross-vendor round-3 catch: "never silence" must include the allowlist path)
+          if log_row egress "$label" true; then exit 0; fi
+          printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Allowlisted egress (%s) could not be LOGGED (.claude/egress-log.jsonl unwritable), so this one call asks instead of passing silently. Fix the log path."}}
+' "$label"
           exit 0
         fi
       done < "$ALLOWLIST"
     fi
-    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Network egress (%s). Review the destination and payload, then allow or decline this one call. Unattended runs fail closed. For a standing allowance, ask the operator to add an exact pattern line to core/security/hooks/egress-allowlist.txt (operator-edited only)."}}\n' "$label"
+    # v3.0.47: attended -> allow + log; unattended -> ask (fails closed, nobody answers).
+    # If the row CANNOT be written, an attended call falls back to ASK (cross-vendor
+    # round-2 catch): the design fails toward visibility, never toward silence.
+    if [ $UNATTENDED -eq 0 ]; then
+      if log_row egress "$label" false; then
+        exit 0
+      fi
+      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Network egress (%s) could not be LOGGED (.claude/egress-log.jsonl unwritable), so this one call asks instead of passing silently. Fix the log path; attended egress is normally allowed and logged."}}\n' "$label"
+      exit 0
+    fi
+    log_row egress-ask "$label" false || true
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Network egress (%s) in an UNATTENDED run: no operator is present to review it, so it fails closed. Attended sessions allow and log egress (.claude/egress-log.jsonl, surfaced by /sweep). For a standing allowance, ask the operator to add an exact pattern line to core/security/hooks/egress-allowlist.txt (operator-edited only)."}}\n' "$label"
     exit 0
   fi
 done

@@ -433,6 +433,26 @@ def check_hooks_wired(ctx):
                        "coverage is incomplete: %s. FIX: mirror the PreToolUse entries from "
                        "core/security/settings.local.json.example." % "; ".join(problems))
 
+    # v3.0.47 (v3.0-134, cross-vendor round-2 catch): a scheduled wrapper that does not set
+    # the unattended marker runs with ATTENDED egress permissions (allow + log). Every
+    # .cmd/.ps1/.sh wrapper under .claude/ must carry RHEOSCOPE_UNATTENDED.
+    unmarked = []
+    for w in sorted((ctx["root"] / ".claude").glob("*")):
+        if w.suffix.lower() in (".cmd", ".bat", ".ps1", ".sh") and w.is_file():
+            try:
+                if "RHEOSCOPE_UNATTENDED" not in w.read_text(encoding="utf-8", errors="replace"):
+                    unmarked.append(w.name)
+            except OSError:
+                unmarked.append(w.name + " (unreadable)")
+    if unmarked:
+        return Result("WARN", "hooks-wired",
+                       "hooks wired, but scheduled wrapper(s) under .claude/ do not set the "
+                       "unattended marker: %s -- a run they launch would allow-and-log egress as "
+                       "if you were present instead of asking/failing closed. FIX: add "
+                       "`set RHEOSCOPE_UNATTENDED=1` (cmd) / `$env:RHEOSCOPE_UNATTENDED=1` (ps1) / "
+                       "`export RHEOSCOPE_UNATTENDED=1` (sh) as the wrapper's first line."
+                       % ", ".join(unmarked))
+
     return Result("PASS", "hooks-wired",
                    "settings.local.json present, valid JSON, both hooks wired with correct "
                    "matcher coverage (Bash + PowerShell for block-dangerous-bash.sh, "
@@ -686,7 +706,14 @@ def check_trust_surfaces(ctx):
         else:
             mode = rep.get("mode", "warn")
             unsigned = [r for r in rep.get("surfaces", []) if not r.get("signed")]
-            if unsigned:
+            if mode == "visible":
+                out.append(Result("PASS", fam + ":signatures",
+                                  "trust_surface_signing: visible -- no signature expected; %d "
+                                  "surface(s) tracked, %d carry an operator signature anyway. "
+                                  "Authority here is reversible-and-visible (sweep step 17 shows "
+                                  "every change)." % (len(rep.get("surfaces", [])),
+                                                      len(rep.get("surfaces", [])) - len(unsigned))))
+            elif unsigned:
                 detail = "; ".join("%s: %s" % (r["path"], r.get("reason")) for r in unsigned[:6])
                 more = "" if len(unsigned) <= 6 else " (+%d more)" % (len(unsigned) - 6)
                 status = "FAIL" if mode == "required" else "WARN"
@@ -1372,6 +1399,28 @@ def self_test():
         r = note(check_hooks_wired(ctx))
         check("hooks-wired: warn when block-env-writes.sh not under an Edit/Write matcher",
               r.status == "WARN" and "block-env-writes.sh" in r.detail and "Edit" in r.detail)
+
+        # v3.0.47: a scheduled wrapper without the unattended marker -> WARN; with it -> PASS
+        (claude_dir / "settings.local.json").write_text(
+            json.dumps({"hooks": {"PreToolUse": [
+                {"matcher": "Bash",
+                 "hooks": [{"command": "$X/core/security/hooks/block-dangerous-bash.sh"}]},
+                {"matcher": "PowerShell",
+                 "hooks": [{"command": "$X/core/security/hooks/block-dangerous-bash.sh"}]},
+                {"matcher": "Edit|Write",
+                 "hooks": [{"command": "$X/core/security/hooks/block-env-writes.sh"}]}]}}),
+            encoding="utf-8")
+        (claude_dir / "nightly-sweep.cmd").write_text("@echo off\r\nclaude -p /sweep\r\n",
+                                                      encoding="utf-8")
+        r = note(check_hooks_wired(ctx))
+        check("hooks-wired: a scheduled wrapper WITHOUT the unattended marker -> WARN naming it",
+              r.status == "WARN" and "nightly-sweep.cmd" in r.detail
+              and "RHEOSCOPE_UNATTENDED" in r.detail)
+        (claude_dir / "nightly-sweep.cmd").write_text(
+            "@echo off\r\nset RHEOSCOPE_UNATTENDED=1\r\nclaude -p /sweep\r\n", encoding="utf-8")
+        r = note(check_hooks_wired(ctx))
+        check("hooks-wired: the same wrapper WITH the marker -> PASS", r.status == "PASS")
+        (claude_dir / "nightly-sweep.cmd").unlink()
 
         (claude_dir / "settings.local.json").write_text(
             json.dumps({"hooks": {"PreToolUse": [

@@ -260,6 +260,31 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.46 → v3.0.47 (egress stops asking when you're present; signing becomes a grade)
+
+Fewer interrupts, same protection where it matters. Two files you copy, one line you add to any
+scheduled wrapper, one **[your call]**.
+
+1. **The hook (you copy it — it is a trust surface, the session is denied):**
+   `core/security/hooks/block-dangerous-bash.sh` and `core/security/hooks/README.md` from the
+   template. From now on an egress call in a session you're sitting in is allowed and written to
+   `.claude/egress-log.jsonl` instead of prompting you; `/sweep` shows you a per-host table of
+   where sessions reached out. Nothing changes for the destructive DENY tier. Battery:
+   `bash core/security/hooks/block-dangerous-bash.sh --self-test` (expect 0 failed).
+2. **Any scheduled wrapper (`.cmd`) for the nightly sweep or the standing loop gets one line
+   first: `set RHEOSCOPE_UNATTENDED=1`.** That is what keeps unattended runs failing closed on
+   egress. Without it a scheduled run would behave like an attended one — `/doctor`'s hooks-wired check
+   now WARNs naming any wrapper under `.claude/` that lacks the line. Re-render
+   `.claude/skills/standing-loop/SKILL.md` and `.claude/skills/sweep/SKILL.md` (step 18).
+3. Add `.claude/egress-log.jsonl` to your `.gitignore` (the template's has it).
+4. **[your call] `trust_surface_signing: visible`.** If you have decided — as the template's
+   operator did on 2026-08-22 — that "reversible and visible" is the right authority model for
+   your project, set `trust_surface_signing: visible` in `project.yaml`: no signature is expected,
+   no warning is printed, every sensor still runs and `/sweep` still shows every trust-surface
+   change. If you want the hardware-key root, run the v3.0.45→46 §C ceremony and set `required`.
+   Leaving it unset keeps `warn` (accept + one warning line per run). Copy the new `deploy/trust.py`
+   and `.claude/skills/doctor/doctor.py` for the mode to be recognized.
+
 ## v3.0.45 → v3.0.46 (trust-surface integrity — the perimeter becomes operator-signed; ADR #11's Release-2 enablement gate)
 
 **Read this before starting: the session cannot apply most of this release itself.** Every

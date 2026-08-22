@@ -196,6 +196,13 @@ Mirror the nightly-sweep pattern already in place: a `.cmd` wrapper plus a Task 
 for example 05:30 daily, running just after the sweep. That's the whole recipe — nothing about
 /standing-loop itself needs to change to run on a schedule.
 
+**The wrapper must set `RHEOSCOPE_UNATTENDED=1`** (v3.0.47, backlog v3.0-134) — e.g. the first line
+of the `.cmd`: `set RHEOSCOPE_UNATTENDED=1`. The egress hook reads it: in an unattended run every
+egress-shaped call ASKS and, with nobody present, fails closed; in an attended session the same
+call is allowed and logged (`.claude/egress-log.jsonl`, surfaced by `/sweep`). A scheduled run
+launched without the marker would run with attended permissions — the arming review checks the
+wrapper carries it.
+
 Arming this loop SUPERSEDES the sweep-only schedule — the loop runs `/sweep` itself as step 1;
 disable the "Rheoscope Nightly Sweep" task when this one activates (two schedules = double spend
 and briefing races).

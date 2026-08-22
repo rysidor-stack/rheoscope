@@ -51,3 +51,6 @@ harness-v2.0/scratch/
 
 # Cross-vendor verifier source bundles (throwaway zips of files already in the repo)
 harness-v3.0/verification/*-bundle*.zip
+
+# v3.0.47 (v3.0-134): the per-machine egress log the hook appends and /sweep surfaces
+.claude/egress-log.jsonl

@@ -1,0 +1,24 @@
+# trust-surfaces.txt -- the trust-surface path CLASS (v3.0-120, ships v3.0.46).
+# One glob per line, repo-relative, `**` spans directories, `*` does not cross `/`.
+# Read by BOTH PreToolUse hooks (block-env-writes.sh on the Edit/Write lane,
+# block-dangerous-bash.sh on the Bash/PowerShell lane), by deploy/trust.py, and by
+# /doctor check 16 -- always by fixed relative path, never an env override.
+#
+# THIS FILE CAN ONLY WIDEN THE CLASS. Every reader carries the same hard-coded floor
+# and takes the UNION with these lines: an absent, emptied, or unreadable file never
+# narrows anything (fail-closed). The hook battery pins this file's entries equal to
+# the floor so the homes cannot drift apart unnoticed. This file is itself a member of
+# the class: operator-edited only, committed with `git commit -S` under the pinned
+# presence-requiring key (core/security/hooks/allowed_signers).
+core/security/hooks/**
+deploy/safe-allowlist.yaml
+deploy/evidence/operator-*.md
+deploy/rulings/**
+deploy/trust.py
+deploy/compile-driver.py
+deploy/compile-backends.py
+deploy/audit-content.py
+.claude/settings.json
+.claude/settings.local.json
+.git/hooks/**
+.gitattributes

@@ -255,6 +255,92 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
    are EXPECTED in the record's `refused[]` under G6; those refusals appearing is part
    of the acceptance, not a failure.
 
+> **Recipe-wide rule (2026-08-21, from the first production instance v3.0.45 adoption):** when a recipe says
+> "copy `deploy/`", copy the FILES THE RECIPE NAMES, never the whole directory — instances
+> may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
+> encoding repair). Diff before overwriting anything you did not author this adoption.
+
+## v3.0.45 → v3.0.46 (trust-surface integrity — the perimeter becomes operator-signed; ADR #11's Release-2 enablement gate)
+
+**Read this before starting: the session cannot apply most of this release itself.** Every
+file in the trust-surface class is now denied on both tool lanes, so the hook scripts, the
+verifier and the three engine consumers are copied by **you**, in your terminal, from the
+template's bytes. The session's job is to read, diff, tell you exactly which files and why,
+run the batteries, and stop at each **[your call]**. Nothing here writes a view; no engine
+contract changes except that HUMAN-GATE artifacts are now checked against git.
+
+**A. Files you copy (the session names them; you run the `cp`).** From the v3.0.46 template
+into the same relative paths in your project — copy ONLY these, never the whole folders:
+
+1. `core/security/hooks/block-env-writes.sh`, `core/security/hooks/block-dangerous-bash.sh`
+   (both hooks), **`core/security/hooks/trust-surfaces.txt` (new — the class)**, the new
+   fixtures `core/security/hooks/test-inputs/test-trust-*.json` +
+   `test-ps-removeitem-quoted-cmdlet-root.json`, and `core/security/hooks/README.md`.
+2. `deploy/trust.py` (new), `deploy/compile-driver.py`, `deploy/compile-backends.py`,
+   `deploy/audit-content.py` (the three HUMAN-GATE consumers, each gated by trust.py).
+   If any of these three carries a LOCAL patch in your instance (the first production instance's precedent), the
+   session diffs first and you merge by hand — the v3.0.46 change in each is a single
+   gate call plus its battery cases.
+3. `.claude/skills/doctor/doctor.py` (check 16), `.claude/skills/sweep/SKILL.md` (step 17
+   is now the whole class), `docs/engine/OPERATIONS.md` (§5), `core/onboarding/UPDATING.md`.
+
+Then the batteries, which the session CAN run (reads and script execution pass the lanes):
+`bash core/security/hooks/block-dangerous-bash.sh --self-test` (**169/169**),
+`bash core/security/hooks/block-env-writes.sh --self-test` (**53/53**),
+`py deploy/trust.py --self-test` (**92/92**), `py deploy/compile-driver.py --self-test`
+(**260/260**), `py deploy/compile-backends.py --self-test` (**179/179**),
+`py deploy/audit-content.py --self-test` (**41/41**), `py .claude/skills/doctor/doctor.py
+--self-test` (**92/92**). Expect `/doctor` check 16 to WARN on the pin and signatures until
+step C — that is the cutover state, correctly reported.
+
+**B. What changes for you immediately (no ceremony needed):** every authorization artifact
+(`deploy/evidence/operator-*.md`) must be **committed and identical to HEAD** before a
+compile, verify, or full-run audit accepts it — an artifact with uncommitted edits, or an
+untracked one, is refused naming the diff. If your standing grant is committed (it is, on
+every instance adopted by recipe), nothing changes. Under the default
+`trust_surface_signing: warn` (absent = warn) the consumers also print one
+`WARNING (trust-surface): … not operator-signed … ACCEPTED under warn` line per run: a
+reminder, not a refusal.
+
+**C. [your call] — the one-time signing ceremony (brief v4 §10; one physical key touch).**
+This is the whole point of the release and only you can do it. The session sets the
+repo-local git config on your word; you make one signed commit.
+
+1. **Choose the key.** A presence-requiring SSH key — `sk-ssh-ed25519@openssh.com` or
+   `sk-ecdsa-sha2-nistp256@openssh.com` (a FIDO security key; `ssh-keygen -t ed25519-sk`
+   creates one). Your ordinary `id_ed25519` does NOT qualify and is refused by every
+   verifier if listed. A backup sk key may be listed as a second line.
+2. **Repo-local signing config** (the session runs these on your word; nothing global,
+   and `commit.gpgsign` stays OFF — only trust-surface commits are signed):
+   ```bash
+   git config gpg.format ssh
+   git config user.signingkey ~/.ssh/<your-sk-key>.pub
+   git config gpg.ssh.allowedSignersFile core/security/hooks/allowed_signers
+   ```
+3. **The pin, then one touch.** Create `core/security/hooks/allowed_signers` yourself —
+   one line per key, git's allowed-signers format: `<principal> <sk-keytype> <base64>`
+   (e.g. `operator $(cat ~/.ssh/<your-sk-key>.pub)`). Stage it together with
+   `trust-surfaces.txt` and the files from A, and commit **with `-S`** — the touch:
+   ```bash
+   git add core/security/hooks deploy/trust.py deploy/compile-driver.py deploy/compile-backends.py deploy/audit-content.py .claude/skills/doctor/doctor.py .claude/skills/sweep/SKILL.md docs/engine/OPERATIONS.md core/onboarding/UPDATING.md
+   git commit -S -m "v3.0.46 trust-surface integrity: pin + class + perimeter (operator-signed)"
+   ```
+   This bootstrap commit is the root of the pin's chain: every later change to
+   `allowed_signers` must be signed by a key listed at the PARENT commit.
+4. **Verify, then flip.** `py deploy/trust.py --root . --report` must show the pin chain
+   verified and the files from step 3 signed by your principal. Then set
+   `trust_surface_signing: required` in `project.yaml` (that file is not in the class;
+   the session may edit it) and re-run `/doctor`: check 16 reads PASS on pin and
+   signatures. From here every HUMAN-GATE consumer REFUSES an unsigned authorization
+   artifact, and every future trust-surface edit is one `git commit -S`.
+
+**D. Known walls, stated plainly.** (i) A session that tries to `cp` the hooks draws a
+DENY — by design; it must hand the command to you. (ii) `git commit -S` prompts your
+security key once per commit; if the key is not plugged in the commit fails, it never
+falls back to a software key. (iii) Retirement (ADR #11 Release 2) still cannot run:
+this release ships the publisher-side checks (`trust.py --check-publish`) and the
+acceptance run that proves them, not the `--retire` verb.
+
 ## v3.0.44 → v3.0.45 (ADR #11 Release 1: cite-don't-copy + the read-only retirement manifest)
 
 The first of three releases under ADR #11 (view retirement / forget-down, locked
@@ -266,8 +352,11 @@ call]** entries.
    `docs/wiki-schema.md` (§3: over-cap = retirement candidate, not split; cite-don't-copy).
    Instance-side this is a reading change: stop minting `## <Decision> (locked DATE)`
    sections; existing ones stay until Release 2's verb retires them on your ruling.
-2. **The instrument:** copy `deploy/retire-manifest.py` (the deploy/ copy loop covers it).
-   Run `py deploy/retire-manifest.py --self-test` (expect 14/14), then
+2. **The instrument:** copy ONLY the new file `deploy/retire-manifest.py` — do NOT
+   re-copy the whole `deploy/` folder for this release (an instance with local patches to
+   other deploy/ scripts would have them silently overwritten; the first production instance's adoption caught
+   this — upstream issue #2 class). Run `py deploy/retire-manifest.py --self-test`
+   (expect **25/25** — earlier text said 14/14, corrected 2026-08-21), then
    `py deploy/retire-manifest.py --root . --md retirement-manifest.md` — READ-ONLY; it
    tells you per over-cap view what retirement would do (spans, candidate modes, inbound
    citations from the complete registered universe, predicted sizes, reachability). If
@@ -313,7 +402,7 @@ one-liners trains a reflexive Allow, which erodes the tier it was meant to stren
    IS the ratified trade (prompt fatigue was training a reflexive Allow), and the
    token list is a floor of common spellings, not an enumeration.
 2. **Fixtures:** copy the FOUR new fixtures (prose previously said two — corrected
-   2026-08-19, caught by the aces adoption): passing pair
+   2026-08-19, caught by the first production instance's adoption): passing pair
    `core/security/hooks/test-inputs/test-py-c-local-passing.json` +
    `test-node-e-local-passing.json`, ASK-direction pair
    `test-py-c-from-http-import.json` + `test-node-e-node-https.json` (these two are

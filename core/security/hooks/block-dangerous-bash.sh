@@ -109,6 +109,62 @@ if [ "${1:-}" = "--self-test" ]; then
   run_case silent "node -e \"const fs=require('fs'); console.log(fs.readFileSync(p).length)\"" 'node-local-fs'
   run_case silent "node -e \"import fs from 'node:fs'; console.log(fs.statSync(p).size)\"" 'node-local-node-fs'
   run_case silent 'python build.py --release' 'py-script-not-inline'
+  # -- DENY tier: trust-surface writes (v3.0.46, v3.0-120 brief section 3), per surface
+  run_case DENY 'echo "curl .*" >> core/security/hooks/egress-allowlist.txt' 'ts-append-allowlist'
+  run_case DENY 'cat /tmp/x > deploy/safe-allowlist.yaml' 'ts-redirect-safe-allowlist'
+  run_case DENY 'printf "x" | tee deploy/evidence/operator-grant.md' 'ts-tee-evidence'
+  run_case DENY 'cp /tmp/h.sh core/security/hooks/block-env-writes.sh' 'ts-cp-hook'
+  run_case DENY 'sed -i "s/sk-/ssh-/" core/security/hooks/allowed_signers' 'ts-sed-i-pin'
+  run_case DENY 'perl -i -pe "s/a/b/" core/security/hooks/trust-surfaces.txt' 'ts-perl-i-class'
+  run_case DENY 'mv /tmp/t.py deploy/trust.py' 'ts-mv-trust'
+  run_case DENY 'rm core/security/hooks/allowed_signers' 'ts-rm-pin'
+  run_case DENY 'ln -s /tmp/x deploy/audit-content.py' 'ts-ln-audit'
+  run_case DENY 'install -m 644 /tmp/d.py deploy/compile-driver.py' 'ts-install-driver'
+  run_case DENY 'truncate -s 0 deploy/compile-backends.py' 'ts-truncate-backends'
+  run_case DENY 'echo x > deploy/rulings/retire-1/proposal.md' 'ts-redirect-rulings'
+  run_case DENY 'Set-Content -Path deploy/compile-driver.py -Value x' 'ts-ps-setcontent'
+  run_case DENY 'Add-Content .claude\settings.json "{}"' 'ts-ps-addcontent-winpath'
+  run_case DENY '"x" | Out-File .git\hooks\pre-commit' 'ts-ps-outfile-githook'
+  run_case DENY 'Copy-Item C:\tmp\s.json .claude\settings.local.json' 'ts-ps-copyitem-settings'
+  run_case DENY 'Move-Item a deploy/safe-allowlist.yaml' 'ts-ps-moveitem'
+  run_case DENY 'Remove-Item deploy/evidence/operator-x.md' 'ts-ps-removeitem-single-surface'
+  run_case DENY 'New-Item -Path deploy/rulings/retire-2 -ItemType Directory' 'ts-ps-newitem'
+  run_case DENY 'Clear-Content core/security/hooks/egress-allowlist.txt' 'ts-ps-clearcontent'
+  run_case DENY 'Rename-Item deploy/trust.py trust-old.py' 'ts-ps-renameitem'
+  run_case DENY 'sc deploy/safe-allowlist.yaml x' 'ts-ps-sc-alias'
+  run_case DENY '[IO.File]::WriteAllText("deploy/trust.py","x")' 'ts-ps-io-file'
+  run_case DENY 'python -c "open(\"deploy/safe-allowlist.yaml\",\"w\").write(\"\")"' 'ts-py-c-open-write'
+  run_case DENY 'py -c "import os; print(os.stat(\"deploy/trust.py\"))"' 'ts-py-c-mentions-path'
+  run_case DENY "node -e \"require('fs').writeFileSync('.claude/settings.json','')\"" 'ts-node-e-write'
+  run_case DENY 'echo x > capabilities/knowledge-os/extracted/deploy/trust.py' 'ts-dev-repo-source-path'
+  run_case DENY 'echo "" > ./core/security/hooks/egress-allowlist.txt' 'ts-dot-slash'
+  run_case DENY 'echo x > "deploy/evidence/operator-new.md"' 'ts-quoted-path'
+  run_case DENY 'cat a.txt | tee -a core/security/hooks/test-inputs/new.json' 'ts-tee-fixture'
+  # -- DENY negatives: reads and non-class siblings on the same paths must pass
+  run_case silent 'cat core/security/hooks/egress-allowlist.txt' 'ts-read-cat'
+  run_case silent 'grep -n safe deploy/safe-allowlist.yaml' 'ts-read-grep'
+  run_case silent 'ls -la core/security/hooks 2>/dev/null' 'ts-read-ls-stderr-null'
+  run_case silent 'cat deploy/trust.py 2>&1 | head' 'ts-read-stderr-to-stdout'
+  run_case silent 'diff /tmp/a core/security/hooks/README.md' 'ts-read-diff'
+  run_case silent 'git show HEAD:core/security/hooks/allowed_signers' 'ts-read-git-show'
+  run_case silent 'git diff HEAD -- deploy/evidence/operator-x.md' 'ts-read-git-diff'
+  run_case silent 'git log -1 -- .claude/settings.json' 'ts-read-git-log'
+  run_case silent 'sed -n 1,20p deploy/compile-driver.py' 'ts-read-sed-n'
+  run_case silent 'python deploy/trust.py --self-test' 'ts-run-sensor-as-script'
+  run_case silent 'python deploy/compile-driver.py --run --authorization deploy/evidence/operator-x.md' 'ts-run-driver'
+  run_case silent 'bash core/security/hooks/block-dangerous-bash.sh --self-test' 'ts-run-hook-battery'
+  run_case silent 'git add core/security/hooks/allowed_signers && git commit -S -m "pin"' 'ts-git-commit-signed'
+  run_case silent 'echo x > deploy/safe-allowlist.yaml.example' 'ts-write-example-sibling'
+  run_case silent 'cp /tmp/r.md deploy/evidence/README.md' 'ts-write-evidence-readme'
+  run_case silent 'echo x > deploy/retire-manifest.py' 'ts-write-deploy-sibling'
+  run_case silent 'Get-Content deploy/compile-driver.py' 'ts-ps-getcontent'
+  run_case silent 'Set-Content -Path docs/notes.md -Value x' 'ts-ps-setcontent-elsewhere'
+  run_case silent 'echo x > wiki/deploy/trust.py.md' 'ts-lookalike-path'
+  run_case silent 'cat deploy/trust.py > /dev/null' 'ts-read-to-devnull'
+  run_case silent 'type deploy\trust.py > NUL' 'ts-read-to-nul'
+  # -- Remove-Item root rule now matched on COMMAND_NORM (v3.0.46 rider)
+  run_case DENY "'Remove-Item' -Recurse -Force C:\\" 'removeitem-quoted-cmdlet-root'
+  run_case DENY "Remove-Item -Recurse '-Force' 'C:\\'" 'removeitem-quoted-flags-root'
 
   # -- Phase 2: every committed fixture against its pinned expectation.
   fixture_expect() {
@@ -117,7 +173,12 @@ if [ "${1:-}" = "--self-test" ]; then
 test-git-commit-n-alias.json|test-git-C-commit-no-verify.json|\
 test-git-config-commit-n-alias.json|test-git-quoted-commit-no-verify.json|\
 test-ps-removeitem-root.json|test-ps-removeitem-root-alias.json|\
-test-ps-removeitem-root-path-flag.json|test-ps-removeitem-posix-root.json) echo DENY ;;
+test-ps-removeitem-root-path-flag.json|test-ps-removeitem-posix-root.json|\
+test-ps-removeitem-quoted-cmdlet-root.json|test-trust-bash-redirect-allowlist.json|\
+test-trust-bash-tee-evidence.json|test-trust-bash-sed-i-trust.json|\
+test-trust-bash-cp-hook.json|test-trust-ps-setcontent-driver.json|\
+test-trust-ps-copyitem-settings.json|test-trust-ps-outfile-githook.json|\
+test-trust-py-c-open-write-allowlist.json|test-trust-node-e-write-settings.json) echo DENY ;;
       test-a-curl.json|test-quoted-curl-ask.json|test-wget.json|test-nc.json|\
 test-netcat.json|test-ps-invoke-webrequest.json|test-ps-iwr.json|\
 test-py-c.json|test-node-e.json|test-py-c-from-http-import.json|\
@@ -197,6 +258,72 @@ for pat in "${DENY_PATTERNS[@]}"; do
   fi
 done
 
+# ---------------------------------------------------------- DENY: trust surfaces
+# v3.0.46 (backlog v3.0-120, brief section 3): a WRITE-SHAPED command that names a path
+# in the trust-surface class is denied. The class = the hard-coded floor below in UNION
+# with core/security/hooks/trust-surfaces.txt beside this script (fixed relative path;
+# the file can only widen; absent/emptied = floor, never fail-open). DENY, not ASK:
+# perimeter edits are operator-out-of-session by standing doctrine -- there is no
+# legitimate in-session "yes". Write-shaped = a redirection (`>`/`>>`, ignoring the
+# harmless `2>/dev/null` / `2>&1` / `>NUL` forms), the file-writing tools (tee, cp, mv,
+# rm, install, truncate, ln, dd, rsync, `sed -i`, `perl -i`), the PowerShell writers +
+# aliases (Set-Content/sc, Add-Content/ac, Out-File, Copy-Item/cpi, Move-Item/mi,
+# Remove-Item/ri/del, New-Item/ni, Clear-Content/clc, Rename-Item/rni, [IO.File]::Write*),
+# and an interpreter one-liner (`py/python -c`, `node -e`) that so much as mentions the
+# path. Pure reads (cat, grep, ls, diff, git show/log/diff, sed -n, running the sensor
+# as a script) pass. Tripwire honesty, same as every rule here: composed spellings are out
+# of a regex's reach -- deploy/trust.py's signing rule is what makes them non-authoritative.
+TRUST_FLOOR=(
+  'core/security/hooks/**'
+  'deploy/safe-allowlist.yaml'
+  'deploy/evidence/operator-*.md'
+  'deploy/rulings/**'
+  'deploy/trust.py'
+  'deploy/compile-driver.py'
+  'deploy/compile-backends.py'
+  'deploy/audit-content.py'
+  '.claude/settings.json'
+  '.claude/settings.local.json'
+  '.git/hooks/**'
+  '.gitattributes'
+)
+TRUST_CLASS=("${TRUST_FLOOR[@]}")
+if [ -r "$HOOK_DIR/trust-surfaces.txt" ]; then
+  while IFS= read -r tline || [ -n "$tline" ]; do
+    tline=${tline%%#*}; tline=${tline//\//}
+    tline="${tline#"${tline%%[![:space:]]*}"}"; tline="${tline%"${tline##*[![:space:]]}"}"
+    [ -n "$tline" ] || continue
+    tseen=0
+    for tg in "${TRUST_CLASS[@]}"; do if [ "$tg" = "$tline" ]; then tseen=1; break; fi; done
+    if [ $tseen -eq 0 ]; then TRUST_CLASS+=("$tline"); fi
+  done < "$HOOK_DIR/trust-surfaces.txt"
+fi
+# Normalized twin for PATH matching: quotes stripped (NORM), backslashes -> /, lowercased.
+COMMAND_PATHS=$(printf '%s' "$COMMAND_NORM" | tr '\\' '/'); COMMAND_PATHS=${COMMAND_PATHS,,}
+TRUST_WRITE_RE='(^|[[:space:]|;&(`])(tee|cp|mv|rm|install|truncate|ln|dd|rsync|set-content|add-content|out-file|copy-item|move-item|remove-item|new-item|clear-content|rename-item|sc|ac|cpi|mi|ni|clc|rni|ri|del)([[:space:]]|$)|(^|[[:space:]|;&(`])sed[[:space:]]+(-[a-z]*i|--in-place)|(^|[[:space:]|;&(`])perl[[:space:]]+-[a-z]*i|\[io\.file\]::write|(^|[[:space:]`$(])(py|python|python3)[[:space:]]+-c|(^|[[:space:]`$(])node[[:space:]]+-e'
+# One alternation over the whole class, built in pure bash (no subshells -- the battery
+# runs this hook ~170 times on Windows, where every process costs).
+TRUST_RE=''
+for tg in "${TRUST_CLASS[@]}"; do
+  tg=${tg//./\.}; tg=${tg//\*\*/__DS__}; tg=${tg//\*/[^[:space:]\/;|\&<>]*}; tg=${tg//__DS__/[^[:space:];|\&<>]*}  # \& : bash 5.2 patsub_replacement treats a bare & as the match
+  TRUST_RE="${TRUST_RE:+$TRUST_RE|}$tg"
+done
+TRUST_RE="(^|[^a-z0-9_.-])(\./)?($TRUST_RE)([^a-z0-9_.-]|$)"
+trust_write_shaped=0
+case "$COMMAND_PATHS" in
+  *'>'*)
+    # Redirections, with the harmless stderr/null forms removed before the `>` test.
+    redir=$(printf '%s' "$COMMAND_PATHS" | sed -E 's#[0-9]*>>?[[:space:]]*(/dev/null|nul([^a-z0-9]|$)|&[0-9]+)##g')
+    case "$redir" in *'>'*) trust_write_shaped=1 ;; esac ;;
+esac
+if [ $trust_write_shaped -eq 0 ] && printf '%s' "$COMMAND_PATHS" | grep -Eq "$TRUST_WRITE_RE"; then
+  trust_write_shaped=1
+fi
+if [ $trust_write_shaped -eq 1 ] && printf '%s' "$COMMAND_PATHS" | grep -Eq "$TRUST_RE"; then
+  echo "Blocked: write-shaped command names a TRUST SURFACE (see core/security/hooks/trust-surfaces.txt). Trust surfaces are operator-edited only, outside the session, and committed with \`git commit -S\` under the pinned presence-requiring key; every honest consumer refuses one that is not committed-identical and operator-signed. Read it freely (cat/grep/git show); propose the change in chat." >&2
+  exit 2
+fi
+
 # ROOT-TARGETING Remove-Item (PowerShell analog of the `rm -rf /` rule above). Requires
 # ALL THREE independently: the cmdlet/alias, -Recurse, -Force, and a target token that is
 # a bare drive/POSIX root with nothing after it (no extra path segments). AND-of-three
@@ -205,11 +332,14 @@ done
 # followed by more path characters, so a scratchpad-scoped
 # `Remove-Item -Recurse -Force C:\Users\...\Temp\...\scratchpad\foo` is left alone --
 # inert-unless-real-risk, same principle as every other rule in this file.
+# v3.0.46 rider (v3.0-120): matched on COMMAND_NORM, the quote-normalized twin, like
+# every other rule -- `'Remove-Item' -Recurse -Force C:\` is the same command to the
+# shell and must be the same command to this regex.
 ROOT_TARGET_RE='(^|[[:space:]])['\''"]?([A-Za-z]:)?[\\/]['\''"]?([[:space:]]|$)'
-if echo "$COMMAND" | grep -Eqi '(^|[[:space:]`$(])(remove-item|rm|ri)[[:space:]]' \
-   && echo "$COMMAND" | grep -Eqi -- '-recurse\b' \
-   && echo "$COMMAND" | grep -Eqi -- '-force\b' \
-   && echo "$COMMAND" | grep -Eqi -- "$ROOT_TARGET_RE"; then
+if echo "$COMMAND_NORM" | grep -Eqi '(^|[[:space:]`$(])(remove-item|rm|ri)[[:space:]]' \
+   && echo "$COMMAND_NORM" | grep -Eqi -- '-recurse\b' \
+   && echo "$COMMAND_NORM" | grep -Eqi -- '-force\b' \
+   && echo "$COMMAND_NORM" | grep -Eqi -- "$ROOT_TARGET_RE"; then
   echo "Blocked: command matches denied pattern 'Remove-Item -Recurse -Force <drive/posix root>'. Root-targeting recursive force-deletes are denied by policy (unrecoverable). This tier has no allowlist and no ask." >&2
   exit 2
 fi

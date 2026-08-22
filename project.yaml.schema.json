@@ -293,6 +293,11 @@
         "minLength": 1
       }
     },
+    "trust_surface_signing": {
+      "type": "string",
+      "enum": ["warn", "required"],
+      "description": "Optional (v3.0-120, v3.0.46). How HUMAN-GATE consumers (compile-driver, compile-backends, audit-content) treat a trust-surface artifact whose newest commit is NOT operator-signed per deploy/trust.py: `warn` (the adoption default when absent) accepts it and surfaces a WARNING line; `required` refuses it. Committed-identical (working tree == HEAD) is required under BOTH. Flip to `required` once core/security/hooks/allowed_signers is committed with `git commit -S` under the operator's presence-requiring (sk) key. Governs nothing about retirement publication: that gate is structural (an operator-signed tag), never a flag."
+    },
     "backlog_upstream": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",

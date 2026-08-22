@@ -1,0 +1,5 @@
+{
+  "tool_input": {
+    "command": "cat /tmp/draft.yaml > deploy/safe-allowlist.yaml.example"
+  }
+}

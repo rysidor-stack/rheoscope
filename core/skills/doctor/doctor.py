@@ -58,6 +58,16 @@ Checks (harness-v3.0/specs/template-self-truth-and-onboarding-brief-2026-07-10.m
                       deliberate chain naming it); WARN when absent/stale -- an instance
                       that ran init before `git init`, or skipped a MIGRATION reinstall,
                       otherwise runs unscanned forever with a green doctor.
+  16. trust-surfaces  (v3.0.46, backlog v3.0-120) the trust-surface class (core/security/
+                      hooks/trust-surfaces.txt + the embedded floor) is what it was committed
+                      and signed to be: (a) every tracked member HEAD-identical, (b) every
+                      member's newest commit operator-signed per deploy/trust.py (FAIL under
+                      trust_surface_signing: required, WARN under warn), (c) the untracked
+                      hook-lane members wire the perimeter (checks 7 + 15), (d) every key in
+                      allowed_signers is presence-requiring (sk), (e) no retire record
+                      without a verified operator tag. Stated in the check's own text: it
+                      runs in-process and is in the class -- a tampered doctor can lie; the
+                      root of trust is the operator's signature, never this check.
   14. corpus-reachability  (v3.0.18, backlog v3.0-88) every execution corpus declared in
                       project.yaml -- the corpus_sources list, or the legacy singular
                       corpus_source + corpus_config -- is present and readable at its
@@ -478,6 +488,259 @@ def check_precommit_scanner(ctx):
                    "core/security/hooks/scan-staged-secrets.sh from your hook, or replace "
                    "the hook if it isn't yours on purpose (it may also simply be STALE: "
                    "re-copy after adopting a newer template).")
+
+# The trust-surface class FLOOR (v3.0-120; the same list lives in both hooks and in
+# deploy/trust.py). core/security/hooks/trust-surfaces.txt can only WIDEN it.
+TRUST_SURFACE_FLOOR = (
+    "core/security/hooks/**",
+    "deploy/safe-allowlist.yaml",
+    "deploy/evidence/operator-*.md",
+    "deploy/rulings/**",
+    "deploy/trust.py",
+    "deploy/compile-driver.py",
+    "deploy/compile-backends.py",
+    "deploy/audit-content.py",
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".git/hooks/**",
+    ".gitattributes",
+)
+TRUST_SK_TYPES = ("sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com")
+_TRUST_HONEST_NOTE = ("(This sensor runs in-process and is itself in the class: a tampered "
+                      "doctor can lie. The root of trust is the operator's presence-requiring "
+                      "signature on the publishing commit, not this check.)")
+
+
+def _trust_glob_re(glob):
+    out = "(^|/)"
+    i = 0
+    while i < len(glob):
+        if glob.startswith("**", i):
+            out += ".*"
+            i += 2
+            continue
+        c = glob[i]
+        out += "[^/]*" if c == "*" else ("[^/]" if c == "?" else re.escape(c))
+        i += 1
+    return re.compile(out + "$")
+
+
+def _trust_class(root):
+    globs = list(TRUST_SURFACE_FLOOR)
+    p = Path(root) / "core" / "security" / "hooks" / "trust-surfaces.txt"
+    try:
+        for line in p.read_text(encoding="utf-8-sig").splitlines():
+            line = line.split("#", 1)[0].strip().replace("\\", "/")
+            if line and line not in globs:
+                globs.append(line)
+    except OSError:
+        pass
+    return globs
+
+
+def _git_out(root, *args):
+    try:
+        p = subprocess.run(["git", "--no-replace-objects", "-C", str(root)] + list(args),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        return 127, str(e)
+    return p.returncode, p.stdout
+
+
+def check_trust_surfaces(ctx):
+    """Check 16 (v3.0-120, brief section 6): the trust-surface class is what it was
+    committed and signed to be. Five sub-checks, one Result each:
+      (a) head-identity  every TRACKED class member is byte-identical to HEAD
+                         (FAIL "uncommitted perimeter change" with the diff stat);
+      (b) signatures     every tracked member's newest commit is operator-signed
+                         (deploy/trust.py --report): FAIL under trust_surface_signing:
+                         required, WARN under warn; WARN "unavailable" without trust.py;
+      (c) wiring         the UNTRACKED members (.claude/settings.local.json,
+                         .git/hooks/**) are hook-lane members: all three hook entries
+                         wired (check 7) and the scanner byte-current (check 15), else
+                         FAIL "perimeter unwired";
+      (d) pin            every key in core/security/hooks/allowed_signers is sk-typed,
+                         else FAIL "non-presence key listed"; absent pin -> WARN
+                         (bootstrap ceremony pending);
+      (e) retirements    any `retire` journal record whose commit carries no verified
+                         operator tag -> FAIL "unpublished retirement present"."""
+    root = Path(ctx["root"])
+    fam = "trust-surfaces"
+    if not (root / ".git").is_dir():
+        return [Result("WARN", fam + ":head-identity",
+                       "not a git repository -- no trust surface can be committed-identical "
+                       "or signed, so every HUMAN-GATE consumer will refuse. FIX: git init "
+                       "and commit the tree.")]
+    out = []
+    globs = _trust_class(root)
+    regs = [_trust_glob_re(g) for g in globs]
+    rc, ls = _git_out(root, "ls-files", "-z")
+    tracked = [p for p in ls.split("\0") if p and any(r.search(p) for r in regs)] if rc == 0 else []
+
+    # (a) HEAD-identity
+    dirty = []
+    for p in tracked:
+        # RAW bytes vs the HEAD blob, CRLF tolerated (never `git diff`: clean filters and
+        # attribute conversions could make a forged file look clean -- round-6 catch)
+        try:
+            proc = subprocess.run(["git", "--no-replace-objects", "-C", str(root), "cat-file",
+                                   "blob", "HEAD:%s" % p], capture_output=True, timeout=60)
+            blob = proc.stdout if proc.returncode == 0 else None
+            raw = (root / p).read_bytes()
+        except (OSError, subprocess.SubprocessError):
+            blob, raw = None, None
+        if blob is None or raw is None:
+            dirty.append("%s (unreadable or absent from HEAD)" % p)
+        elif raw != blob and raw.replace(b"\r\n", b"\n") != blob.replace(b"\r\n", b"\n"):
+            _, stat = _git_out(root, "diff", "--stat", "HEAD", "--", p)
+            summary = (stat.strip().splitlines() or [""])[-1].strip()
+            dirty.append("%s (%s)" % (p, summary.split(", ", 1)[-1] if summary else
+                                      "raw bytes differ; git diff reports clean -- a clean "
+                                      "filter/attribute conversion is in play"))
+    if dirty:
+        out.append(Result("FAIL", fam + ":head-identity",
+                          "uncommitted perimeter change in %d trust surface(s): %s. An "
+                          "unsigned working-tree edit to a trust surface is non-authoritative "
+                          "-- every honest consumer refuses it. FIX: if the operator made it, "
+                          "commit it with `git commit -S` (sk key); if they did not, `git "
+                          "checkout -- <path>` restores the committed bytes and the session "
+                          "that wrote it is the finding. %s"
+                          % (len(dirty), "; ".join(dirty), _TRUST_HONEST_NOTE)))
+    else:
+        out.append(Result("PASS", fam + ":head-identity",
+                          "%d tracked trust surface(s) byte-identical to HEAD. %s"
+                          % (len(tracked), _TRUST_HONEST_NOTE)))
+
+    # (d) the pin
+    rc, pin = _git_out(root, "show", "HEAD:core/security/hooks/allowed_signers")
+    if rc != 0:
+        out.append(Result("WARN", fam + ":pin",
+                          "core/security/hooks/allowed_signers is not committed -- no operator "
+                          "signature can verify yet, so consumers run in cutover (warn) at "
+                          "best. FIX: the one-time ceremony in MIGRATION v3.0.45->v3.0.46: "
+                          "list your sk public key(s), commit with `git commit -S`."))
+    else:
+        non_sk, keys = [], 0
+        for line in pin.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            toks = line.split()
+            kt = next((t for t in toks[1:] if re.match(r"^(sk-)?(ssh-|ecdsa-)", t)), None)
+            if kt is None:
+                continue
+            keys += 1
+            if kt not in TRUST_SK_TYPES:
+                non_sk.append("%s (%s)" % (toks[0], kt))
+        if non_sk:
+            out.append(Result("FAIL", fam + ":pin",
+                              "non-presence key listed in allowed_signers: %s. A software key "
+                              "can be used by anything holding the agent socket, so it is "
+                              "ignored by every verifier and must not be listed. FIX: remove "
+                              "the line; list only sk-ssh-ed25519@openssh.com / "
+                              "sk-ecdsa-sha2-nistp256@openssh.com keys; commit with -S."
+                              % ", ".join(non_sk)))
+        elif keys == 0:
+            out.append(Result("FAIL", fam + ":pin",
+                              "allowed_signers is committed but lists no key. FIX: add the "
+                              "operator's sk public key line and commit with -S."))
+        else:
+            out.append(Result("PASS", fam + ":pin",
+                              "%d presence-requiring key(s) pinned, no software keys" % keys))
+
+    # (b) + (e) via deploy/trust.py
+    trust_py = root / "deploy" / "trust.py"
+    verifier_dirty = any(d.startswith("deploy/trust.py ") for d in dirty)
+    if trust_py.is_file() and verifier_dirty:
+        # (b)/(e) read THROUGH deploy/trust.py. A working-tree patch to it is caught by (a)
+        # above; running the patched copy would let it lie about signatures and
+        # retirements, so refuse to consult it. (A COMMITTED patch is HEAD-identical and
+        # cannot be told apart from inside the repo -- that commit is unsigned, and the
+        # root remains the operator's signature, never this sensor.)
+        out.append(Result("FAIL", fam + ":signatures",
+                          "verifier tampered: deploy/trust.py differs from HEAD, so signature "
+                          "and retirement status are UNKNOWABLE from inside this repo. FIX: "
+                          "restore it (`git checkout -- deploy/trust.py`) and re-run; treat the "
+                          "session that patched it as the finding."))
+        out.append(Result("FAIL", fam + ":retirements",
+                          "verifier tampered: see trust-surfaces:signatures. FIX: restore "
+                          "deploy/trust.py, then re-run."))
+    elif not trust_py.is_file():
+        out.append(Result("WARN", fam + ":signatures",
+                          "deploy/trust.py absent -- signature verification unavailable "
+                          "(knowledge-os not enabled, or pre-v3.0.46 deploy/). Head-identity "
+                          "and wiring still checked. FIX: adopt v3.0.46's deploy/trust.py."))
+    else:
+        rc, rep_text = _run([ctx["python"], str(trust_py), "--root", str(root), "--report",
+                             "--json"], timeout=180, cwd=str(root))
+        try:  # _run combines stdout+stderr; the report is the outermost JSON object
+            rep = json.loads(rep_text[rep_text.index("{"):rep_text.rindex("}") + 1])
+        except (ValueError, TypeError):
+            rep = None
+        if not isinstance(rep, dict):
+            out.append(Result("FAIL", fam + ":signatures",
+                              "deploy/trust.py --report --json produced no report (rc %s): %s "
+                              "FIX: run it by hand; a crashing verifier is itself a finding."
+                              % (rc, _tail(rep_text))))
+        else:
+            mode = rep.get("mode", "warn")
+            unsigned = [r for r in rep.get("surfaces", []) if not r.get("signed")]
+            if unsigned:
+                detail = "; ".join("%s: %s" % (r["path"], r.get("reason")) for r in unsigned[:6])
+                more = "" if len(unsigned) <= 6 else " (+%d more)" % (len(unsigned) - 6)
+                status = "FAIL" if mode == "required" else "WARN"
+                out.append(Result(status, fam + ":signatures",
+                                  "%d trust surface(s) not operator-signed under "
+                                  "trust_surface_signing: %s -- %s%s. FIX: the operator "
+                                  "re-commits each with `git commit -S` (sk key); under warn "
+                                  "this is surfaced, under required every consumer refuses."
+                                  % (len(unsigned), mode, detail, more)))
+            else:
+                out.append(Result("PASS", fam + ":signatures",
+                                  "%d trust surface(s) operator-signed (mode %s)"
+                                  % (len(rep.get("surfaces", [])), mode)))
+            unpub = [r for r in rep.get("retire_records", []) if not r.get("published")]
+            rewind = rep.get("branch_rewind") or []
+            if rewind:
+                out.append(Result("FAIL", fam + ":retirements",
+                                  "history rewound: %s. A forced STALE retirement (a signed C whose "
+                                  "base was superseded, moved onto the branch) looks exactly like "
+                                  "this and is invisible to a branch-only reader. FIX: compare "
+                                  "with the remote (`git log --oneline origin/<branch>..<branch>` "
+                                  "and the reverse); restore the branch; treat the session as the "
+                                  "finding." % "; ".join(rewind)))
+            elif unpub:
+                out.append(Result("FAIL", fam + ":retirements",
+                                  "unpublished retirement present: %s. A retire record whose "
+                                  "commit carries no verified operator tag is a proposal, not "
+                                  "a retirement -- if you did not sign it, an agent journaled it "
+                                  "by an alternate write path. FIX: inspect with `git show`; "
+                                  "either sign the tag (`git tag -s retire/<seq> <C>`) or revert "
+                                  "the record." % "; ".join("%s seq %s (%s)" % (
+                                      r["path"], r.get("seq"), r.get("reason")) for r in unpub)))
+            else:
+                out.append(Result("PASS", fam + ":retirements",
+                                  "%d retire record(s), all carry a verified operator tag"
+                                  % len(rep.get("retire_records", []))))
+
+    # (c) wiring of the untracked members
+    hw = check_hooks_wired(ctx)
+    sc = check_precommit_scanner(ctx)
+    if hw.status == "PASS" and sc.status == "PASS":
+        out.append(Result("PASS", fam + ":wiring",
+                          "untracked members wired: settings wire all three hook entries, "
+                          "scanner byte-current"))
+    else:
+        out.append(Result("FAIL", fam + ":wiring",
+                          "perimeter unwired: hooks-wired=%s (%s); precommit-scanner=%s (%s). "
+                          "The untracked trust surfaces (.claude/settings.local.json, "
+                          ".git/hooks/**) cannot be signed, so their only check is that they "
+                          "wire the perimeter. FIX: see the two checks' own FIX lines."
+                          % (hw.status, hw.detail.split(". FIX")[0][:140], sc.status,
+                             sc.detail.split(". FIX")[0][:140])))
+    return out
+
 
 def check_skill_drift(ctx):
     skills_dir = ctx["root"] / ".claude" / "skills"
@@ -964,6 +1227,7 @@ def run_all(root, fast_selftests=False):
     add(_safe(check_python_sensors, "python-sensors", ctx))
     add(_safe(check_hooks_wired, "hooks-wired", ctx))
     add(_safe(check_precommit_scanner, "precommit-scanner", ctx))
+    add(_safe(check_trust_surfaces, "trust-surfaces", ctx))
     add(_safe(check_skill_drift, "skill-drift", ctx))
     add(_safe(check_derivation_gate, "derivation-gate", ctx))
     add(_safe(check_docs_stamps, "docs-stamps", ctx))
@@ -1489,6 +1753,144 @@ def self_test():
             "print('skill-adapters current (15 adapters)')\n", encoding="utf-8")
         r = note(check_skill_adapters(ctx))
         check("skill-adapters: current (exit 0) -> PASS", r.status == "PASS")
+
+    # Check 16: trust-surfaces (v3.0-120) -- (a) head-identity, (b) signatures via a stub
+    # trust.py report, (c) wiring, (d) pin typing, (e) unpublished retirements. Real git
+    # repos in a temp dir; skipped with a note when git is not on PATH.
+    if shutil.which("git") is None:
+        print("  -- trust-surfaces cases skipped: git not on PATH")
+    else:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ctx = {"root": root, "python": sys.executable}
+            r = note(check_trust_surfaces(ctx))
+            check("trust-surfaces: WARN when not a git repo",
+                  len(r) == 1 and r[0].status == "WARN" and "git init" in r[0].detail)
+
+            def git(*a):
+                return subprocess.run(["git", "-C", str(root)] + list(a), capture_output=True,
+                                      text=True, encoding="utf-8", errors="replace")
+            git("init", "-q", "-b", "main")
+            git("config", "user.email", "t@t")
+            git("config", "user.name", "t")
+            hooks = root / "core" / "security" / "hooks"
+            hooks.mkdir(parents=True)
+            (hooks / "egress-allowlist.txt").write_text("# none\n", encoding="utf-8")
+            (hooks / "scan-staged-secrets.sh").write_text("#!/bin/sh\nscanner\n",
+                                                          encoding="utf-8")
+            (root / "README.md").write_text("x\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "seed")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(a): tracked members HEAD-identical -> PASS carrying the "
+                  "honest in-process note",
+                  by["trust-surfaces:head-identity"].status == "PASS"
+                  and "tampered doctor can lie" in by["trust-surfaces:head-identity"].detail)
+            check("trust-surfaces(d): pin absent -> WARN naming the ceremony",
+                  by["trust-surfaces:pin"].status == "WARN"
+                  and "ceremony" in by["trust-surfaces:pin"].detail)
+            check("trust-surfaces(b): no deploy/trust.py -> WARN unavailable",
+                  by["trust-surfaces:signatures"].status == "WARN"
+                  and "unavailable" in by["trust-surfaces:signatures"].detail)
+            check("trust-surfaces(c): nothing wired -> FAIL perimeter unwired",
+                  by["trust-surfaces:wiring"].status == "FAIL"
+                  and "perimeter unwired" in by["trust-surfaces:wiring"].detail)
+            (hooks / "egress-allowlist.txt").write_text("# none\ncurl .*\n", encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(a): an uncommitted edit to a class member -> FAIL "
+                  "'uncommitted perimeter change' naming the file",
+                  by["trust-surfaces:head-identity"].status == "FAIL"
+                  and "egress-allowlist.txt" in by["trust-surfaces:head-identity"].detail
+                  and "uncommitted perimeter change" in by["trust-surfaces:head-identity"].detail)
+            git("checkout", "--", "core/security/hooks/egress-allowlist.txt")
+            (root / "deploy").mkdir()
+            (root / "deploy" / "safe-allowlist.yaml").write_text("safe: []\n", encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(a): an UNTRACKED file at a class path is not a member "
+                  "(it cannot be committed-identical; its consumers refuse it)",
+                  by["trust-surfaces:head-identity"].status == "PASS")
+            (hooks / "allowed_signers").write_text(
+                "operator ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBZNGsMoi7jjpMb soft\n",
+                encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "pin with a soft key")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(d): a non-sk key in the pin -> FAIL 'non-presence key listed'",
+                  by["trust-surfaces:pin"].status == "FAIL"
+                  and "non-presence key listed" in by["trust-surfaces:pin"].detail)
+            (hooks / "allowed_signers").write_text(
+                "operator sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29t "
+                "daily\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "pin sk only")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(d): sk-only pin -> PASS",
+                  by["trust-surfaces:pin"].status == "PASS")
+            # (b)/(e) through a stub trust.py that emits a fixed report
+            stub = ("import json,os\nm=open(os.path.join(os.path.dirname(__file__),"
+                    "'mode.txt')).read().strip()\nprint(json.dumps({'mode': m, 'surfaces': "
+                    "[{'path': 'core/security/hooks/egress-allowlist.txt', 'signed': False, "
+                    "'reason': 'commit abc: UNSIGNED', 'head_identical': True}], "
+                    "'retire_records': [{'path': 'receipts/journal/9.json', 'seq': 9, "
+                    "'published': False, 'reason': 'tag ref refs/tags/retire/9 does not "
+                    "exist'}], 'pin': {}}))\n")
+            (root / "deploy" / "trust.py").write_text(stub, encoding="utf-8")
+            (root / "deploy" / "mode.txt").write_text("required\n", encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(b): unsigned member under required -> FAIL",
+                  by["trust-surfaces:signatures"].status == "FAIL"
+                  and "egress-allowlist.txt" in by["trust-surfaces:signatures"].detail)
+            check("trust-surfaces(e): a retire record with no verified tag -> FAIL "
+                  "'unpublished retirement present'",
+                  by["trust-surfaces:retirements"].status == "FAIL"
+                  and "unpublished retirement present" in by["trust-surfaces:retirements"].detail
+                  and "seq 9" in by["trust-surfaces:retirements"].detail)
+            (root / "deploy" / "mode.txt").write_text("warn\n", encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(b): the same unsigned member under warn -> WARN, not FAIL",
+                  by["trust-surfaces:signatures"].status == "WARN")
+            (root / "deploy" / "trust.py").write_text(
+                stub.replace("'pin': {}", "'pin': {}, 'branch_rewind': ['local main is NOT a "
+                             "fast-forward of origin/main -- history rewound or rewritten']"),
+                encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(e): a branch-rewind finding -> FAIL 'history rewound'",
+                  by["trust-surfaces:retirements"].status == "FAIL"
+                  and "history rewound" in by["trust-surfaces:retirements"].detail)
+            (root / "deploy" / "trust.py").write_text(stub, encoding="utf-8")
+            (root / "deploy" / "trust.py").write_text("import sys\nsys.exit(3)\n",
+                                                      encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(b): a crashing verifier -> FAIL (never a silent pass)",
+                  by["trust-surfaces:signatures"].status == "FAIL")
+            # a PATCHED verifier in the working tree: (a) names it, (b)/(e) refuse to run it
+            (root / "deploy" / "trust.py").write_text(stub, encoding="utf-8")
+            (root / "deploy" / "mode.txt").write_text("warn\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "ship a verifier")
+            (root / "deploy" / "trust.py").write_text(stub + "# patched\n", encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces: a working-tree patch to deploy/trust.py -> (a) names it AND "
+                  "(b)/(e) FAIL 'verifier tampered' instead of consulting it",
+                  by["trust-surfaces:head-identity"].status == "FAIL"
+                  and by["trust-surfaces:signatures"].status == "FAIL"
+                  and "verifier tampered" in by["trust-surfaces:signatures"].detail
+                  and by["trust-surfaces:retirements"].status == "FAIL")
+            git("checkout", "--", "deploy/trust.py")
+            # (c) PASS when both underlying checks pass
+            claude = root / ".claude"
+            claude.mkdir()
+            (claude / "settings.local.json").write_text(json.dumps({"hooks": {"PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"command": "$X/core/security/hooks/block-dangerous-bash.sh"}]},
+                {"matcher": "PowerShell", "hooks": [{"command": "$X/core/security/hooks/block-dangerous-bash.sh"}]},
+                {"matcher": "Edit|Write", "hooks": [{"command": "$X/core/security/hooks/block-env-writes.sh"}]}]}}),
+                encoding="utf-8")
+            (root / ".git" / "hooks").mkdir(exist_ok=True)
+            (root / ".git" / "hooks" / "pre-commit").write_text("#!/bin/sh\nscanner\n",
+                                                                 encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(c): hooks wired (3 entries) + scanner byte-current -> PASS",
+                  by["trust-surfaces:wiring"].status == "PASS")
 
     # Global fix-discipline assertion: every FAIL/WARN a fixture produced must teach.
     bad = [r for r in produced if r.status in ("FAIL", "WARN") and "FIX:" not in r.detail]

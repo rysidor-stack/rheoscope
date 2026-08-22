@@ -144,6 +144,10 @@ compile_v2 = _load("compile-v2.py", "compile_v2_ref")
 substrate = _load("check-substrate.py", "check_substrate_ref")
 autonomy = _load("check-autonomy-disposition.py", "check_autonomy_disposition_ref")
 path_containment = _load("check-path-containment.py", "check_path_containment_ref")
+# v3.0-120: committed-identical + operator-signed checks on the HUMAN-GATE artifact.
+# trust.py is itself a trust surface -- its docstring states what an in-process
+# verifier can and cannot guarantee; the root of trust is the operator's key.
+trust = _load("trust.py", "trust_ref")
 try:
     origin = _load("origin.py", "origin_ref")
 except Exception:  # pragma: no cover -- module load failure must not crash the guard
@@ -494,13 +498,32 @@ def dispatch_guard(kind, repo, events_views=None, authorization=None):
                     "reason": reason + " -- authorization file not found: %s"
                               % auth_path,
                     "permit": False, "authorization": None}
-        text = open(abs_path, encoding="utf-8").read()
+        # v3.0-120 (brief sections 4-5): "committed" is CHECKED, never claimed.
+        # committed-identical is always required; operator-signed is refused
+        # under project.yaml trust_surface_signing: required and surfaced under
+        # warn (the record carries the warnings so the journal sees them).
+        # The gate runs FIRST and the quote is checked against the HEAD blob it
+        # verified -- never the file on disk (cross-vendor round 12: a parse-then-
+        # gate order left a swap window between two reads of the same path).
+        gate = trust.gate_artifact(repo, repo_rel_posix)
+        if not gate["ok"]:
+            return {"disposition": disp,
+                    "reason": reason + " -- " + gate["refuse"],
+                    "permit": False, "authorization": None}
+        blob = gate.get("blob")
+        if not isinstance(blob, (bytes, bytearray)):
+            return {"disposition": disp,
+                    "reason": reason + " -- trust gate returned no verified bytes",
+                    "permit": False, "authorization": None}
+        text = bytes(blob).decode("utf-8-sig", errors="replace")
         if auth_quote not in text:
             return {"disposition": disp,
                     "reason": reason + " -- authorization quote not found "
-                              "verbatim in file",
+                              "verbatim in the committed artifact",
                     "permit": False, "authorization": None}
-        record = {"path": auth_path, "sha256": _sha256(text)}
+        record = {"path": auth_path, "sha256": _sha256(text),
+                  "trust_mode": gate["mode"],
+                  "trust_warnings": list(gate["warnings"])}
         return {"disposition": disp, "reason": reason, "permit": True,
                 "authorization": record}
 
@@ -2233,12 +2256,40 @@ def self_test():
         auth_ok = {"path": auth_file,
                   "quote": "Operator ack: proceed with verify dispatch for "
                            "seq 1."}
+        # v3.0-120: the artifact must be COMMITTED-IDENTICAL -- pinned both ways
+        g_verify_uncommitted = dispatch_guard("verify", repo,
+                                              events_views=ryan_session_ev,
+                                              authorization=auth_ok)
+        case("v3.0-120: an UNCOMMITTED authorization artifact -> permit False, "
+             "reason names committed-identical",
+             g_verify_uncommitted["permit"] is False
+             and "not committed-identical" in g_verify_uncommitted["reason"])
+        subprocess.run(["git", "-C", repo, "add", "--",
+                        "deploy/evidence/operator-test-authorization.md"],
+                       capture_output=True)
+        subprocess.run(["git", "-C", repo, "commit", "-q", "-m", "auth artifact", "--",
+                        "deploy/evidence/operator-test-authorization.md"],
+                       capture_output=True)
         g_verify_authed = dispatch_guard("verify", repo,
                                          events_views=ryan_session_ev,
                                          authorization=auth_ok)
         case("dispatch_guard verify trusted-origin + matching authorization "
             "-> permit True",
              g_verify_authed["permit"] is True)
+        case("v3.0-120: the permit record carries trust_mode warn + the surfaced "
+             "unsigned warning (committed but not operator-signed)",
+             g_verify_authed["authorization"]["trust_mode"] == "warn"
+             and len(g_verify_authed["authorization"]["trust_warnings"]) == 1)
+        with open(os.path.join(repo, "project.yaml"), "w", encoding="utf-8") as fh:
+            fh.write("trust_surface_signing: required\n")
+        g_verify_required = dispatch_guard("verify", repo,
+                                           events_views=ryan_session_ev,
+                                           authorization=auth_ok)
+        case("v3.0-120: under trust_surface_signing: required an unsigned artifact "
+             "-> permit False naming the mode",
+             g_verify_required["permit"] is False
+             and "required" in g_verify_required["reason"])
+        os.remove(os.path.join(repo, "project.yaml"))
         case("authorization record carries path + sha256",
              g_verify_authed["authorization"] is not None
              and g_verify_authed["authorization"]["path"] == auth_file
@@ -2288,6 +2339,9 @@ def self_test():
         with open(os.path.join(repo, rel_auth_file.replace("/", os.sep)), "w",
                   encoding="utf-8", newline="\n") as fh:
             fh.write("Operator ack: proceed with verify dispatch for seq 1.\n")
+        subprocess.run(["git", "-C", repo, "add", "--", rel_auth_file], capture_output=True)
+        subprocess.run(["git", "-C", repo, "commit", "-q", "-m", "rel auth", "--",
+                        rel_auth_file], capture_output=True)
         auth_relative = {"path": rel_auth_file,
                          "quote": "Operator ack: proceed with verify "
                                   "dispatch for seq 1."}
@@ -2836,6 +2890,13 @@ def self_test():
         with open(guard_auth_file, "w", encoding="utf-8", newline="\n") as fh:
             fh.write("Operator ack: proceed with verify dispatch for seq %d."
                      "\n" % guarded_seq)
+        # v3.0-120: the artifact must be committed (checked, not claimed)
+        subprocess.run(["git", "-C", repo, "add", "--",
+                        "deploy/evidence/operator-guard-authorization.md"],
+                       capture_output=True)
+        subprocess.run(["git", "-C", repo, "commit", "-q", "-m", "guard auth", "--",
+                        "deploy/evidence/operator-guard-authorization.md"],
+                       capture_output=True)
         guard_auth = {"path": guard_auth_file,
                      "quote": "Operator ack: proceed with verify dispatch "
                               "for seq %d." % guarded_seq}

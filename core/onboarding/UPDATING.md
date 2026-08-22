@@ -59,6 +59,38 @@ when one happens, **your local entry renumbers** to `v3.0-local-N` with a proven
 (the template side never renumbers; shipped doctor FIX lines cite its numbers). New
 instance-local entries use `v3.0-local-N` from the start.
 
+## Trust surfaces are operator-signed, and adoption sessions never write them (v3.0-120, v3.0.46)
+
+A short list of files decides what a session may do: the security hooks and their
+allowlist, `allowed_signers`, `trust-surfaces.txt`, `deploy/safe-allowlist.yaml`, the
+`deploy/evidence/operator-*.md` authorization artifacts, `deploy/rulings/**`, the verifier
+and the HUMAN-GATE consumers (`deploy/trust.py`, `compile-driver.py`,
+`compile-backends.py`, `audit-content.py`), and `.claude/settings*.json`. Since v3.0.46
+that list is a named **class** (`core/security/hooks/trust-surfaces.txt`) with three
+properties you should know when adopting a release:
+
+1. **A session cannot write them through either tool lane.** The Edit/Write guard and the
+   Bash/PowerShell guard both deny (not ask) any write-shaped command naming a class path.
+   So when a MIGRATION recipe says "copy the new hook" or "copy `deploy/trust.py`", the
+   session will be denied — **that copy is yours to run, in your own terminal**, from the
+   template's bytes (the recipe names the file and the template path). The session reads,
+   diffs, and proposes; it does not apply.
+2. **Every honest consumer refuses a trust surface that is not committed-identical, and
+   (under `trust_surface_signing: required`) not operator-signed.** "Committed" is checked
+   against git, never claimed in prose. A trust-surface change you apply lands as a commit
+   made with `git commit -S` under your presence-requiring (FIDO `sk-`) SSH key — one
+   physical key touch per trust-surface edit. Software keys do not count: they are ignored
+   by every verifier and `/doctor` fails the pin if one is listed.
+3. **`/doctor` check 16 and `/sweep` step 17 show you every trust-surface change within one
+   sweep** — last commit, author, signature, and whether the working tree still matches
+   HEAD. A row you do not recognize is the finding.
+
+The one-time setup (choose the key, set the repo-local signing config, commit the pin with
+one touch, flip the flag to `required`) is MIGRATION v3.0.45 → v3.0.46, marked **[your
+call]**. Until you run it, consumers stay in `warn` (accept and surface), and retirement
+(ADR #11 Release 2) cannot publish at all — its publication root is your signed tag, not a
+flag.
+
 ## The pre-commit scanner rides updates by hand (v3.0-112)
 
 Adopting a newer template updates `core/security/hooks/scan-staged-secrets.sh` in your

@@ -1,0 +1,5 @@
+{
+  "tool_input": {
+    "command": "Copy-Item C:\\tmp\\settings.json .claude\\settings.local.json"
+  }
+}

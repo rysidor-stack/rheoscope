@@ -1,0 +1,5 @@
+{
+  "tool_input": {
+    "command": "sed -i 's/SK_TYPES/set()/' deploy/trust.py"
+  }
+}

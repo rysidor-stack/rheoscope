@@ -1,0 +1,5 @@
+{
+  "tool_input": {
+    "file_path": ".git/hooks/pre-commit"
+  }
+}

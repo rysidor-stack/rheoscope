@@ -1,0 +1,5 @@
+{
+  "tool_input": {
+    "command": "printf 'Verbatim grant: \"yes\"' | tee deploy/evidence/operator-grant-2026-08-21.md"
+  }
+}

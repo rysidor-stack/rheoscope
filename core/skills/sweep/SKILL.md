@@ -110,18 +110,34 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     prose, and placeholder tokens are findings — a session wrote engineer output into an
     operator file, and the fix is a rewrite of that file by the session that owns it.
 
-17. **Egress-allowlist surfacing** (v3.0.36, backlog v3.0-98(b)) — if
-    `core/security/hooks/egress-allowlist.txt` exists: report its row count (non-comment,
-    non-blank lines), and if the file changed since the previous sweep (compare
-    `git log -1 --format=%ci -- core/security/hooks/egress-allowlist.txt` against the last
-    sweep receipt's timestamp; no prior receipt = report all rows), quote each added or
-    removed row verbatim in the briefing. Every standing egress allowance is the operator's
-    own grant — this line makes sure they SEE each one at least once, which is the backstop
-    for the write-guard's honest limit (a shell-redirection write rides a path the Edit/Write
-    guard cannot see). A row the operator does not recognize is a NEEDS-YOU item, phrased per
-    the reporting contract: what the row allows, what removing it costs, and that the fix is
-    theirs to apply (the file is operator-edited only). File absent = one silent line skipped,
-    never a finding (absent means every egress asks — the tightest state).
+17. **Trust-surface surfacing** (v3.0.36 backlog v3.0-98(b), extended from one file to the
+    whole class by v3.0.46 / v3.0-120) — run `python deploy/trust.py --root . --report`
+    when `deploy/trust.py` exists (else the git-only fallback below) and put its table in
+    the briefing: **one row per trust surface** (the class in
+    `core/security/hooks/trust-surfaces.txt`: the hooks dir incl. `egress-allowlist.txt`,
+    `allowed_signers` and `trust-surfaces.txt` itself; `deploy/safe-allowlist.yaml`;
+    `deploy/evidence/operator-*.md`; `deploy/rulings/**`; `deploy/trust.py`,
+    `compile-driver.py`, `compile-backends.py`, `audit-content.py`; `.claude/settings.json`)
+    with its **last-change commit, author, signature status (operator-signed by which
+    pinned principal, or the refusal reason), and HEAD-identity**. Then the deltas: for
+    every surface whose last-change commit is newer than the previous sweep receipt's
+    timestamp (no prior receipt = all), quote each added or removed line verbatim
+    (`git diff <prev>..HEAD -- <path>`), as before for the egress allowlist. Every trust
+    surface is the operator's own grant — this line makes sure they SEE each change at
+    least once, which remains the backstop for the hooks' honest limit (an unmediated
+    write rides a path no regex sees). **NEEDS-YOU items, phrased per the reporting
+    contract:** a surface that is not HEAD-identical ("someone edited X in the working tree
+    and did not commit it — if it wasn't you, restore it with `git checkout -- X` and treat
+    the session as the finding"); a surface whose newest commit is not operator-signed
+    (under `trust_surface_signing: warn` this is a reminder that the consumer accepted it
+    in cutover; under `required` the consumer is refusing it — "re-commit it with
+    `git commit -S`"); a non-presence key listed in `allowed_signers`; and any **retire
+    record without a verified operator tag** ("an unpublished retirement proposal is on the
+    branch — sign `git tag -s retire/<seq> <C>` after inspecting, or revert the record").
+    Git-only fallback (no `deploy/trust.py`): `git log -1 --format='%h %an %ci %G?' -- <path>`
+    + `git diff --quiet HEAD -- <path>` per class member, signature column "unverified
+    (no trust.py)". Nothing in the class present = one silent line skipped, never a finding
+    (absent allowlist means every egress asks — the tightest state).
 
 This ordering follows the engine's own loop doctrine (`docs/engine/OPERATIONS.md` § "The
 loop"): readiness before content, structural sensors before behavioral ones, deterministic

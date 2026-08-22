@@ -1,0 +1,5 @@
+{
+  "tool_input": {
+    "command": "cp /tmp/relaxed.sh core/security/hooks/block-dangerous-bash.sh"
+  }
+}

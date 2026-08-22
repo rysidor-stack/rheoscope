@@ -407,7 +407,35 @@ def operator_full_run_authorization(args):
         return None, "path is not in the operator-artifact class: %s" % raw
     if not os.path.isfile(rel):
         return None, "artifact not found: %s" % raw
+    # v3.0-120 (brief sections 4-5): "committed" is CHECKED, never claimed. The
+    # artifact must be committed-identical (always) and operator-signed (refused
+    # under project.yaml trust_surface_signing: required; surfaced under warn).
+    gate = _trust_gate(rel)
+    if not gate["ok"]:
+        return None, gate["refuse"]
+    for w in gate["warnings"]:
+        print("WARNING (trust-surface): %s" % w)
     return rel, None
+
+
+def _trust_gate(rel, root=None):
+    """deploy/trust.py gate_artifact against the enclosing git repo (cwd-relative
+    paths are how this CLI addresses artifacts). Not a git repo -> refused: trust
+    state IS git state."""
+    if root is None:
+        p = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+        if p.returncode != 0:
+            return {"ok": False, "refuse": "not inside a git repository -- an "
+                    "authorization artifact's committed state cannot be checked",
+                    "warnings": [], "mode": None}
+        root = p.stdout.strip()
+    spec = importlib.util.spec_from_file_location(
+        "trust_audit_ref", os.path.join(_HERE, "trust.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    rel_posix = os.path.relpath(os.path.abspath(rel), root).replace(os.sep, "/")
+    return mod.gate_artifact(root, rel_posix)
 
 
 def fire(batch, timeout_ms=0, effort="", shard=None, full_run_authorized=False):
@@ -1014,12 +1042,32 @@ def self_test():
             with open(os.path.join("deploy", "evidence", "operator-selftest.md"),
                       "w", encoding="utf-8", newline="\n") as fh:
                 fh.write("selftest operator authorization artifact\n")
+            # v3.0-120: uncommitted -> refused; committed -> clean (warn mode surfaces)
             got_path, got_reason = operator_full_run_authorization(
                 ["--operator-authorized-full-run",
                  "deploy/evidence/operator-selftest.md"])
-            case("full-run-auth POSITIVE: in-class, existing artifact resolves clean",
+            case("full-run-auth v3.0-120: an UNCOMMITTED artifact is refused naming "
+                 "committed-identical",
+                 got_path is None and "not committed-identical" in (got_reason or ""))
+            subprocess.run(["git", "add", "--", "deploy/evidence/operator-selftest.md"],
+                           capture_output=True)
+            subprocess.run(["git", "commit", "-q", "-m", "selftest artifact", "--",
+                            "deploy/evidence/operator-selftest.md"], capture_output=True)
+            got_path, got_reason = operator_full_run_authorization(
+                ["--operator-authorized-full-run",
+                 "deploy/evidence/operator-selftest.md"])
+            case("full-run-auth POSITIVE: in-class, existing, COMMITTED artifact resolves "
+                 "clean (warn mode: unsigned surfaced, not refused)",
                  got_path == "deploy/evidence/operator-selftest.md"
                  and got_reason is None)
+            with open("project.yaml", "w", encoding="utf-8") as fh:
+                fh.write("trust_surface_signing: required\n")
+            got_path, got_reason = operator_full_run_authorization(
+                ["--operator-authorized-full-run",
+                 "deploy/evidence/operator-selftest.md"])
+            case("full-run-auth v3.0-120: under required an unsigned artifact is refused",
+                 got_path is None and "required" in (got_reason or ""))
+            os.remove("project.yaml")
         finally:
             os.chdir(cwd_saved)
 

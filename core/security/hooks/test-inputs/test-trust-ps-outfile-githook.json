@@ -1,0 +1,5 @@
+{
+  "tool_input": {
+    "command": "'#!/bin/sh' | Out-File .git/hooks/pre-commit"
+  }
+}

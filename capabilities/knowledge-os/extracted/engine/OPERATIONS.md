@@ -86,6 +86,25 @@ traversal), and the code checks for a **verbatim quote** from that file actually
 Anything else — a design-status note, a paraphrase, an unrecorded verbal grant — is refused
 (`DispatchRefused`): on the fork, an agent once tried the wrong document class and was bounced.
 
+**Since v3.0.46 (v3.0-120, ADR #11 condition 4), "committed" is checked, never claimed.**
+Every HUMAN-GATE consumer (`dispatch_guard`, the driver's `validate_authorization`,
+audit-content's full-run authorization) calls `deploy/trust.py`'s `gate_artifact` on the
+artifact: it must be **committed-identical** (tracked; working tree == HEAD — an artifact
+that exists but is uncommitted, or differs from HEAD, is refused naming the diff), and its
+newest commit must be **operator-signed** — an SSH signature verifying against
+`core/security/hooks/allowed_signers` with a *presence-requiring* (FIDO `sk-`) key; software
+keys are filtered out of the pin before verification, so a signature by one is untrusted,
+never "warned". The second half runs under `project.yaml: trust_surface_signing` — `warn`
+(the adoption default) accepts the unsigned artifact and prints `WARNING (trust-surface)`
+lines; `required` refuses. The flag governs only these legacy artifacts' cutover; it governs
+nothing about retirement — Release 2's `--retire` never writes the production branch at all
+(it prepares an immutable commit `C` on a work ref; publication is a fast-forward permitted
+only by an operator-signed tag naming `C` exactly — `trust.py --check-publish`). Stated
+plainly: `trust.py` runs in the agent's process and is itself a trust surface; a tampered
+copy can lie, which is why the root of trust is the operator's physical key on the
+publishing commit, not this code. `/doctor` check 16 and sweep step 17 surface every
+trust-surface change within one sweep.
+
 ### 6. Absorb via `compile-backends`
 
 The absorb backend (LLM, dispatched per-view with the delta events + routing rules + the §9

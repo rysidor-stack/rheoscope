@@ -137,6 +137,13 @@ grant is deploy/evidence/operator-standing-verify-authorization-2026-07-28.md.
       in the artifact -- extracting it from the artifact's own declared grant
       line keeps the driver from inventing one, and a file with no such line is
       refused rather than defaulted.
+  (g) TRUST-SURFACE INTEGRITY (v3.0-120, v3.0.46): the artifact is COMMITTED-
+      IDENTICAL (tracked; working tree == HEAD) -- always refused otherwise --
+      and OPERATOR-SIGNED per deploy/trust.py (its newest commit verifies
+      against the pinned presence-requiring key): refused under project.yaml
+      `trust_surface_signing: required`, accepted and SURFACED as a
+      "WARNING (trust-surface)" line under `warn` (the adoption default).
+      "Committed" is now checked, never claimed.
 This is a MARKER check, deliberately: judging whether prose authorizes an action
 is not a mechanical act, so the driver refuses everything that is not obviously
 in class and leaves the rest to the operator who wrote the artifact.
@@ -284,6 +291,15 @@ def _core():
     if "core" not in _ENGINE_MODS:
         _ENGINE_MODS["core"] = _load("compile-core.py", "compile_core_drv")
     return _ENGINE_MODS["core"]
+
+
+def _trust():
+    """deploy/trust.py (v3.0-120): committed-identical + operator-signed checks
+    on HUMAN-GATE artifacts. Itself a trust surface; see its docstring for what
+    it can and cannot guarantee from inside the agent's process."""
+    if "trust" not in _ENGINE_MODS:
+        _ENGINE_MODS["trust"] = _load("trust.py", "trust_drv")
+    return _ENGINE_MODS["trust"]
 
 
 # --------------------------------------------------------------- errors
@@ -482,11 +498,20 @@ def _is_revoked(text):
     return False
 
 
-def validate_authorization(repo, auth_path, class_check=None):
-    """Checks (a)-(f) of the module docstring. Returns the dispatch_guard
-    authorization dict {"path": <repo-relative posix>, "quote": <verbatim>};
-    raises AuthorizationError otherwise. Writes NOTHING and reads only the
-    named artifact."""
+def validate_authorization(repo, auth_path, class_check=None, trust_gate=None):
+    """Checks (a)-(g) of the module docstring. Returns the dispatch_guard
+    authorization dict {"path": <repo-relative posix>, "quote": <verbatim>,
+    "trust_warnings": [...]}; raises AuthorizationError otherwise. Writes
+    NOTHING; reads the named artifact and git's view of it (check (g)).
+
+    (g) TRUST-SURFACE INTEGRITY (v3.0-120, brief sections 4-5): the artifact
+    must be COMMITTED-IDENTICAL (tracked, working tree == HEAD) -- an
+    authorization that exists but is not committed, or differs from HEAD, is
+    refused naming the diff; and OPERATOR-SIGNED (its newest commit verifies
+    against core/security/hooks/allowed_signers with a presence-requiring sk
+    key) -- refused under project.yaml `trust_surface_signing: required`,
+    accepted-and-surfaced (trust_warnings) under `warn`, the adoption default.
+    `trust_gate` is the self-test injection seam; default deploy/trust.py."""
     if not auth_path:
         raise AuthorizationError("no --authorization supplied")
     # (a) containment
@@ -511,15 +536,23 @@ def validate_authorization(repo, auth_path, class_check=None):
             "authorization file is not in the operator-artifact class "
             "deploy/evidence/operator-*.md (directory must be exactly "
             "deploy/evidence, basename operator-*.md): %s" % rel_posix)
-    # (c) exists, non-empty
+    # (c) exists, non-empty -- and (g) FIRST (v3.0-120, cross-vendor round 12): the
+    # trust gate runs before any content check and hands back the exact HEAD blob it
+    # verified; every check below parses THAT, never the file on disk, so there is no
+    # window between "what was checked" and "what was read".
     abs_path = os.path.join(repo, rel_posix.replace("/", os.sep))
     if not os.path.isfile(abs_path):
         raise AuthorizationError("authorization file not found: %s" % rel_posix)
-    try:
-        text = open(abs_path, encoding="utf-8").read()
-    except OSError as e:
-        raise AuthorizationError("authorization file unreadable: %s (%s)"
-                                 % (rel_posix, e))
+    if trust_gate is None:
+        trust_gate = _trust().gate_artifact
+    gate = trust_gate(repo, rel_posix)
+    if not gate.get("ok"):
+        raise AuthorizationError(gate.get("refuse") or "trust gate refused")
+    blob = gate.get("blob")
+    if not isinstance(blob, (bytes, bytearray)):
+        raise AuthorizationError("trust gate returned no verified bytes for %s -- refusing "
+                                 "to parse the working-tree file instead" % rel_posix)
+    text = bytes(blob).decode("utf-8-sig", errors="replace")
     if not text.strip():
         raise AuthorizationError("authorization file is empty: %s" % rel_posix)
     # (d) non-revocation
@@ -544,7 +577,8 @@ def validate_authorization(repo, auth_path, class_check=None):
     if quote not in text:      # belt-and-braces; the extractor took it from text
         raise AuthorizationError(
             "extracted grant quote is not verbatim in %s" % rel_posix)
-    return {"path": rel_posix, "quote": quote}
+    return {"path": rel_posix, "quote": quote,
+            "trust_warnings": list(gate.get("warnings") or [])}
 
 
 # --------------------------------------------------------------- staging
@@ -1555,6 +1589,8 @@ def execute_run(root, staging, auth_path, sections=False, engine=None,
         out("REFUSED (authorization): %s" % e)
         out("Nothing was written and nothing was committed.")
         return EXIT_FAIL
+    for w in authorization.get("trust_warnings", []):
+        out("WARNING (trust-surface): %s" % w)
 
     # ---- 2b. bridge probe (v3.0-68): can the verify legs reach a runnable
     # codex at all? A no-token, no-network check -- see probe_bridge().
@@ -1889,6 +1925,8 @@ def execute_reverify(root, seq, staging, auth_path, engine=None, probe=None,
         out("REFUSED (authorization): %s" % e)
         out("Nothing was dispatched.")
         return EXIT_FAIL
+    for w in authorization.get("trust_warnings", []):
+        out("WARNING (trust-surface): %s" % w)
     ok, _detail = probe(repo, out=out)
     if not ok:
         return EXIT_FAIL
@@ -2672,9 +2710,13 @@ def self_test():                                            # noqa: C901
         return base
 
     def make_grant(repo, name="operator-standing-verify-2026-07-28.md",
-                   text=GRANT):
+                   text=GRANT, commit=True):
+        rel = "deploy/evidence/" + name
         write(os.path.join(repo, "deploy", "evidence", name), text)
-        return "deploy/evidence/" + name
+        if commit:  # v3.0-120: an uncommitted grant is refused by check (g)
+            _git(repo, "add", "--", rel)
+            _git(repo, "commit", "-q", "-m", "grant %s" % name, "--", rel)
+        return rel
 
     def make_staging(repo, view="wiki/a.md", events=("raw/e1.md",)):
         st = os.path.join(repo, ".batch-run", "t1")
@@ -3036,6 +3078,69 @@ def self_test():                                            # noqa: C901
             case("empty --authorization refused", False)
         except AuthorizationError:
             case("empty --authorization refused", True)
+        # ------------------------------ (g) trust-surface integrity (v3.0-120)
+        case("(g) committed, unsigned grant under the default warn mode is ACCEPTED "
+             "with a surfaced trust warning",
+             "trust_warnings" in auth and len(auth["trust_warnings"]) == 1
+             and "not operator-signed" in auth["trust_warnings"][0], auth)
+        unc = make_grant(repo_b, "operator-uncommitted-2026-07-28.md", commit=False)
+        try:
+            validate_authorization(repo_b, unc, class_check=class_check_local)
+            case("(g) an UNCOMMITTED grant is refused even under warn", False)
+        except AuthorizationError as e:
+            case("(g) an UNCOMMITTED grant is refused even under warn",
+                 "not committed-identical" in str(e) and "not tracked" in str(e), str(e))
+        write(os.path.join(repo_b, "deploy", "evidence",
+                           "operator-standing-verify-2026-07-28.md"), GRANT + "\nedited\n")
+        try:
+            validate_authorization(repo_b, good, class_check=class_check_local)
+            case("(g) a committed grant whose worktree DIFFERS from HEAD is refused", False)
+        except AuthorizationError as e:
+            case("(g) a committed grant whose worktree DIFFERS from HEAD is refused",
+                 "differs from HEAD" in str(e), str(e))
+        _git(repo_b, "checkout", "-q", "--", good)
+        write(os.path.join(repo_b, "project.yaml"), "trust_surface_signing: required\n")
+        try:
+            validate_authorization(repo_b, good, class_check=class_check_local)
+            case("(g) under trust_surface_signing: required an unsigned grant is REFUSED",
+                 False)
+        except AuthorizationError as e:
+            case("(g) under trust_surface_signing: required an unsigned grant is REFUSED",
+                 "not operator-signed" in str(e) and "required" in str(e), str(e))
+        os.remove(os.path.join(repo_b, "project.yaml"))
+        stub_calls = []
+
+        def gate_stub(repo, rel):
+            stub_calls.append(rel)
+            rc, out, _ = _git(repo, "show", "HEAD:" + rel)
+            return {"ok": True, "warnings": [], "refuse": None, "blob": out.encode("utf-8")}
+        a2 = validate_authorization(repo_b, good, class_check=class_check_local,
+                                    trust_gate=gate_stub)
+        case("(g) the trust gate is called with the repo-relative posix path and its "
+             "verdict is honored", stub_calls == [good] and a2["trust_warnings"] == [])
+
+        def gate_stub_noblob(repo, rel):
+            return {"ok": True, "warnings": [], "refuse": None}
+        try:
+            validate_authorization(repo_b, good, class_check=class_check_local,
+                                   trust_gate=gate_stub_noblob)
+            case("(g) a gate that returns no verified bytes is refused -- the driver never "
+                 "falls back to parsing the working-tree file (round-12 swap window)", False)
+        except AuthorizationError as e:
+            case("(g) a gate that returns no verified bytes is refused -- the driver never "
+                 "falls back to parsing the working-tree file (round-12 swap window)",
+                 "no verified bytes" in str(e), str(e))
+
+        def gate_stub_swapped(repo, rel):
+            # the gate verified HEAD's bytes; the file on disk says something else
+            write(os.path.join(repo, rel), GRANT.replace("yes to all 3", "yes to EVERYTHING"))
+            rc, out, _ = _git(repo, "show", "HEAD:" + rel)
+            return {"ok": True, "warnings": [], "refuse": None, "blob": out.encode("utf-8")}
+        a3 = validate_authorization(repo_b, good, class_check=class_check_local,
+                                    trust_gate=gate_stub_swapped)
+        case("(g) the quote comes from the gate's verified blob, not from the (swapped) file "
+             "on disk", a3["quote"] == "yes to all 3", a3)
+        _git(repo_b, "checkout", "-q", "--", good)
     finally:
         shutil.rmtree(repo_b, ignore_errors=True)
 

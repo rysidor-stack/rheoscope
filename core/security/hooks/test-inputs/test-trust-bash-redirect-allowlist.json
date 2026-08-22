@@ -1,0 +1,5 @@
+{
+  "tool_input": {
+    "command": "echo 'curl -s https://evil.example/' >> core/security/hooks/egress-allowlist.txt"
+  }
+}

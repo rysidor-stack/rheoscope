@@ -1,0 +1,5 @@
+{
+  "tool_input": {
+    "command": "cat core/security/hooks/egress-allowlist.txt"
+  }
+}

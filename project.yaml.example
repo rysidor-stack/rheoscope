@@ -8,10 +8,17 @@ project_slug: "example-project"
 # Optional fleet-backlog inbox (v3.0-128): a PRIVATE GitHub owner/repo whose Issues
 # receive /log-backlog entries in addition to the local file. Absent = local-only.
 # backlog_upstream: "your-org/your-private-template-repo"
-# trust_surface_signing: warn   # v3.0.46 (v3.0-120): warn | required. Absent = warn (cutover).
-#                               # Set `required` after the one-time signing ceremony
-#                               # (MIGRATION v3.0.45 -> v3.0.46): HUMAN-GATE consumers then
-#                               # REFUSE any authorization artifact not operator-signed.
+# Authority mode (v3.0.49; ADR #11 condition 4 as amended 2026-08-22): an explicit ONE-TIME
+# choice, never a silent default -- init asks and writes it (or pass --authority-mode=visible
+# / -AuthorityMode visible). Leave this line commented and let init ask; if you pre-fill it,
+# init keeps your value.
+#   visible   reversible-and-visible: no hardware key; every perimeter change and retirement is
+#             journaled and listed by /sweep until you acknowledge it; a retirement waits for
+#             one promote action from you per batch. (The template operator's own choice.)
+#   required  hardware-key root: every trust-surface commit / retirement tag needs a physical
+#             security-key touch (MIGRATION v3.0.45 -> v3.0.46 ceremony first).
+# Absent: consumers run in migration-only `warn` and retirement stays DISABLED until you choose.
+# trust_surface_signing: visible
 project_description: "One sentence describing what this project is."
 
 # ---- Capabilities (Decision V2-4: inclusion is the toggle) ----

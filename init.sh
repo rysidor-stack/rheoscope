@@ -14,6 +14,9 @@
 #   --hooks     Wire security hooks into .claude/settings.local.json without
 #               prompting (see §6b).
 #   --no-hooks  Skip wiring security hooks without prompting (see §6b).
+#   --authority-mode=visible|required
+#               Record the project's authority mode (project.yaml
+#               trust_surface_signing) without prompting (see §6c, v3.0.49).
 #
 # Hard dependencies: yq (mike farah's go version) per Decision V2-11,
 #                    perl (in macOS/Linux core), base64.
@@ -27,20 +30,30 @@ DRY_RUN=0
 WHAT_IF=0
 HOOKS_FLAG=0
 NO_HOOKS_FLAG=0
+AUTHORITY_MODE_FLAG=""
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=1 ;;
         --whatif|--what-if) WHAT_IF=1 ;;
         --hooks) HOOKS_FLAG=1 ;;
         --no-hooks) NO_HOOKS_FLAG=1 ;;
+        --authority-mode=visible|--authority-mode=required) AUTHORITY_MODE_FLAG="${arg#--authority-mode=}" ;;
+        --authority-mode=*)
+            echo "ERROR: --authority-mode must be 'visible' or 'required' (got '${arg#--authority-mode=}')" >&2
+            exit 1
+            ;;
         -h|--help)
             cat <<EOF
-Usage: init.sh [--dry-run] [--whatif] [--hooks] [--no-hooks]
+Usage: init.sh [--dry-run] [--whatif] [--hooks] [--no-hooks] [--authority-mode=visible|required]
 
   --dry-run   Substitute templates to dry-run-output/ without modifying source.
   --whatif    Parse-only check; exits 0.
   --hooks     Wire security hooks into .claude/settings.local.json without prompting.
   --no-hooks  Skip wiring security hooks without prompting.
+  --authority-mode=visible|required
+              Record the project's authority mode (trust_surface_signing) without
+              prompting. Absent both flag and answer: nothing is recorded and content
+              retirement stays disabled until you choose (see MIGRATION).
 
 See INIT.md for the post-init kickoff protocol.
 EOF
@@ -632,6 +645,55 @@ if ! grep -q '^template_release:[[:space:]]*"..*"' "$SCRIPT_ROOT/project.yaml"; 
         printf 'template_release: "%s"\n' "$RELEASE_TAG" >> "$SCRIPT_ROOT/project.yaml"
     fi
     info "stamped: template_release = $RELEASE_TAG"
+fi
+
+# ---------- 6c. Authority mode -- the one-time choice (v3.0.49; ADR #11 condition 4 as
+# amended 2026-08-22, backlog v3.0-135) ----------
+# How this project authorizes perimeter changes and content retirement is an explicit
+# operator decision recorded ONCE in project.yaml (trust_surface_signing). There is NO
+# silent default: the lock (handoff 2026-08-22-adr11-condition4-reversible-visible) found
+# a silent template default exports a threat-model choice to instances that never made it.
+# Absent a flag and an answer, nothing is written and the NOTICE says so -- consumers run in
+# migration-only `warn` and retirement stays disabled until the key is recorded (the doctor
+# and the sweep keep naming it). An operator-authored value is never overwritten.
+# A written `warn` is migration-only compatibility, not a choice (cross-vendor round-1
+# catch): it is asked about like an absent key; an answer REPLACES the warn line.
+# Anchored (round-2 catch): a malformed value such as `visible-invalid` is NOT recorded --
+# it is asked about; the recognizer below and trust.py's mode_chosen agree by construction.
+if grep -Eq '^[[:space:]]*trust_surface_signing:[[:space:]]*"?(visible|required)"?[[:space:]]*(#.*)?$' "$SCRIPT_ROOT/project.yaml"; then
+    info "authority mode already recorded: $(grep -E '^[[:space:]]*trust_surface_signing:' "$SCRIPT_ROOT/project.yaml" | head -1 | tr -d '\r')"
+else
+    if grep -Eq '^[[:space:]]*trust_surface_signing:[[:space:]]*"?warn"?' "$SCRIPT_ROOT/project.yaml"; then
+        echo "NOTE: project.yaml carries trust_surface_signing: warn -- that is migration-only compatibility, not a settled choice; asking." >&2
+    fi
+    AUTH_MODE="$AUTHORITY_MODE_FLAG"
+    if [[ -z "$AUTH_MODE" && -t 0 ]]; then
+        echo ""
+        echo "One-time choice: how does this project authorize perimeter changes and content retirement?"
+        echo "  visible   Reversible-and-visible (the template operator's choice for one person on one machine):"
+        echo "            no hardware key; every change is journaled, listed by /sweep until you acknowledge it,"
+        echo "            and a retirement waits for one promote action from you per batch."
+        echo "  required  Hardware-key root: every perimeter commit and retirement tag needs a physical"
+        echo "            security-key touch (run the MIGRATION v3.0.45 -> v3.0.46 ceremony first)."
+        read -r -p "Authority mode [visible/required, or Enter to decide later]: " reply
+        # Exact words only (round-2 catch): a stray 'r' or 'vis' is not a choice.
+        case "$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+            visible) AUTH_MODE="visible" ;;
+            required) AUTH_MODE="required" ;;
+            "") AUTH_MODE="" ;;
+            *) AUTH_MODE=""; echo "NOTE: '$reply' is not one of visible/required -- nothing recorded." >&2 ;;
+        esac
+    fi
+    if [[ -n "$AUTH_MODE" ]]; then
+        if grep -Eq '^[[:space:]]*trust_surface_signing:' "$SCRIPT_ROOT/project.yaml"; then
+            sed -i.bak "s|^[[:space:]]*trust_surface_signing:.*|trust_surface_signing: $AUTH_MODE|" "$SCRIPT_ROOT/project.yaml" && rm -f "$SCRIPT_ROOT/project.yaml.bak"
+        else
+            printf 'trust_surface_signing: %s\n' "$AUTH_MODE" >> "$SCRIPT_ROOT/project.yaml"
+        fi
+        info "recorded: trust_surface_signing = $AUTH_MODE (project.yaml)"
+    else
+        echo "NOTICE: no authority mode recorded. Content retirement stays DISABLED and /doctor will keep saying so until project.yaml carries 'trust_surface_signing: visible' or 'required' (see MIGRATION.md, ADR #11 condition 4). Re-run with --authority-mode=visible or edit the line in yourself." >&2
+    fi
 fi
 
 # ---------- 6b. Wire security hooks (real mode only) ----------

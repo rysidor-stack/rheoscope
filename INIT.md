@@ -9,7 +9,7 @@ This is the manual kickoff protocol for a freshly instantiated Rheoscope. Replac
 Before opening Claude, confirm:
 
 - [ ] `project.yaml` is populated with identity (name, slug, description) and at least one personnel entry.
-- [ ] `init.ps1` (Windows) or `init.sh` (Unix) has been run and exited 0. Along the way it asked for consent to wire the security hooks (`core/security/settings.local.json.example` → `.claude/settings.local.json`; `--hooks`/`--no-hooks` skip the prompt) — know what you answered. Declining leaves the example file in place, unwired.
+- [ ] `init.ps1` (Windows) or `init.sh` (Unix) has been run and exited 0. Along the way it asked for consent to wire the security hooks (`core/security/settings.local.json.example` → `.claude/settings.local.json`; `--hooks`/`--no-hooks` skip the prompt) — know what you answered. Declining leaves the example file in place, unwired. It also asked the one-time **authority-mode** question (`visible` or `required`, v3.0.49; `--authority-mode=`/`-AuthorityMode` skips the prompt) — if you pressed Enter to decide later, content retirement stays disabled and `/doctor` keeps saying so until `project.yaml` carries `trust_surface_signing: visible` or `required`.
 - [ ] `init-validate.ps1` / `init-validate.sh` reports **PASS**.
 - [ ] The `capabilities/` directory has been removed from the target (init deletes it on success).
 - [ ] All enabled capabilities' runtime files are at their canonical locations (under `.claude/skills/`, `docs/`, etc.).

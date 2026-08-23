@@ -77,19 +77,24 @@ properties you should know when adopting a release:
    diffs, and proposes; it does not apply.
 2. **Every honest consumer refuses a trust surface that is not committed-identical, and
    (under `trust_surface_signing: required`) not operator-signed.** "Committed" is checked
-   against git, never claimed in prose. A trust-surface change you apply lands as a commit
-   made with `git commit -S` under your presence-requiring (FIDO `sk-`) SSH key — one
-   physical key touch per trust-surface edit. Software keys do not count: they are ignored
-   by every verifier and `/doctor` fails the pin if one is listed.
+   against git, never claimed in prose. Which of the two authority modes your project runs is
+   YOUR one-time choice (v3.0.49; ADR #11 condition 4 as amended 2026-08-22): under
+   `visible` a trust-surface change you apply lands as an ordinary commit and shows up in the
+   next sweep's table until you have read it; under `required` it lands as a commit made with
+   `git commit -S` under your presence-requiring (FIDO `sk-`) SSH key — one physical key touch
+   per trust-surface edit (software keys do not count: they are ignored by every verifier and
+   `/doctor` fails the pin if one is listed). A project that never recorded a choice runs in
+   migration-only `warn` with content retirement disabled, and `/doctor` says so.
 3. **`/doctor` check 16 and `/sweep` step 17 show you every trust-surface change within one
    sweep** — last commit, author, signature, and whether the working tree still matches
    HEAD. A row you do not recognize is the finding.
 
-The one-time setup (choose the key, set the repo-local signing config, commit the pin with
-one touch, flip the flag to `required`) is MIGRATION v3.0.45 → v3.0.46, marked **[your
-call]**. Until you run it, consumers stay in `warn` (accept and surface), and retirement
-(ADR #11 Release 2) cannot publish at all — its publication root is your signed tag, not a
-flag.
+The hardware-key setup (choose the key, set the repo-local signing config, commit the pin with
+one touch, set `required`) is MIGRATION v3.0.45 → v3.0.46, marked **[your call]** — optional
+hardening since v3.0.49. The one-time mode choice itself is MIGRATION v3.0.48 → v3.0.49 (also
+**[your call]**); init asks it on every new instance. Retirement (ADR #11 Release 2) publishes
+under `required` only by your signed tag and under `visible` only by your exact-digest promote
+action — never by a flag, and never at all while no mode is recorded.
 
 ## The pre-commit scanner rides updates by hand (v3.0-112)
 

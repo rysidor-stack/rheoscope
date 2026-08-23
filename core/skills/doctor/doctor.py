@@ -62,7 +62,10 @@ Checks (harness-v3.0/specs/template-self-truth-and-onboarding-brief-2026-07-10.m
                       hooks/trust-surfaces.txt + the embedded floor) is what it was committed
                       and signed to be: (a) every tracked member HEAD-identical, (b) every
                       member's newest commit operator-signed per deploy/trust.py (FAIL under
-                      trust_surface_signing: required, WARN under warn), (c) the untracked
+                      trust_surface_signing: required, WARN under warn, PASS under visible;
+                      v3.0.49 / ADR #11 condition 4 as amended: WARN "authority mode not
+                      recorded" when project.yaml carries no trust_surface_signing --
+                      retirement is disabled until the operator chooses), (c) the untracked
                       hook-lane members wire the perimeter (checks 7 + 15), (d) every key in
                       allowed_signers is presence-requiring (sk), (e) no retire record
                       without a verified operator tag. Stated in the check's own text: it
@@ -341,7 +344,7 @@ def check_python_sensors(ctx, sensor_timeout=None):
             continue  # doesn't advertise a self-test; not this check's business
         if f not in run_set:
             continue  # fast-mode rotation: not this file's day (stated in the note below)
-        # Per-sensor budget: 180s (v3.0.48, backlog v3.0-138 from aces-wiki-1). The old
+        # Per-sensor budget: 180s (v3.0.48, backlog v3.0-138, fleet inbox #3). The old
         # 60s default false-FAILed the v3.0.46 batteries on a slow-spawn Windows host
         # (compile-driver 76s, trust.py 60s, both PASSing standalone) -- a battery that
         # grew without its budget. A real hang still surfaces: the message carries the
@@ -580,6 +583,18 @@ def _git_out(root, *args):
     return p.returncode, p.stdout
 
 
+def _project_authority_mode(root):
+    """project.yaml trust_surface_signing as written (visible|required|warn) or None. A
+    direct read: check 16(d) needs it before deploy/trust.py's report is consulted."""
+    try:
+        text = (Path(root) / "project.yaml").read_text(encoding="utf-8-sig")
+    except OSError:
+        return None
+    m = re.search(r'(?m)^\s*trust_surface_signing:\s*"?(visible|required|warn)"?\s*(#.*)?$',
+                  text, re.I)
+    return m.group(1).lower() if m else None
+
+
 def check_trust_surfaces(ctx):
     """Check 16 (v3.0-120, brief section 6): the trust-surface class is what it was
     committed and signed to be. Five sub-checks, one Result each:
@@ -646,7 +661,15 @@ def check_trust_surfaces(ctx):
 
     # (d) the pin
     rc, pin = _git_out(root, "show", "HEAD:core/security/hooks/allowed_signers")
-    if rc != 0:
+    if rc != 0 and _project_authority_mode(root) == "visible":
+        # v3.0.49 (ADR #11 condition 4 as amended): under `visible` no key is expected, so
+        # an absent pin is not a pending ceremony -- warning about it every run would be
+        # attention spent on a root the operator chose not to have.
+        out.append(Result("PASS", fam + ":pin",
+                          "core/security/hooks/allowed_signers absent -- not expected under "
+                          "trust_surface_signing: visible (choose `required` and run the "
+                          "MIGRATION v3.0.45->v3.0.46 ceremony if you want the hardware root)."))
+    elif rc != 0:
         out.append(Result("WARN", fam + ":pin",
                           "core/security/hooks/allowed_signers is not committed -- no operator "
                           "signature can verify yet, so consumers run in cutover (warn) at "
@@ -717,6 +740,25 @@ def check_trust_surfaces(ctx):
                               % (rc, _tail(rep_text))))
         else:
             mode = rep.get("mode", "warn")
+            # v3.0.49 (ADR #11 condition 4 as amended 2026-08-22): the authority mode is an
+            # explicit one-time operator choice; absence never selects one. trust.py
+            # reports mode_chosen since v3.0.49 -- an older report omits the key. `warn`
+            # (absent or written) is never a chosen mode (round-1 catch).
+            if "mode_chosen" in rep:
+                if rep.get("mode_chosen"):
+                    out.append(Result("PASS", fam + ":mode",
+                                      "authority mode recorded: trust_surface_signing: %s "
+                                      "(the one-time choice ADR #11 condition 4 asks for)" % mode))
+                else:
+                    out.append(Result("WARN", fam + ":mode",
+                                      "no settled authority mode (visible|required) recorded in "
+                                      "project.yaml -- consumers run in migration-only warn and "
+                                      "RETIREMENT IS DISABLED "
+                                      "until you choose. FIX: set trust_surface_signing: "
+                                      "visible (reversible-and-visible; one operator, no key) "
+                                      "or required (hardware-key root; run the v3.0.45->46 "
+                                      "ceremony first) in project.yaml -- MIGRATION "
+                                      "v3.0.48 -> v3.0.49."))
             unsigned = [r for r in rep.get("surfaces", []) if not r.get("signed")]
             if mode == "visible":
                 out.append(Result("PASS", fam + ":signatures",
@@ -1868,6 +1910,18 @@ def self_test():
             check("trust-surfaces(d): pin absent -> WARN naming the ceremony",
                   by["trust-surfaces:pin"].status == "WARN"
                   and "ceremony" in by["trust-surfaces:pin"].detail)
+            (root / "project.yaml").write_text("trust_surface_signing: visible\n",
+                                               encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(d): pin absent under visible -> PASS (no key expected; "
+                  "v3.0.49)", by["trust-surfaces:pin"].status == "PASS"
+                  and "not expected" in by["trust-surfaces:pin"].detail)
+            (root / "project.yaml").write_text("trust_surface_signing: warn\n",
+                                               encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(d): pin absent under a written warn -> still WARN",
+                  by["trust-surfaces:pin"].status == "WARN")
+            (root / "project.yaml").unlink()
             check("trust-surfaces(b): no deploy/trust.py -> WARN unavailable",
                   by["trust-surfaces:signatures"].status == "WARN"
                   and "unavailable" in by["trust-surfaces:signatures"].detail)
@@ -1928,6 +1982,25 @@ def self_test():
             by = {x.name: x for x in note(check_trust_surfaces(ctx))}
             check("trust-surfaces(b): the same unsigned member under warn -> WARN, not FAIL",
                   by["trust-surfaces:signatures"].status == "WARN")
+            check("trust-surfaces(mode): a pre-v3.0.49 report (no mode_chosen key) yields "
+                  "no mode result", "trust-surfaces:mode" not in by)
+            (root / "deploy" / "trust.py").write_text(
+                stub.replace("'pin': {}", "'pin': {}, 'mode_chosen': False"),
+                encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(mode): no recorded authority mode -> WARN naming retirement "
+                  "disabled + the two choices",
+                  by["trust-surfaces:mode"].status == "WARN"
+                  and "RETIREMENT IS DISABLED" in by["trust-surfaces:mode"].detail
+                  and "visible" in by["trust-surfaces:mode"].detail
+                  and "required" in by["trust-surfaces:mode"].detail)
+            (root / "deploy" / "trust.py").write_text(
+                stub.replace("'pin': {}", "'pin': {}, 'mode_chosen': True"),
+                encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(mode): recorded mode -> PASS",
+                  by["trust-surfaces:mode"].status == "PASS")
+            (root / "deploy" / "trust.py").write_text(stub, encoding="utf-8")
             (root / "deploy" / "trust.py").write_text(
                 stub.replace("'pin': {}", "'pin': {}, 'branch_rewind': ['local main is NOT a "
                              "fast-forward of origin/main -- history rewound or rewritten']"),

@@ -94,15 +94,20 @@ that exists but is uncommitted, or differs from HEAD, is refused naming the diff
 newest commit must be **operator-signed** — an SSH signature verifying against
 `core/security/hooks/allowed_signers` with a *presence-requiring* (FIDO `sk-`) key; software
 keys are filtered out of the pin before verification, so a signature by one is untrusted,
-never "warned". The second half runs under `project.yaml: trust_surface_signing` — `warn`
-(the adoption default) accepts the unsigned artifact and prints `WARNING (trust-surface)`
-lines; `required` refuses. The flag governs only these legacy artifacts' cutover; it governs
-nothing about retirement — Release 2's `--retire` never writes the production branch at all
-(it prepares an immutable commit `C` on a work ref; publication is a fast-forward permitted
-only by an operator-signed tag naming `C` exactly — `trust.py --check-publish`). Stated
-plainly: `trust.py` runs in the agent's process and is itself a trust surface; a tampered
-copy can lie, which is why the root of trust is the operator's physical key on the
-publishing commit, not this code. `/doctor` check 16 and sweep step 17 surface every
+never "warned". The second half runs under `project.yaml: trust_surface_signing` — the
+project's AUTHORITY MODE, an explicit one-time operator choice recorded at init (v3.0.49; ADR #11
+condition 4 as amended 2026-08-22): `visible` accepts the unsigned artifact silently (every sensor
+still runs); `warn` accepts it and prints `WARNING (trust-surface)` lines (migration-only
+compatibility for instances born before v3.0.49); `required` refuses. ABSENT is never a choice:
+consumers run as `warn` and `trust.py --check-publish` refuses every retirement until the key is
+recorded. Release 2's `--retire` never writes the production branch at all (it prepares an
+immutable commit `C` on a work ref); publication is a fast-forward permitted under `required`
+only by an operator-signed tag naming `C` exactly, and under `visible` by one exact-digest
+promote action the operator takes outside the session (the Release-2 promotion verb; until it
+exists only a verified tag publishes). Stated plainly: `trust.py` runs in the agent's process and
+is itself a trust surface; a tampered copy can lie — under `required` the root is the operator's
+physical key; under `visible` the root is reversibility (conditions 1/2/5) plus visibility
+(every change surfaced until acknowledged), not this code. `/doctor` check 16 and sweep step 17 surface every
 trust-surface change within one sweep.
 
 ### 6. Absorb via `compile-backends`

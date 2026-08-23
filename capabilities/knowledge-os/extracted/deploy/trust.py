@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """trust.py -- trust-surface integrity primitives (v3.0-120, ships v3.0.46).
 
-ADR #11 condition 4 / G2 enablement: "no retirement may execute until the ruling
-channel is demonstrably outside agent write and forgery authority." Design:
+ADR #11 condition 4 / G2 as AMENDED 2026-08-22 (v3.0.48, backlog v3.0-135, handoff
+2026-08-22-adr11-condition4-reversible-visible): authority is "exact, informed,
+explicitly selected, reversible, and observable". The operator chooses the instance's
+authority mode ONCE -- `project.yaml: trust_surface_signing: visible | required` -- and
+the absence of a recorded choice never selects one: a fresh instance is asked at init;
+an existing instance resolves to migration-only `warn` with RETIREMENT DISABLED until
+the choice is recorded. Under `visible` the agent prepares a retirement and one
+lightweight operator action outside the session promotes the exact proposal digest
+(the Release-2 promotion verb; not built here -- a verified operator tag still
+publishes under every mode); under `required` the presence-requiring signature below is
+the root. Design of the signing machinery (kept, optional hardening):
 harness-v3.0/specs/trust-surface-integrity-mini-pass-2026-08-21.md (brief v4).
 
 WHAT THIS FILE IS, AND IS NOT. This module runs in the agent's own process and is
@@ -54,7 +63,11 @@ Primitives (brief sections 4-5):
                                        committed_identical is ALWAYS required; operator_
                                        signed is refused under project.yaml
                                        trust_surface_signing: required, warned (accepted
-                                       + surfaced) under warn (the default on adoption).
+                                       + surfaced) under warn, accepted silently under
+                                       visible (sensors still run).
+  mode_chosen(repo)                    project.yaml RECORDS visible or required. Absent
+                                       OR warn -> migration-only compatibility; retirement
+                                       is disabled (check_publishable refuses first).
 
 Every git read goes through `git --no-replace-objects` so a `git replace` ref cannot
 substitute an object under a verified hash (G2: alternate write paths).
@@ -234,17 +247,39 @@ def class_members(repo, globs=None):
     return sorted(tracked), [g for g in globs if g in UNTRACKED_MEMBERS]
 
 
-def signing_mode(repo):
-    """project.yaml trust_surface_signing: warn | required. Absent -> warn (the adoption
-    default, brief section 5 cutover). An unrecognized value fails CLOSED to required."""
+ABSENT_MODE_NOTE = ("no settled authority mode recorded -- migration-only warn: HUMAN-GATE "
+                    "consumers accept + surface as before, RETIREMENT IS DISABLED until "
+                    "project.yaml records trust_surface_signing: visible or required (ADR #11 "
+                    "condition 4 as amended 2026-08-22; MIGRATION v3.0.48 -> v3.0.49)")
+
+
+def mode_chosen(repo):
+    """True when project.yaml RECORDS a SETTLED authority mode: `visible` or `required`.
+    `warn` -- absent OR written -- is migration-only compatibility, never a choice (the
+    amended condition 4, binding item 1; cross-vendor round-1 catch: an explicitly written
+    `warn` must not enable retirement either)."""
     p = os.path.join(repo, "project.yaml")
     try:
         text = open(p, encoding="utf-8-sig").read()
     except OSError:
-        return "warn", "project.yaml absent -- default warn"
+        return False
+    return re.search(r'(?m)^\s*trust_surface_signing:\s*"?(required|visible)"?\s*(#.*)?$',
+                     text, re.I) is not None
+
+
+def signing_mode(repo):
+    """project.yaml trust_surface_signing: visible | required | warn. ABSENT -> warn, but
+    only as existing-instance compatibility (ABSENT_MODE_NOTE): consumers keep the
+    v3.0.46 warn behavior, retirement is disabled, and the doctor/sweep name the missing
+    choice. An unrecognized value fails CLOSED to required."""
+    p = os.path.join(repo, "project.yaml")
+    try:
+        text = open(p, encoding="utf-8-sig").read()
+    except OSError:
+        return "warn", "project.yaml absent -- " + ABSENT_MODE_NOTE
     m = re.search(r'(?m)^\s*trust_surface_signing:\s*"?([A-Za-z_-]+)"?', text)
     if not m:
-        return "warn", "trust_surface_signing not set -- default warn"
+        return "warn", ABSENT_MODE_NOTE
     v = m.group(1).lower()
     if v in ("warn", "required", "visible"):
         # `visible` (v3.0.47, backlog v3.0-135 mechanics; default flip stays T1): no
@@ -705,6 +740,10 @@ def check_publishable(repo, tag, branch="main"):
     if not m:
         return {"ok": False, "reason": "tag %r is not of the form retire/<seq>" % tag}
     seq = int(m.group(1))
+    # Amended condition 4 (v3.0.48): absence of a recorded authority mode never
+    # authorizes retirement -- refuse BEFORE any signature is consulted.
+    if not mode_chosen(repo):
+        return {"ok": False, "reason": "retirement disabled: " + ABSENT_MODE_NOTE}
     try:
         t = tag_object(repo, tag)
     except TrustError as e:
@@ -715,7 +754,12 @@ def check_publishable(repo, tag, branch="main"):
         return {"ok": False, "reason": "production branch %s does not resolve" % branch}
     sig = operator_tag(repo, tag, c)
     if not sig["ok"]:
-        return {"ok": False, "reason": sig["reason"], "commit": c, "head": head}
+        reason = sig["reason"]
+        if signing_mode(repo)[0] == "visible":
+            reason += (" (trust_surface_signing: visible -- publication is the exact-digest "
+                       "operator promotion, Release 2, not yet built; until then only a "
+                       "verified operator tag publishes)")
+        return {"ok": False, "reason": reason, "commit": c, "head": head}
     parents = _parents(repo, c) or []
     if len(parents) != 1:
         return {"ok": False, "reason": "C %s has %d parents -- must be a single commit (no "
@@ -973,7 +1017,8 @@ def report(repo, rev="HEAD"):
                      "commit": (s.get("commit") or "")[:12], "author": s.get("author"),
                      "date": s.get("date"), "signed": s["ok"], "principal": s.get("principal"),
                      "keytype": s.get("keytype"), "reason": s["reason"]})
-    return {"mode": mode, "mode_reason": why, "class": globs, "untracked_members": untracked,
+    return {"mode": mode, "mode_reason": why, "mode_chosen": mode_chosen(repo),
+            "class": globs, "untracked_members": untracked,
             "pin": pin_status(repo, rev), "surfaces": rows,
             "retire_records": retire_records_status(repo, rev),
             "branch_rewind": branch_rewind(repo)}
@@ -1230,7 +1275,17 @@ def self_test():
         case("gate_artifact: uncommitted change refused EVEN under warn",
              not g["ok"] and "not committed-identical" in g["refuse"], str(g))
         git(r1, "reset", "-q", "--hard")
-        case("signing_mode: no project.yaml -> warn", signing_mode(r1)[0] == "warn")
+        case("signing_mode: no project.yaml -> warn (migration-only) and NOT chosen",
+             signing_mode(r1)[0] == "warn" and not mode_chosen(r1)
+             and "RETIREMENT IS DISABLED" in signing_mode(r1)[1])
+        write(r1, "project.yaml", "project_slug: x\n")
+        case("signing_mode: project.yaml without the key -> warn, not chosen, note names the "
+             "migration", signing_mode(r1)[0] == "warn" and not mode_chosen(r1)
+             and "v3.0.49" in signing_mode(r1)[1])
+        write(r1, "project.yaml", "trust_surface_signing: warn\n")
+        case("an EXPLICITLY written warn is still NOT a chosen mode (migration-only; "
+             "cross-vendor round-1 catch)", signing_mode(r1)[0] == "warn"
+             and not mode_chosen(r1))
         write(r1, "project.yaml", "trust_surface_signing: required\n")
         case("signing_mode: required read", signing_mode(r1)[0] == "required")
         write(r1, "project.yaml", "trust_surface_signing: maybe\n")
@@ -1241,6 +1296,11 @@ def self_test():
         case("visible mode: unsigned committed artifact accepted with NO warning (sensors only)",
              signing_mode(r1)[0] == "visible" and gv["ok"] and gv["warnings"] == []
              and gv["blob"] is not None, str(gv))
+        case("visible mode: recorded -> mode_chosen True; report carries it",
+             mode_chosen(r1) and report(r1)["mode_chosen"] is True)
+        write(r1, "project.yaml", "trust_surface_signing: required   # chosen\n")
+        case("required mode with a trailing comment -> chosen", mode_chosen(r1))
+        write(r1, "project.yaml", "trust_surface_signing: visible\n")
         write(r1, "deploy/evidence/operator-grant.md", "Verbatim grant: \"tampered\"\n")
         gv = gate_artifact(r1, "deploy/evidence/operator-grant.md")
         case("visible mode: an UNCOMMITTED change is still refused", not gv["ok"], str(gv))
@@ -1427,6 +1487,31 @@ def self_test():
             v = operator_tag(r2, "retire/1", prod)
             case("[mech] the same tag checked against a DIFFERENT commit refused",
                  not v["ok"] and "not commit" in v["reason"], v["reason"])
+            chk = check_publishable(r2, "retire/1", "main")
+            case("[mech] amended condition 4: NO recorded authority mode -> check_publishable "
+                 "refuses BEFORE consulting the (valid) tag", not chk["ok"]
+                 and "retirement disabled" in chk["reason"], chk["reason"])
+            # project.yaml is per-instance config, never part of the fixture's commits:
+            # exclude it so the `-A` commits below do not carry it across branches.
+            write(r2, ".git/info/exclude", "project.yaml\n")
+            write(r2, "project.yaml", "trust_surface_signing: warn\n")
+            chk = check_publishable(r2, "retire/1", "main")
+            case("[mech] an EXPLICIT migration-only warn also refuses publication (the valid "
+                 "tag is never reached)", not chk["ok"] and "retirement disabled" in chk["reason"],
+                 chk["reason"])
+            write(r2, "project.yaml", "trust_surface_signing: visible\n")
+            git(r2, "tag", "-d", "retire/1")
+            git(r2, "tag", "-a", "-m", "unsigned", "retire/1", c1)
+            chk = check_publishable(r2, "retire/1", "main")
+            case("[mech] under visible an UNSIGNED tag still does not publish; the refusal "
+                 "names the Release-2 promotion verb", not chk["ok"]
+                 and "exact-digest" in chk["reason"], chk["reason"])
+            git(r2, "tag", "-d", "retire/1")
+            p = git(r2, "tag", "-s", "-m", "retire 1", "retire/1", c1, key="opB")
+            chk = check_publishable(r2, "retire/1", "main")
+            case("[mech] under visible a VERIFIED operator tag publishes (stronger than the "
+                 "mode requires)", p.returncode == 0 and chk["ok"], chk["reason"])
+            write(r2, "project.yaml", "trust_surface_signing: required\n")
             chk = check_publishable(r2, "retire/1", "main")
             case("[mech] check_publishable: the honest fixture passes", chk["ok"], chk["reason"])
             # replayed tag ref: retire/2 pointed at retire/1's tag object

@@ -14,6 +14,9 @@
 #   -Hooks    Wire security hooks into .claude/settings.local.json without
 #             prompting (see §6b).
 #   -NoHooks  Skip wiring security hooks without prompting (see §6b).
+#   -AuthorityMode visible|required
+#             Record the project's authority mode (project.yaml
+#             trust_surface_signing) without prompting (see §6c, v3.0.49).
 #
 # Hard dependency: powershell-yaml module (per Decision V2-11).
 #
@@ -24,7 +27,9 @@
 param(
     [switch]$DryRun,
     [switch]$Hooks,
-    [switch]$NoHooks
+    [switch]$NoHooks,
+    [ValidateSet('visible', 'required')]
+    [string]$AuthorityMode = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -668,6 +673,51 @@ if ($projectYamlText -notmatch '(?m)^template_release:\s*".+"') {
     Info ("stamped: template_release = " + $releaseTag)
 }
 if ($stampChanged) { Write-FileNoBom -Path $projectYamlPath -Content $projectYamlText }
+
+# ---------- 6c. Authority mode -- the one-time choice (v3.0.49; ADR #11 condition 4 as
+# amended 2026-08-22, backlog v3.0-135) ----------
+# Mirror of init.sh section 6c: an explicit operator decision recorded ONCE in project.yaml
+# (trust_surface_signing), never a silent default. Absent a flag and an answer, nothing is
+# written and the NOTICE says so -- retirement stays disabled until the key is recorded.
+# A written `warn` is migration-only compatibility, not a choice (cross-vendor round-1
+# catch): it is asked about like an absent key; an answer REPLACES the warn line.
+$projectYamlText = Get-Content $projectYamlPath -Raw -Encoding UTF8
+# Anchored (round-2 catch): a malformed value such as `visible-invalid` is NOT recorded.
+if ($projectYamlText -match '(?m)^\s*trust_surface_signing:\s*"?(visible|required)"?\s*(#.*)?$') {
+    Info ("authority mode already recorded: trust_surface_signing = " + $Matches[1])
+} else {
+    if ($projectYamlText -match '(?m)^\s*trust_surface_signing:\s*"?warn"?') {
+        Write-Warning "project.yaml carries trust_surface_signing: warn -- that is migration-only compatibility, not a settled choice; asking."
+    }
+    $authMode = $AuthorityMode
+    if (-not $authMode -and -not [Console]::IsInputRedirected) {
+        Write-Output ""
+        Write-Output "One-time choice: how does this project authorize perimeter changes and content retirement?"
+        Write-Output "  visible   Reversible-and-visible (the template operator's choice for one person on one machine):"
+        Write-Output "            no hardware key; every change is journaled, listed by /sweep until you acknowledge it,"
+        Write-Output "            and a retirement waits for one promote action from you per batch."
+        Write-Output "  required  Hardware-key root: every perimeter commit and retirement tag needs a physical"
+        Write-Output "            security-key touch (run the MIGRATION v3.0.45 -> v3.0.46 ceremony first)."
+        $reply = Read-Host "Authority mode [visible/required, or Enter to decide later]"
+        # Exact words only (round-2 catch): a stray 'r' or 'vis' is not a choice.
+        $replyNorm = ($reply -replace '\s', '').ToLowerInvariant()
+        if ($replyNorm -eq 'visible') { $authMode = 'visible' }
+        elseif ($replyNorm -eq 'required') { $authMode = 'required' }
+        elseif ($replyNorm -eq '') { $authMode = '' }
+        else { $authMode = ''; Write-Warning ("'" + $reply + "' is not one of visible/required -- nothing recorded.") }
+    }
+    if ($authMode) {
+        if ($projectYamlText -match '(?m)^\s*trust_surface_signing:') {
+            $projectYamlText = $projectYamlText -replace '(?m)^\s*trust_surface_signing:.*$', ('trust_surface_signing: ' + $authMode)
+        } else {
+            $projectYamlText = $projectYamlText.TrimEnd() + "`ntrust_surface_signing: $authMode`n"
+        }
+        Write-FileNoBom -Path $projectYamlPath -Content $projectYamlText
+        Info ("recorded: trust_surface_signing = " + $authMode + " (project.yaml)")
+    } else {
+        Write-Warning "no authority mode recorded. Content retirement stays DISABLED and /doctor will keep saying so until project.yaml carries 'trust_surface_signing: visible' or 'required' (see MIGRATION.md, ADR #11 condition 4). Re-run with -AuthorityMode visible or edit the line in yourself."
+    }
+}
 
 # ---------- 6b. Wire security hooks (real mode only) ----------
 # Fixes the silent-security gap (backlog v3.0-25): until this step, nothing wired the

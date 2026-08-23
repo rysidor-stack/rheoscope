@@ -131,7 +131,12 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     the session as the finding"); a surface whose newest commit is not operator-signed
     (under `trust_surface_signing: warn` this is a reminder that the consumer accepted it
     in cutover; under `required` the consumer is refusing it — "re-commit it with
-    `git commit -S`"); a non-presence key listed in `allowed_signers`; and any **retire
+    `git commit -S`"; under `visible` no signature is expected and the row is NOT a
+    finding — this table is where the operator SEES and, by reading the sweep,
+    acknowledges each change, v3.0.49 / ADR #11 condition 4 as amended); **no authority
+    mode recorded at all** (`trust.py --report` says so, doctor 16 WARNs) — "this project
+    never chose between `visible` and `required`; content retirement is disabled until
+    you add the line to `project.yaml` (MIGRATION v3.0.48 → v3.0.49)"; a non-presence key listed in `allowed_signers`; and any **retire
     record without a verified operator tag** ("an unpublished retirement proposal is on the
     branch — sign `git tag -s retire/<seq> <C>` after inspecting, or revert the record").
     Git-only fallback (no `deploy/trust.py`): `git log -1 --format='%h %an %ci %G?' -- <path>`

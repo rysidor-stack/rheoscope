@@ -260,6 +260,42 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.48 → v3.0.49 (the authority mode is your one-time choice; retirement authority is reversible-and-visible)
+
+ADR #11 condition 4 was amended through the T1 firewall on 2026-08-22 (backlog v3.0-135): how your
+project authorizes perimeter changes and content retirement is an explicit choice you make ONCE —
+there is no silent default any more. One line is yours; the rest a session applies (the two code
+files are trust surfaces, so the copies are yours to run in your terminal, as in v3.0.45→46).
+
+1. **[your call] Record the authority mode in `project.yaml`** — add exactly one of:
+   - `trust_surface_signing: visible` — reversible-and-visible. No hardware key. Every perimeter
+     change and every retirement is journaled and shows in `/sweep`'s trust-surface table until
+     you have read it; a retirement (when Release 2 ships) waits for one promote action from you
+     per batch. This is what the template's operator chose for a one-person, one-machine project.
+   - `trust_surface_signing: required` — the hardware-key root. Run the v3.0.45→46 §C ceremony
+     first (one physical touch per perimeter commit and per retirement tag thereafter).
+   Leaving the line out is not a choice: your consumers keep running exactly as under v3.0.46's
+   `warn` (accept and print one warning line per run), **content retirement stays disabled**, and
+   `/doctor` check 16 keeps saying "no authority mode recorded" until the line exists. `warn` is
+   still recognized for instances that already set it, but it is migration-only — pick one of the
+   two above when you are ready.
+2. **You copy (trust surfaces):** `deploy/trust.py` from the template's
+   `capabilities/knowledge-os/extracted/deploy/trust.py` (battery: `py deploy/trust.py --self-test`,
+   expect 102/102). Without it nothing breaks — an older `trust.py` simply cannot tell `/doctor`
+   whether the mode is recorded, and its retirement gate does not yet refuse on an absent mode.
+3. **The session copies:** `core/skills/doctor/doctor.py` → `.claude/skills/doctor/doctor.py`
+   (`py .claude/skills/doctor/doctor.py --self-test`, expect 94/94; under `visible` check 16 no longer warns about the absent signing pin); re-render
+   `.claude/skills/sweep/SKILL.md` (step 17 wording); `core/onboarding/UPDATING.md`,
+   `docs/engine/OPERATIONS.md` (§5), `core/security/hooks/README.md` (two rows — the README is
+   in the trust-surface class, so that copy is yours too).
+4. Stamp `template_release: "v3.0.49"`. (`project.yaml.schema.json` and the init scripts changed
+   only for NEW instances — init now asks the question in step 1 itself; nothing to adopt.)
+5. **Not in this release, stated so you do not look for it:** the promote action, the durable
+   pending list with batched acknowledgement, the missed-sweep alarm and the clean-oracle
+   acceptance run are ADR #11 Release 2 work (backlog v3.0-139). Until then a retirement can be
+   published only by a verified operator tag (`required`-style), and only under a CHOSEN mode
+   (`visible` or `required`) — never while the line is absent or reads `warn`.
+
 ## v3.0.47 → v3.0.48 (doctor stops mistaking a slow sensor for a hung one)
 
 One file, and it is not a trust surface — the session may copy it.

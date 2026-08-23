@@ -260,6 +260,20 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.47 → v3.0.48 (doctor stops mistaking a slow sensor for a hung one)
+
+One file, and it is not a trust surface — the session may copy it.
+
+1. Copy `core/skills/doctor/doctor.py` → `.claude/skills/doctor/doctor.py`. The python-sensors
+   check's per-sensor `--self-test` budget is 180s for every sensor (was 60s with one exception);
+   a PASS now shows its elapsed seconds and a TIMEOUT names elapsed + limit. If your `/doctor`
+   showed `compile-driver.py` / `trust.py` "self-test timed out ... investigate for a hang" after
+   adopting v3.0.46 on a slow-spawn host (Windows git-bash), that was this — they pass. Battery:
+   `py .claude/skills/doctor/doctor.py --self-test` (expect 89/89).
+2. Stamp `template_release: "v3.0.48"` in `project.yaml`. (`RELEASE` at the tag reads `v3.0.48` —
+   the first honest stamp since v3.0.42, backlog v3.0-137; instances born from v3.0.43–47 should
+   correct a `template_release: v3.0.42` they inherited at init.)
+
 ## v3.0.46 → v3.0.47 (egress stops asking when you're present; signing becomes a grade)
 
 Fewer interrupts, same protection where it matters. Two files you copy, one line you add to any

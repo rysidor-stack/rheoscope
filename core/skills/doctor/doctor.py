@@ -90,6 +90,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import tempfile
 from pathlib import Path
 
@@ -287,7 +288,11 @@ def check_jq(ctx):
                    "jq not found on PATH (runtime dependency of the security hook scripts). "
                    "FIX: %s" % _jq_install_hint())
 
-def check_python_sensors(ctx):
+# v3.0.48 (backlog v3.0-138): the per-sensor --self-test budget. 60s false-FAILed the
+# v3.0.46 batteries on a slow-spawn Windows host; 180s was already the drill-bench exception.
+SENSOR_SELF_TEST_TIMEOUT = 180
+
+def check_python_sensors(ctx, sensor_timeout=None):
     deploy_dir = ctx["root"] / "deploy"
     if not deploy_dir.is_dir():
         return [Result("SKIP", "python-sensors",
@@ -336,20 +341,27 @@ def check_python_sensors(ctx):
             continue  # doesn't advertise a self-test; not this check's business
         if f not in run_set:
             continue  # fast-mode rotation: not this file's day (stated in the note below)
-        # Most sensors' self-tests finish in well under 60s. A few engine drills are
-        # legitimately heavier (e.g. drill-replay-bench.py's generator+replay bench can
-        # run 30-90s) -- give those a longer budget instead of raising the default for
-        # every sensor.
-        sensor_timeout = 180 if f.name == "drill-replay-bench.py" else 60
+        # Per-sensor budget: 180s (v3.0.48, backlog v3.0-138 from aces-wiki-1). The old
+        # 60s default false-FAILed the v3.0.46 batteries on a slow-spawn Windows host
+        # (compile-driver 76s, trust.py 60s, both PASSing standalone) -- a battery that
+        # grew without its budget. A real hang still surfaces: the message carries the
+        # elapsed time and the limit, so "hit 180s" reads differently from "took 76s".
+        if sensor_timeout is None:
+            sensor_timeout = SENSOR_SELF_TEST_TIMEOUT
+        t0 = time.monotonic()
         rc, out = _run([ctx["python"], str(f), "--self-test"], timeout=sensor_timeout,
                         cwd=str(ctx["root"]))
+        elapsed = time.monotonic() - t0
         name = "python-sensors:%s" % f.name
         if rc == 0:
-            out_results.append(Result("PASS", name, "self-test passed"))
+            out_results.append(Result("PASS", name, "self-test passed (%.0fs)" % elapsed))
         elif rc == "TIMEOUT":
             out_results.append(Result("FAIL", name,
-                                       "self-test timed out. FIX: investigate %s for a hang."
-                                       % f.name))
+                                       "self-test timed out after %.0fs (limit %ss). FIX: run "
+                                       "`python %s --self-test` by hand and time it -- a pass "
+                                       "that merely exceeds the limit is a budget problem "
+                                       "(file it); no completion is a hang (investigate)."
+                                       % (elapsed, sensor_timeout, f)))
         else:
             out_results.append(Result("FAIL", name,
                                        "self-test exited %s: %s "
@@ -1729,6 +1741,24 @@ def self_test():
         r = next((x for x in results if "unreadable.py" in x.name), None)
         check("python-sensors: unreadable file -> FAIL with FIX",
               r is not None and r.status == "FAIL" and "FIX:" in r.detail)
+
+        # v3.0.48 (v3.0-138): the budget is 180s, a pass reports its elapsed time, and a
+        # timeout names elapsed + limit and distinguishes "slow pass" from "hang".
+        check("python-sensors: self-test budget is >= 180s", SENSOR_SELF_TEST_TIMEOUT >= 180)
+        (deploy_dir / "quick.py").write_text(
+            "# --self-test" + chr(10) + "import sys" + chr(10) + "sys.exit(0)" + chr(10), encoding="utf-8")
+        (deploy_dir / "slow.py").write_text(
+            "# --self-test" + chr(10) + "import time" + chr(10) + "time.sleep(30)" + chr(10), encoding="utf-8")
+        results = note(check_python_sensors(ctx, sensor_timeout=1))
+        r = next((x for x in results if x.name.endswith("quick.py")), None)
+        check("python-sensors: passing sensor reports elapsed seconds",
+              r is not None and r.status == "PASS" and re.search(r"\(\d+s\)", r.detail))
+        r = next((x for x in results if x.name.endswith("slow.py")), None)
+        check("python-sensors: timeout names elapsed + limit and a hand-run FIX",
+              r is not None and r.status == "FAIL" and "limit 1s" in r.detail
+              and "timed out after" in r.detail and "FIX:" in r.detail
+              and "hang" in r.detail)
+        (deploy_dir / "quick.py").unlink(); (deploy_dir / "slow.py").unlink()
 
         # A check-derivation stub exiting an unexpected code (neither 0, 2, nor 3) -> WARN + FIX.
         (deploy_dir / "check-derivation.py").write_text(

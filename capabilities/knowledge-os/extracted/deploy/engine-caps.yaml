@@ -19,3 +19,11 @@ caps:
   index: 30000
   briefing: 30000
   default: 50000      # used when a view type cannot be determined
+
+# ADR #11 Release 2 (v3.0.50, deploy/retire.py, brief R3-C6): the redirect block inside a
+# view's derivation region is itself an append-only hot surface, so it carries its own
+# lifecycle cap. When a retirement would leave the block over EITHER limit, the whole chain
+# is compacted into a content-addressed cold index (wiki/cold/<view>/redirects--<sha>.json)
+# and the block keeps one pointer row. Checked at every retirement.
+retirements_block_max_entries: 20
+retirements_block_max_bytes: 8192

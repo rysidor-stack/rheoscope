@@ -630,6 +630,32 @@ def check_pointer_class_ceiling(repo, view_rel, old_text, new_text, events,
 
 
 # --------------------------------------------------------------- output validation
+RETIREMENTS_START = "# --- retirements"
+RETIREMENTS_END = "# --- /retirements"
+
+
+def retirements_block(text):
+    """The engine-owned redirect block inside the derivation region (ADR #11 Release 2,
+    v3.0.50, deploy/retire.py): the lines from `# --- retirements` to `# --- /retirements`
+    inclusive, or None. An absorb may NEVER change a byte of it (brief R2-C1/R3-C1: no
+    later ordinary absorb can drop or edit a redirect map) -- validate_absorb_output
+    refuses. Only the retirement verb writes it, in its own prepared commit."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    s = e = None
+    for i, ln in enumerate(lines):
+        st = ln.strip()
+        if s is None and st == RETIREMENTS_START:
+            s = i
+        elif s is not None and st == RETIREMENTS_END:
+            e = i
+            break
+    if s is None:
+        return None
+    if e is None:
+        return "\n".join(lines[s:])  # unterminated: still owned, still compared
+    return "\n".join(lines[s:e + 1])
+
+
 def validate_absorb_output(repo, view_rel, old_text, out, events,
                            registrations_map=None):
     """The orchestrator validates BEFORE anything is journaled (spec sec.7:
@@ -649,6 +675,14 @@ def validate_absorb_output(repo, view_rel, old_text, out, events,
         raise ValidationError("new_text exceeds byte cap (%d)" % VIEW_BYTE_CAP)
     if new_text == old_text:
         raise ValidationError("new_text identical to old (should be a no-op)")
+    # ADR #11 Release 2 (v3.0.50): the retirements block is engine-owned and immutable
+    # to absorb -- dropped, edited, moved or newly minted by an absorb, all refused.
+    old_block, new_block = retirements_block(old_text), retirements_block(new_text)
+    if old_block != new_block:
+        raise ValidationError("retirements block is engine-owned: an absorb may not %s it "
+                              "(only deploy/retire.py writes redirect entries)"
+                              % ("drop" if new_block is None else
+                                 "mint" if old_block is None else "edit"))
     # CONTENT-1 deletion floor (test-plan ~230): headings preserved, <=30% shrink
     # line-set membership, NOT substring containment: "## X" is a substring
     # of "### X", so a heading DEMOTION would slip a containment check
@@ -3335,6 +3369,39 @@ def self_test():
             case("CONTENT-1: >30% shrink refused", False)
         except ValidationError as e:
             case("CONTENT-1: >30% shrink refused", "shrank" in str(e))
+
+        # ADR #11 Release 2 (v3.0.50): the retirements block is immutable to absorb
+        RB = ("# --- derivation (engine-managed; strip region) ---\n# --- retirements\n"
+              '# {"seq":2,"pre_hash":"a","post_hash":"b","span":[3,9],"stub":[3,5],"shift":-4,'
+              '"target":"wiki/cold/b/intro--x.md","mode":"cold","title":"Intro","i":0}\n'
+              "# --- /retirements\n# --- /derivation ---\n")
+        rb_old = "# B\n\n## Intro\nworld\n\n" + RB
+        ok_out = {"new_text": rb_old.replace("world", "world and more"), "manifest": [], "corpus_support": []}
+        try:
+            validate_absorb_output(base, "wiki/b.md", rb_old, dict(ok_out, manifest=[]), ["raw/e9.md"])
+            case("retirements block: an absorb that leaves the block byte-identical passes "
+                 "the block rule (other rules decide the rest)", True)
+        except ValidationError as e:
+            case("retirements block: an absorb that leaves the block byte-identical passes "
+                 "the block rule (other rules decide the rest)", "engine-owned" not in str(e))
+        for label, mutate in (("edit", lambda t: t.replace('"shift":-4', '"shift":-3')),
+                              ("drop", lambda t: t.replace(RB, "# --- derivation (engine-managed; strip region) ---\n# --- /derivation ---\n")),
+                              ("drop-one-row", lambda t: t.replace("# --- retirements\n# {", "# --- retirements\n# --- /retirements\n# {", 1))):
+            try:
+                validate_absorb_output(base, "wiki/b.md", rb_old,
+                                       {"new_text": mutate(rb_old), "manifest": [], "corpus_support": []},
+                                       ["raw/e9.md"])
+                case("retirements block: absorb that would %s the block refused" % label, False)
+            except ValidationError as e:
+                case("retirements block: absorb that would %s the block refused" % label,
+                     "engine-owned" in str(e))
+        try:
+            validate_absorb_output(base, "wiki/b.md", "# B\n\n## Intro\nworld\n",
+                                   {"new_text": rb_old, "manifest": [], "corpus_support": []}, ["raw/e9.md"])
+            case("retirements block: an absorb that MINTS a block where none existed refused", False)
+        except ValidationError as e:
+            case("retirements block: an absorb that MINTS a block where none existed refused",
+                 "mint" in str(e))
 
         # 2026-07-05 red-team catch: heading DEMOTION (## X -> ### X) slipped
         # the substring-containment check ("## X" in "### X" is True)

@@ -18,6 +18,9 @@ deploy/trust.py
 deploy/compile-driver.py
 deploy/compile-backends.py
 deploy/audit-content.py
+deploy/retire.py
+deploy/promote.py
+deploy/pending.py
 .claude/settings.json
 .claude/settings.local.json
 .git/hooks/**

@@ -260,6 +260,48 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.49 → v3.0.50 (ADR #11 Release 2: content retirement, the promote action, the pending list, the missed-sweep alarm)
+
+The retirement verb exists now. Under `visible` a session prepares a retirement and YOU publish it
+with one command from your own terminal; every retirement and every perimeter change then sits on
+the sweep's pending list until a sweep you read shows it. Nothing here asks you a question; the one
+decision you already made (v3.0.48→49) still governs.
+
+1. **You copy (trust surfaces — five files now):** from the template's
+   `capabilities/knowledge-os/extracted/deploy/`: `trust.py` (battery 114/114), and the three NEW
+   files `retire.py` (71/71), `promote.py` (13/13), `pending.py` (37/37) into your `deploy/`; and
+   `core/security/hooks/trust-surfaces.txt`, `block-env-writes.sh`, `block-dangerous-bash.sh`
+   (boards 56/56 and 222/222 — the class floor gained the three new members, and the Bash lane
+   now DENIES running `promote.py` or writing `git tag retire/<n>` from a session). Under
+   `required`, commit each with `git commit -S`. Without the four deploy files nothing breaks:
+   the verb and the pending list are simply absent and `/doctor` check 16 says "unavailable".
+2. **The session copies:** `deploy/compile-v2.py` (the absorb validator refuses any absorb that
+   edits, drops or mints the engine-owned redirect block; 230/230), `deploy/engine-caps.yaml`
+   (two new keys: `retirements_block_max_entries: 20`, `retirements_block_max_bytes: 8192`),
+   `core/skills/doctor/doctor.py` → `.claude/skills/doctor/doctor.py` (103/103; check 16 gains
+   the `pending`, `ack` and `alarm` sub-checks), re-render `.claude/skills/sweep/SKILL.md`
+   (step 17 is now the pending list with heartbeat + acknowledgement) and
+   `.claude/skills/standing-loop/SKILL.md` (step 1 adds the observer tick); `core/onboarding/
+   UPDATING.md`, `docs/engine/OPERATIONS.md` (§5, new §9), `core/security/hooks/README.md`
+   (one new row; the README is in the trust-surface class, so that copy is yours too).
+3. **[your call, optional] `project.yaml: observation_window_days: 7`** — the days without a sweep
+   you read before the nightly run leaves an alarm on the list. Absent = 7. One line; no question.
+4. **Windows only, once, your terminal:** `git config core.longpaths true`. A cold object's name
+   carries its 64-character content address; on a deep checkout the working-tree write can cross
+   the old path limit, and `promote.py` refuses (before moving anything) until this is set.
+5. **Before the first retirement on an instance with history:** `py deploy/retire.py
+   --register-legacy` (the session may run it) freezes every existing line citation into
+   `receipts/citations/legacy-<date>.json`; commit it. A retirement that would break a citation
+   not in that registry refuses and names it — that is the design's condition 3, not a bug.
+6. **The ceremony per retirement (visible):** the session runs `py deploy/retire.py --propose
+   wiki/<view>.md --span "<heading>"` and tells you the digest; you run `py deploy/promote.py
+   <digest>` in your terminal; you read the next sweep. Under `required`: inspect `C`, `git tag -s
+   retire/<seq> C`, `py deploy/trust.py --publish retire/<seq>` — unchanged from v3.0.46.
+   Release-2 scope is targeted (one view per proposal, the views blocking verified corrections);
+   broad migration waits for Release 3.
+7. Stamp `template_release: "v3.0.50"`. Schema and example changed only for NEW instances
+   (`observation_window_days` documented); init is unchanged.
+
 ## v3.0.48 → v3.0.49 (the authority mode is your one-time choice; retirement authority is reversible-and-visible)
 
 ADR #11 condition 4 was amended through the T1 firewall on 2026-08-22 (backlog v3.0-135): how your

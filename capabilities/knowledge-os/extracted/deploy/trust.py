@@ -7,11 +7,20 @@ explicitly selected, reversible, and observable". The operator chooses the insta
 authority mode ONCE -- `project.yaml: trust_surface_signing: visible | required` -- and
 the absence of a recorded choice never selects one: a fresh instance is asked at init;
 an existing instance resolves to migration-only `warn` with RETIREMENT DISABLED until
-the choice is recorded. Under `visible` the agent prepares a retirement and one
-lightweight operator action outside the session promotes the exact proposal digest
-(the Release-2 promotion verb; not built here -- a verified operator tag still
-publishes under every mode); under `required` the presence-requiring signature below is
-the root. Design of the signing machinery (kept, optional hardening):
+the choice is recorded. Under `visible` the agent prepares a retirement (deploy/retire.py,
+Release 2 / v3.0.50) and ONE lightweight operator action outside the session --
+`deploy/promote.py <proposal-digest>` in the operator's own terminal -- names the exact
+proposal digest and constructs the PROMOTION RECORD (an annotated, unsigned tag
+retire/<seq> on the prepared commit whose message carries `proposal_digest:` and
+`mode: visible`) and fast-forwards the branch atomically; check_publishable accepts that
+record in place of the signed tag under `visible` ONLY. Under `required` the
+presence-requiring signature below is the root and the sk tag path is unchanged; a
+verified operator tag publishes under either CHOSEN mode. The promotion record is a
+procedural human boundary for the stated non-adaptive threat (a misled, wrong or
+unattended session), not cryptographic proof of human origin: every retirement and
+trust-surface change is ALSO reconstructed into a durable pending item from git objects
+(deploy/pending.py) that stays outstanding until an attended sweep shows it to the
+operator. Design of the signing machinery (kept, optional hardening):
 harness-v3.0/specs/trust-surface-integrity-mini-pass-2026-08-21.md (brief v4).
 
 WHAT THIS FILE IS, AND IS NOT. This module runs in the agent's own process and is
@@ -43,6 +52,15 @@ Primitives (brief sections 4-5):
   operator_tag(repo, tag, commit)      refs/tags/<tag> is an annotated tag OBJECT whose
                                        embedded name is <tag>, whose `object` is exactly
                                        <commit>, signed by a pinned sk key.
+  promotion_tag(repo, tag, commit)     (v3.0.50) refs/tags/<tag> is an annotated tag OBJECT
+                                       naming exactly <commit> whose message carries
+                                       `proposal_digest: sha256:<hex>` and `mode: visible`
+                                       -- the visible-mode PROMOTION RECORD deploy/
+                                       promote.py writes from the operator's terminal.
+  publication_authority(repo, tag, c)  the one seam every publisher/reader consults: a
+                                       verified operator tag (any chosen mode), or, under
+                                       `visible` only, a promotion tag; the caller then
+                                       binds the promotion's digest to the record's.
   check_publishable(repo, tag, branch) the Release-2 publisher's gate (brief section 5):
                                        tag verifies + names C; C has exactly one parent
                                        and it IS the production head (no merge ancestry,
@@ -51,7 +69,9 @@ Primitives (brief sections 4-5):
                                        proposal_digest equals the digest of the proposal
                                        artifact in the SAME tree, whose seq/tag match the
                                        tag name; the digest and seq are not already
-                                       consumed on the production branch.
+                                       consumed on the production branch; under `visible`
+                                       the promotion record's digest must equal the
+                                       record's (exact-proposal binding).
   publish_retirement(repo, tag, branch) fast-forward of the production branch to C,
                                        atomic on the expected old head, ONLY when
                                        check_publishable passes.
@@ -126,6 +146,9 @@ TRUST_SURFACE_FLOOR = (
     "deploy/compile-driver.py",
     "deploy/compile-backends.py",
     "deploy/audit-content.py",
+    "deploy/retire.py",
+    "deploy/promote.py",
+    "deploy/pending.py",
     ".claude/settings.json",
     ".claude/settings.local.json",
     ".git/hooks/**",
@@ -664,6 +687,65 @@ def operator_tag(repo, tag, commit):
             "commit": full}
 
 
+def promotion_tag(repo, tag, commit):
+    """v3.0.50 (ADR #11 condition 4 as amended, binding item 3): the visible-mode
+    PROMOTION RECORD. refs/tags/<tag> is an annotated tag object, embedded name == tag,
+    object == commit exactly, whose message carries `proposal_digest: sha256:<hex>` and
+    `mode: visible`. NOT a signature check: the record is the trace of the operator's
+    out-of-session action (deploy/promote.py); its authority is procedural and it is
+    bound to the exact proposal by the digest the CALLER compares against the record in
+    C's tree. Returns {'ok','reason','digest','tagger','tag_sha'}."""
+    try:
+        t = tag_object(repo, tag)
+    except TrustError as e:
+        return {"ok": False, "reason": str(e), "digest": None, "tagger": None, "tag_sha": None}
+    full = _rev(repo, commit)
+    if full is None:
+        return {"ok": False, "reason": "commit %s does not resolve" % commit, "digest": None,
+                "tagger": None, "tag_sha": t["sha"]}
+    if t["tag"] != tag:
+        return {"ok": False, "reason": "tag object's embedded name is %r, ref name is %r -- a "
+                "re-pointed/replayed tag ref" % (t["tag"], tag), "digest": None, "tagger": None,
+                "tag_sha": t["sha"]}
+    if t["type"] != "commit" or t["object"] != full:
+        return {"ok": False, "reason": "tag %s names %s %s, not commit %s" % (
+            tag, t["type"], (t["object"] or "?")[:12], full[:12]), "digest": None,
+            "tagger": None, "tag_sha": t["sha"]}
+    hdr, _, msg = t["payload"].decode("utf-8", "replace").partition("\n\n")
+    tagger = next((l[len("tagger "):] for l in hdr.split("\n") if l.startswith("tagger ")), None)
+    dm = re.search(r"(?m)^proposal_digest:\s*(sha256:)?([0-9a-fA-F]{64})\s*$", msg)
+    mm = re.search(r"(?m)^mode:\s*visible\s*$", msg)
+    if not dm or not mm:
+        return {"ok": False, "reason": "tag %s is not a promotion record (message must carry "
+                "`proposal_digest: sha256:<64 hex>` and `mode: visible`)" % tag,
+                "digest": None, "tagger": tagger, "tag_sha": t["sha"]}
+    return {"ok": True, "reason": "promotion record %s -> %s (digest %s.., tagger %s)" % (
+        tag, full[:12], dm.group(2)[:12], (tagger or "?").split(">")[0] + ">"),
+        "digest": dm.group(2).lower(), "tagger": tagger, "tag_sha": t["sha"], "commit": full}
+
+
+def publication_authority(repo, tag, commit, mode=None):
+    """The ONE seam (v3.0.50). A verified operator tag publishes under either CHOSEN mode;
+    under `visible` a promotion record does too. `warn`/absent never reaches here
+    (check_publishable refuses on mode_chosen first) but is refused again defensively.
+    Returns the operator_tag / promotion_tag result plus 'kind': 'signed' | 'promoted'."""
+    if mode is None:
+        mode = signing_mode(repo)[0]
+    sig = operator_tag(repo, tag, commit)
+    if sig["ok"]:
+        return dict(sig, kind="signed")
+    if mode == "visible":
+        pr = promotion_tag(repo, tag, commit)
+        if pr["ok"]:
+            return dict(pr, kind="promoted")
+        return {"ok": False, "kind": None, "commit": commit,
+                "reason": "%s; and as a visible-mode promotion record: %s" % (sig["reason"], pr["reason"])}
+    reason = sig["reason"]
+    if mode == "required":
+        reason += " (trust_surface_signing: required -- only a verified sk tag publishes)"
+    return {"ok": False, "kind": None, "commit": commit, "reason": reason}
+
+
 # ------------------------------------------------------------------ retirement publication
 _RETIRE_TAG_RE = re.compile(r"^retire/(\d+)$")
 
@@ -747,18 +829,23 @@ def check_publishable(repo, tag, branch="main"):
     try:
         t = tag_object(repo, tag)
     except TrustError as e:
-        return {"ok": False, "reason": str(e)}
+        reason = str(e)
+        if signing_mode(repo)[0] == "visible":
+            reason += (" (trust_surface_signing: visible -- nothing is promoted yet: run "
+                       "`py deploy/promote.py <proposal-digest>` from your own terminal)")
+        return {"ok": False, "reason": reason}
     c = t["object"]
     head = _rev(repo, "refs/heads/%s" % branch)
     if head is None:
         return {"ok": False, "reason": "production branch %s does not resolve" % branch}
-    sig = operator_tag(repo, tag, c)
+    mode = signing_mode(repo)[0]
+    sig = publication_authority(repo, tag, c, mode)
     if not sig["ok"]:
         reason = sig["reason"]
-        if signing_mode(repo)[0] == "visible":
+        if mode == "visible":
             reason += (" (trust_surface_signing: visible -- publication is the exact-digest "
-                       "operator promotion, Release 2, not yet built; until then only a "
-                       "verified operator tag publishes)")
+                       "operator promotion: `py deploy/promote.py <proposal-digest>` from your "
+                       "own terminal, or a verified operator tag)")
         return {"ok": False, "reason": reason, "commit": c, "head": head}
     parents = _parents(repo, c) or []
     if len(parents) != 1:
@@ -814,6 +901,11 @@ def check_publishable(repo, tag, branch="main"):
                 "digest of %s in C's tree (record %s.., tree %s..)" % (
                     prop, _digest_hex(rec.get("proposal_digest"))[:12], digest[:12]),
                 "commit": c, "head": head}
+    if sig["kind"] == "promoted" and sig["digest"] != digest:
+        return {"ok": False, "reason": "promotion record %s names proposal digest %s.. but C's "
+                "record/proposal digest is %s.. -- the promotion is bound to a DIFFERENT proposal "
+                "(exact-proposal binding)" % (tag, sig["digest"][:12], digest[:12]),
+                "commit": c, "head": head}
     for p, sha, r in _retire_records_history(repo, head):  # history, not the tip tree
         if _digest_hex(r.get("proposal_digest")) == digest:
             return {"ok": False, "reason": "proposal digest already CONSUMED on %s by %s (introduced "
@@ -822,9 +914,11 @@ def check_publishable(repo, tag, branch="main"):
         if r.get("seq") == seq:
             return {"ok": False, "reason": "retire seq %d already introduced on %s (%s at %s)" % (
                 seq, branch, p, sha[:12]), "commit": c, "head": head}
-    return {"ok": True, "reason": "publishable: tag %s verified by %s, C %s single commit atop "
-            "%s, record %s digest-matched" % (tag, sig["principal"], c[:12], head[:12], rec_path),
-            "commit": c, "head": head, "record": rec_path}
+    who = ("verified by %s" % sig["principal"]) if sig["kind"] == "signed" else (
+        "promoted (visible-mode record by %s)" % ((sig.get("tagger") or "?").split(">")[0] + ">"))
+    return {"ok": True, "reason": "publishable: tag %s %s, C %s single commit atop "
+            "%s, record %s digest-matched" % (tag, who, c[:12], head[:12], rec_path),
+            "commit": c, "head": head, "record": rec_path, "kind": sig["kind"]}
 
 
 def publish_retirement(repo, tag, branch="main"):
@@ -850,6 +944,9 @@ def retire_records_status(repo, rev="HEAD"):
     to C's; C must be a single-parent commit that introduced exactly this one record;
     and no ancestry-earlier record may have consumed the digest or seq."""
     out = []
+    mode = signing_mode(repo)[0]
+    if not mode_chosen(repo):
+        mode = "warn"  # never `visible` by accident: a promotion record needs a CHOSEN mode
     all_recs = _retire_records_in_tree(repo, rev)
     rc, fp = _git_text(repo, "rev-list", "--first-parent", rev)
     first_parent = fp.split()
@@ -875,9 +972,15 @@ def retire_records_status(repo, rev="HEAD"):
                              "merged in, not published by fast-forward (a stale C brought in by "
                              "a merge looks exactly like this)" % ((c or "?")[:12], rev))
             continue
-        v = operator_tag(repo, tag, c)
+        v = publication_authority(repo, tag, c, mode)
         if not v["ok"]:
             row["reason"] = v["reason"]
+            continue
+        row["kind"] = v["kind"]
+        if v["kind"] == "promoted" and v["digest"] != _digest_hex(rec.get("proposal_digest")):
+            row["reason"] = ("promotion record names digest %s.. but the record carries %s.. -- "
+                             "bound to a different proposal" % (v["digest"][:12],
+                                                                _digest_hex(rec.get("proposal_digest"))[:12]))
             continue
         if len(_parents(repo, c) or []) != 1:
             row["reason"] = "tagged commit %s is not a single-parent commit" % c[:12]
@@ -1504,13 +1607,74 @@ def self_test():
             git(r2, "tag", "-a", "-m", "unsigned", "retire/1", c1)
             chk = check_publishable(r2, "retire/1", "main")
             case("[mech] under visible an UNSIGNED tag still does not publish; the refusal "
-                 "names the Release-2 promotion verb", not chk["ok"]
-                 and "exact-digest" in chk["reason"], chk["reason"])
+                 "names the promote action", not chk["ok"]
+                 and "exact-digest" in chk["reason"] and "promote.py" in chk["reason"], chk["reason"])
+            # ---- v3.0.50: the visible-mode PROMOTION RECORD (ADR #11 cond. 4 as amended, item 3)
+            promo_msg = "promotion\nproposal_digest: sha256:%s\nmode: visible\n" % dig
+            git(r2, "tag", "-d", "retire/1")
+            git(r2, "tag", "-a", "-m", promo_msg, "retire/1", c1)
+            pr = promotion_tag(r2, "retire/1", c1)
+            case("[mech] promotion_tag: annotated unsigned tag carrying the digest + mode reads as "
+                 "a promotion record (digest parsed)", pr["ok"] and pr["digest"] == dig, pr["reason"])
+            chk = check_publishable(r2, "retire/1", "main")
+            case("[mech] under visible the promotion record PUBLISHES (no signature; exact digest)",
+                 chk["ok"] and chk.get("kind") == "promoted" and "promoted" in chk["reason"],
+                 chk["reason"])
+            rr = retire_records_status(r2, c1)
+            case("[mech] the reader agrees: the promoted record reads PUBLISHED (kind promoted)",
+                 len(rr) == 1 and rr[0]["published"] and rr[0].get("kind") == "promoted", str(rr))
+            write(r2, "project.yaml", "trust_surface_signing: required\n")
+            chk = check_publishable(r2, "retire/1", "main")
+            case("[mech] under required the SAME promotion record is refused (sk tag path "
+                 "unchanged)", not chk["ok"] and "required" in chk["reason"], chk["reason"])
+            rr = retire_records_status(r2, c1)
+            case("[mech] ...and the reader under required reads it UNPUBLISHED",
+                 len(rr) == 1 and not rr[0]["published"], str(rr))
+            write(r2, "project.yaml", "trust_surface_signing: warn\n")
+            chk = check_publishable(r2, "retire/1", "main")
+            rr = retire_records_status(r2, c1)
+            case("[mech] under migration-only warn a promotion record publishes nothing "
+                 "(publisher refuses on the unchosen mode; reader reads UNPUBLISHED)",
+                 not chk["ok"] and "retirement disabled" in chk["reason"]
+                 and not rr[0]["published"], chk["reason"])
+            os.remove(os.path.join(r2, "project.yaml"))
+            rr = retire_records_status(r2, c1)
+            case("[mech] with NO project.yaml the promotion record is not authority either",
+                 not rr[0]["published"], str(rr))
+            write(r2, "project.yaml", "trust_surface_signing: visible\n")
+            git(r2, "tag", "-d", "retire/1")
+            other = hashlib.sha256(b"some other proposal\n").hexdigest()
+            git(r2, "tag", "-a", "-m", "promotion\nproposal_digest: sha256:%s\nmode: visible\n"
+                % other, "retire/1", c1)
+            chk = check_publishable(r2, "retire/1", "main")
+            case("[mech] a promotion record naming a DIFFERENT digest is refused (exact-proposal "
+                 "binding -- a chat 'yes' or a wrong/stale digest binds nothing)",
+                 not chk["ok"] and "DIFFERENT proposal" in chk["reason"], chk["reason"])
+            rr = retire_records_status(r2, c1)
+            case("[mech] ...and the reader reads it UNPUBLISHED naming the mismatch",
+                 not rr[0]["published"] and "different proposal" in rr[0]["reason"], str(rr))
+            git(r2, "tag", "-d", "retire/1")
+            git(r2, "tag", "-a", "-m", "promotion\nproposal_digest: sha256:%s\n" % dig,
+                "retire/1", c1)
+            chk = check_publishable(r2, "retire/1", "main")
+            case("[mech] a tag with the digest but WITHOUT `mode: visible` is not a promotion "
+                 "record", not chk["ok"] and "not a promotion record" in chk["reason"], chk["reason"])
+            git(r2, "tag", "-d", "retire/1")
+            git(r2, "tag", "-a", "-m", "promotion\nproposal_digest: sha256:%s\nmode: visible\n"
+                % dig, "retire/1", prod)
+            pr = promotion_tag(r2, "retire/1", c1)
+            case("[mech] a promotion record on a different commit than C is refused",
+                 not pr["ok"] and "not commit" in pr["reason"], pr["reason"])
+            git(r2, "tag", "-d", "retire/1")
+            git(r2, "tag", "retire/1", c1)  # lightweight with no message at all
+            pr = promotion_tag(r2, "retire/1", c1)
+            case("[mech] a lightweight tag is never a promotion record", not pr["ok"], pr["reason"])
             git(r2, "tag", "-d", "retire/1")
             p = git(r2, "tag", "-s", "-m", "retire 1", "retire/1", c1, key="opB")
             chk = check_publishable(r2, "retire/1", "main")
             case("[mech] under visible a VERIFIED operator tag publishes (stronger than the "
-                 "mode requires)", p.returncode == 0 and chk["ok"], chk["reason"])
+                 "mode requires; kind signed)", p.returncode == 0 and chk["ok"]
+                 and chk.get("kind") == "signed", chk["reason"])
             write(r2, "project.yaml", "trust_surface_signing: required\n")
             chk = check_publishable(r2, "retire/1", "main")
             case("[mech] check_publishable: the honest fixture passes", chk["ok"], chk["reason"])

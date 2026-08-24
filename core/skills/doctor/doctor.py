@@ -68,9 +68,16 @@ Checks (harness-v3.0/specs/template-self-truth-and-onboarding-brief-2026-07-10.m
                       retirement is disabled until the operator chooses), (c) the untracked
                       hook-lane members wire the perimeter (checks 7 + 15), (d) every key in
                       allowed_signers is presence-requiring (sk), (e) no retire record
-                      without a verified operator tag. Stated in the check's own text: it
-                      runs in-process and is in the class -- a tampered doctor can lie; the
-                      root of trust is the operator's signature, never this check.
+                      without publication authority (a verified operator tag, or under
+                      `visible` the operator's promotion record -- v3.0.50), (f) pending:
+                      the durable pending list reconstructs from git objects with no
+                      ledger finding (deploy/pending.py, v3.0.50 / ADR #11 condition 4 as
+                      amended), (g) ack: no forged or misdated acknowledgement, (h) alarm:
+                      the observation window has not been missed and no failed cycle or
+                      alarm is outstanding (WARN -- the next attended sweep clears it).
+                      Stated in the check's own text: it runs in-process and is in the
+                      class -- a tampered doctor can lie; the root of trust is the
+                      operator's action outside the session, never this check.
   14. corpus-reachability  (v3.0.18, backlog v3.0-88) every execution corpus declared in
                       project.yaml -- the corpus_sources list, or the legacy singular
                       corpus_source + corpus_config -- is present and readable at its
@@ -535,6 +542,9 @@ TRUST_SURFACE_FLOOR = (
     "deploy/compile-driver.py",
     "deploy/compile-backends.py",
     "deploy/audit-content.py",
+    "deploy/retire.py",
+    "deploy/promote.py",
+    "deploy/pending.py",
     ".claude/settings.json",
     ".claude/settings.local.json",
     ".git/hooks/**",
@@ -611,7 +621,16 @@ def check_trust_surfaces(ctx):
                          else FAIL "non-presence key listed"; absent pin -> WARN
                          (bootstrap ceremony pending);
       (e) retirements    any `retire` journal record whose commit carries no verified
-                         operator tag -> FAIL "unpublished retirement present"."""
+                         operator tag -> FAIL "unpublished retirement present";
+      (f) pending        (v3.0.50) deploy/pending.py reconstructs the pending list from
+                         git objects; a ledger finding (forged/misdated ack, malformed
+                         row) -> FAIL; else PASS with the count;
+      (g) ack            the ack ledger is consistent (every ack names an item in
+                         history, dated after it) -> PASS, else FAIL;
+      (h) alarm          observation window not missed, no failed cycle, no alarm
+                         outstanding -> PASS; else WARN naming what the next attended
+                         sweep clears. WARN "unavailable" without deploy/pending.py;
+                         FAIL "tampered" when it is not HEAD-identical."""
     root = Path(ctx["root"])
     fam = "trust-surfaces"
     if not (root / ".git").is_dir():
@@ -797,13 +816,91 @@ def check_trust_surfaces(ctx):
                                   "commit carries no verified operator tag is a proposal, not "
                                   "a retirement -- if you did not sign it, an agent journaled it "
                                   "by an alternate write path. FIX: inspect with `git show`; "
-                                  "either sign the tag (`git tag -s retire/<seq> <C>`) or revert "
-                                  "the record." % "; ".join("%s seq %s (%s)" % (
+                                  "either promote it from your own terminal (`py deploy/promote.py "
+                                  "<digest>` under visible; `git tag -s retire/<seq> <C>` under "
+                                  "required) or revert the record." % "; ".join("%s seq %s (%s)" % (
                                       r["path"], r.get("seq"), r.get("reason")) for r in unpub)))
             else:
                 out.append(Result("PASS", fam + ":retirements",
                                   "%d retire record(s), all carry a verified operator tag"
                                   % len(rep.get("retire_records", []))))
+
+    # (f)/(g)/(h) the durable pending list, its acks, the observation alarm (v3.0.50)
+    pending_py = root / "deploy" / "pending.py"
+    pending_dirty = any(d.startswith("deploy/pending.py ") for d in dirty)
+    if pending_py.is_file() and pending_dirty:
+        out.append(Result("FAIL", fam + ":pending",
+                          "sensor tampered: deploy/pending.py differs from HEAD, so the pending "
+                          "list is UNKNOWABLE from inside this repo. FIX: restore it (`git "
+                          "checkout -- deploy/pending.py`) and re-run; treat the session that "
+                          "patched it as the finding."))
+    elif not pending_py.is_file():
+        out.append(Result("WARN", fam + ":pending",
+                          "deploy/pending.py absent -- the durable pending list and the "
+                          "missed-sweep alarm are unavailable (pre-v3.0.50 deploy/). FIX: adopt "
+                          "v3.0.50 (MIGRATION v3.0.49 -> v3.0.50)."))
+    else:
+        rc, ptext = _run([ctx["python"], str(pending_py), "--root", str(root), "--json"],
+                         timeout=180, cwd=str(root))
+        try:
+            pst = json.loads(ptext[ptext.index("{"):ptext.rindex("}") + 1])
+        except (ValueError, TypeError):
+            pst = None
+        if not isinstance(pst, dict):
+            out.append(Result("FAIL", fam + ":pending",
+                              "deploy/pending.py produced no report (rc %s): %s FIX: run it by "
+                              "hand; a crashing sensor is itself a finding." % (rc, _tail(ptext))))
+        else:
+            pend = pst.get("pending") or []
+            finds = pst.get("findings") or []
+            ack_finds = [f for f in finds if "ack" in f.lower()]
+            other_finds = [f for f in finds if f not in ack_finds]
+            if other_finds:
+                out.append(Result("FAIL", fam + ":pending",
+                                  "pending-list ledger finding: %s. FIX: inspect receipts/pending/ "
+                                  "-- a malformed or rewritten row; the list itself is rebuilt from "
+                                  "git history every run, so nothing is lost." % "; ".join(other_finds[:4])))
+            else:
+                kinds = {}
+                for it in pend:
+                    kinds[it.get("kind")] = kinds.get(it.get("kind"), 0) + 1
+                out.append(Result("PASS", fam + ":pending",
+                                  "%d item(s) pending operator review (%s) -- reconstructed from "
+                                  "git objects; the next attended sweep shows them and reading it "
+                                  "acknowledges." % (len(pend), ", ".join("%s %d" % kv for kv in
+                                                                           sorted(kinds.items())) or "none")))
+            if ack_finds:
+                out.append(Result("FAIL", fam + ":ack",
+                                  "acknowledgement ledger inconsistent: %s. An ack that names no "
+                                  "item in history, or predates its item, was not written by a sweep "
+                                  "that showed it. FIX: delete the row (receipts/pending/acks.jsonl) "
+                                  "-- the item reopens, which is the safe direction; treat the "
+                                  "session as the finding." % "; ".join(ack_finds[:4])))
+            else:
+                out.append(Result("PASS", fam + ":ack",
+                                  "%d item(s) acknowledged by attended sweeps; every ack names an "
+                                  "item in history, dated after it" % len(pst.get("acked") or [])))
+            obs = pst.get("observation") or {}
+            problems = []
+            if obs.get("missed"):
+                problems.append("observation window MISSED (window %s day(s); last attended "
+                                "sweep that closed ok: %s; %s pending)" % (
+                                    obs.get("window_days"), obs.get("last_attended_ok") or "never",
+                                    len(pend)))
+            if obs.get("failed_cycles"):
+                problems.append("%d failed sweep cycle(s) since the last attended ok" % len(obs["failed_cycles"]))
+            if obs.get("alarms_outstanding"):
+                problems.append("%d alarm(s) outstanding" % len(obs["alarms_outstanding"]))
+            if problems:
+                out.append(Result("WARN", fam + ":alarm",
+                                  "%s. Changes may be sitting unread. FIX: run /sweep yourself and "
+                                  "read it -- an attended sweep acknowledges the items and clears "
+                                  "the alarm; if the nightly run is failing, that is the finding."
+                                  % "; ".join(problems)))
+            else:
+                out.append(Result("PASS", fam + ":alarm",
+                                  "observation within window (%s day(s); last attended sweep ok: %s)"
+                                  % (obs.get("window_days"), obs.get("last_attended_ok") or "none yet, nothing pending")))
 
     # (c) wiring of the untracked members
     hw = check_hooks_wired(ctx)
@@ -2028,6 +2125,69 @@ def self_test():
                   and by["trust-surfaces:signatures"].status == "FAIL"
                   and "verifier tampered" in by["trust-surfaces:signatures"].detail
                   and by["trust-surfaces:retirements"].status == "FAIL")
+            check("trust-surfaces(f): no deploy/pending.py -> WARN unavailable (pre-v3.0.50)",
+                  by["trust-surfaces:pending"].status == "WARN"
+                  and "unavailable" in by["trust-surfaces:pending"].detail)
+            (root / "deploy" / "trust.py").write_text(stub, encoding="utf-8")
+            # (f)/(g)/(h) through a stub pending.py that emits a fixed report
+            pstub = ("import json,os\nm=open(os.path.join(os.path.dirname(__file__),"
+                     "'pend.json')).read()\nprint(m)\n")
+            (root / "deploy" / "pending.py").write_text(pstub, encoding="utf-8")
+            (root / "deploy" / "pend.json").write_text(json.dumps({
+                "pending": [{"id": "trust:abc", "kind": "trust-surface"},
+                            {"id": "retire:def", "kind": "retirement"}],
+                "acked": [{"item": "trust:old"}], "findings": [],
+                "observation": {"window_days": 7, "missed": False, "failed_cycles": [],
+                                "alarms_outstanding": [], "last_attended_ok": "2026-08-23T00:00:00Z"}}),
+                encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "ship a pending sensor")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(f): 2 pending items, no finding -> PASS naming the count + kinds",
+                  by["trust-surfaces:pending"].status == "PASS"
+                  and "2 item(s) pending" in by["trust-surfaces:pending"].detail
+                  and "retirement 1" in by["trust-surfaces:pending"].detail)
+            check("trust-surfaces(g): consistent acks -> PASS",
+                  by["trust-surfaces:ack"].status == "PASS" and "1 item(s) acknowledged" in by["trust-surfaces:ack"].detail)
+            check("trust-surfaces(h): within window -> PASS",
+                  by["trust-surfaces:alarm"].status == "PASS")
+            (root / "deploy" / "pend.json").write_text(json.dumps({
+                "pending": [{"id": "trust:abc", "kind": "trust-surface"}], "acked": [],
+                "findings": ["ack for an item that is not in history: trust:fff (run run-x at 2026-08-23T00:00:00Z)"],
+                "observation": {"window_days": 3, "missed": True, "failed_cycles": [{"run_id": "r1"}],
+                                "alarms_outstanding": [{"id": "alarm:x:missed-cycle"}], "last_attended_ok": None}}),
+                encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(g): a forged ack -> FAIL 'acknowledgement ledger inconsistent'",
+                  by["trust-surfaces:ack"].status == "FAIL"
+                  and "inconsistent" in by["trust-surfaces:ack"].detail)
+            check("trust-surfaces(h): missed window + failed cycle + outstanding alarm -> WARN naming all three",
+                  by["trust-surfaces:alarm"].status == "WARN"
+                  and "MISSED" in by["trust-surfaces:alarm"].detail
+                  and "failed sweep cycle" in by["trust-surfaces:alarm"].detail
+                  and "alarm(s) outstanding" in by["trust-surfaces:alarm"].detail)
+            (root / "deploy" / "pend.json").write_text(json.dumps({
+                "pending": [], "acked": [], "findings": ["receipts/pending/sweeps.jsonl line 3 is not JSON ({not)"],
+                "observation": {"window_days": 7, "missed": False, "failed_cycles": [], "alarms_outstanding": []}}),
+                encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(f): a malformed ledger row -> FAIL 'ledger finding'",
+                  by["trust-surfaces:pending"].status == "FAIL"
+                  and "ledger finding" in by["trust-surfaces:pending"].detail)
+            (root / "deploy" / "pending.py").write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "crashing pending sensor")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(f): a crashing pending.py -> FAIL (never a silent pass)",
+                  by["trust-surfaces:pending"].status == "FAIL" and "no report" in by["trust-surfaces:pending"].detail)
+            (root / "deploy" / "pending.py").write_text(pstub + "# patched\n", encoding="utf-8")
+            by = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(f): a working-tree patch to deploy/pending.py -> (a) names it AND (f) "
+                  "FAIL 'sensor tampered' instead of consulting it",
+                  by["trust-surfaces:head-identity"].status == "FAIL"
+                  and "deploy/pending.py" in by["trust-surfaces:head-identity"].detail
+                  and by["trust-surfaces:pending"].status == "FAIL"
+                  and "sensor tampered" in by["trust-surfaces:pending"].detail)
             git("checkout", "--", "deploy/trust.py")
             # (c) PASS when both underlying checks pass
             claude = root / ".claude"

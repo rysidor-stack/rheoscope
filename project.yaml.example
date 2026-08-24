@@ -19,6 +19,11 @@ project_slug: "example-project"
 #             security-key touch (MIGRATION v3.0.45 -> v3.0.46 ceremony first).
 # Absent: consumers run in migration-only `warn` and retirement stays DISABLED until you choose.
 # trust_surface_signing: visible
+# Observation window (v3.0.50, ADR #11 condition 4 as amended): every retirement and every
+# perimeter change is reconstructed into a pending list that stays outstanding until a sweep
+# YOU read shows it. If no attended sweep closes within this many days, the nightly standing
+# run writes a durable alarm that the next sweep shows. Default 7 when absent.
+# observation_window_days: 7
 project_description: "One sentence describing what this project is."
 
 # ---- Capabilities (Decision V2-4: inclusion is the toggle) ----

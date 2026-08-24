@@ -85,9 +85,20 @@ properties you should know when adopting a release:
    per trust-surface edit (software keys do not count: they are ignored by every verifier and
    `/doctor` fails the pin if one is listed). A project that never recorded a choice runs in
    migration-only `warn` with content retirement disabled, and `/doctor` says so.
-3. **`/doctor` check 16 and `/sweep` step 17 show you every trust-surface change within one
-   sweep** — last commit, author, signature, and whether the working tree still matches
-   HEAD. A row you do not recognize is the finding.
+3. **`/doctor` check 16 and `/sweep` step 17 show you every trust-surface change and every
+   content retirement until you have read it** (v3.0.50): the sweep's pending list is rebuilt
+   from git history every run — commit, author, what changed, and for a retirement the span,
+   bytes and destination — and an item stays on it until a sweep you actually read shows it
+   (the scheduled nightly sweep renders it but cannot tick it off). If no sweep you read closes
+   within the observation window (`project.yaml: observation_window_days`, default 7), the
+   nightly run leaves an alarm on the list. A row you do not recognize is the finding.
+4. **Publishing a content retirement is one command from your own terminal** (v3.0.50, under
+   `visible`): a session prepares the retirement and prints a digest; you run
+   `py deploy/promote.py <digest>`. It shows you the view, the spans and the bytes moving, and
+   publishes only if the exact proposal still matches. It refuses to run inside a session, and
+   a chat "yes" publishes nothing. Under `required` your signed tag is the publish step, as
+   before. `deploy/retire.py`, `promote.py` and `pending.py` are trust surfaces like
+   `trust.py`: you copy them in a migration, a session never edits them.
 
 The hardware-key setup (choose the key, set the repo-local signing config, commit the pin with
 one touch, set `required`) is MIGRATION v3.0.45 → v3.0.46, marked **[your call]** — optional

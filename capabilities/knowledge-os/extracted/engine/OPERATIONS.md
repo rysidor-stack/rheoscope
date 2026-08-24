@@ -100,11 +100,12 @@ condition 4 as amended 2026-08-22): `visible` accepts the unsigned artifact sile
 still runs); `warn` accepts it and prints `WARNING (trust-surface)` lines (migration-only
 compatibility for instances born before v3.0.49); `required` refuses. ABSENT is never a choice:
 consumers run as `warn` and `trust.py --check-publish` refuses every retirement until the key is
-recorded. Release 2's `--retire` never writes the production branch at all (it prepares an
-immutable commit `C` on a work ref); publication is a fast-forward permitted under `required`
-only by an operator-signed tag naming `C` exactly, and under `visible` by one exact-digest
-promote action the operator takes outside the session (the Release-2 promotion verb; until it
-exists only a verified tag publishes). Stated plainly: `trust.py` runs in the agent's process and
+recorded. Release 2's verb (`deploy/retire.py`, v3.0.50 — § 9 below) never writes the production
+branch at all (it prepares an immutable commit `C` on `refs/retire/<seq>`); publication is a
+fast-forward permitted under `required` only by an operator-signed tag naming `C` exactly, and
+under `visible` by one exact-digest promote action the operator takes outside the session
+(`deploy/promote.py <digest>`, which writes the promotion record `trust.py` accepts in place of
+the signed tag). Stated plainly: `trust.py` runs in the agent's process and
 is itself a trust surface; a tampered copy can lie — under `required` the root is the operator's
 physical key; under `visible` the root is reversibility (conditions 1/2/5) plus visibility
 (every change surfaced until acknowledged), not this code. `/doctor` check 16 and sweep step 17 surface every
@@ -291,6 +292,51 @@ PENDING/UNROUTED to CONSUMED; zero collateral change to any other event's class;
 `new_holes: []`. The census additionally projects the compile-v2 run journal (not just legacy
 receipt prose), gated by a chain-integrity check (`compile-core.check_chain`) before it trusts
 the journal at all — a tampered or broken journal is refused, never silently trusted.
+
+### 9. Retirement — forget-down (ADR #11 Release 2, v3.0.50)
+
+The hot tier is bounded by RETIREMENT, not by split (split conserves mass; backlog v3.0-129).
+`deploy/retire.py --propose wiki/<view>.md --span "<heading>" [--span …] [--preamble]
+[--mode cold|dedup --mapping m.json]` retires one or more spans of ONE view: the span moves to
+immutable storage (cold-relocate: `wiki/cold/<view>/<section>--<sha256-of-span>.md`, the
+COMPLETE original span bytes, content-addressed, byte-compared on reuse; ledger-dedup: every
+substantive line must map to an exact line of an immutable `raw/` event at the branch tip, and
+any unmapped line downgrades the span to cold-relocate — never dropped) and a STUB keeps the
+heading line, every descendant heading, every explicit anchor (an inline anchor is extracted
+onto its own line and recorded) and one pointer line, so check-split's anchor multiset is
+conserved by construction. A redirect entry (seq, pre/post generation hash, span, stub, line
+shift, target) is appended to the engine-owned block inside the derivation region
+(`# --- retirements` … `# --- /retirements`, comment-prefixed JSON rows); `validate_absorb_output`
+refuses any absorb that edits, drops or mints that block; when the block exceeds
+`engine-caps.yaml: retirements_block_max_entries|bytes` the whole chain compacts into a
+content-addressed cold index and the block keeps one pointer row. Citations heal through the
+chain: a generation-tagged citation (`view.md:80@<hash8>`) names the generation it was written
+against; a legacy (untagged) citation must be in the frozen registry
+(`retire.py --register-legacy` → `receipts/citations/legacy-<date>.json`, built from the
+read-only manifest's seed) or the retirement REFUSES naming it; the citation universe is every
+registered artifact plus the wiki tree, and an unestablishable universe refuses too.
+`retire.py --resolve "view.md:80[@hash8]" [--from artifact]` walks the chain.
+
+What `--propose` writes: NOTHING in the working tree or on the branch. With a temporary index
+it builds one commit `C` atop the branch head carrying the rewritten view, the cold object(s),
+the proposal artifact (`deploy/rulings/retire-<seq>/proposal.md`: the complete preimage
+displayed verbatim, the stub, the redirect entries, the whole-view diff, every hash) and the
+journal record `receipts/journal/<seq>.json` (`run_type: retire`, chained onto the tip's last
+record, carrying the proposal digest, pre/post view and generation hashes, span and cold
+identities), and creates `refs/retire/<seq>` as the LAST write — a prepared retirement is
+complete-or-absent. It prints the seq, `C`, and the proposal digest, and stops. Publication is
+the operator's: under `visible`, `py deploy/promote.py <digest>` from their terminal (§ 5);
+under `required`, their signed tag. `retire.py --recover` is the deterministic crash recovery:
+every `refs/retire/*` is re-derived from objects and KEPT (consistent, current — awaiting
+promotion), PRUNED (already on the branch) or DISCARDED (stale — the branch moved — or
+inconsistent); nothing in between exists. `retire.py --list` shows what is prepared.
+
+Scope in Release 2 (ADR #11 condition 10, brief §5 build-C2): TARGETED retirements — the views
+blocking verified corrections, one view per proposal, largest spans first per the manifest
+(`retire-manifest.py`, Release 1). Broad migration waits for Release 3's brake (lineage-stable
+cap debt): a retired view can otherwise regrow. A retire record advances no absorption baseline
+and adjudicates no verdict (`staleness.py` ignores it; `compile-driver` readers filter on
+`run_type: compile`).
 
 ### Stage-only commit, worktree-per-shard discipline
 

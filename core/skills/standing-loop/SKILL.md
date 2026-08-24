@@ -105,7 +105,17 @@ need not read this):
 
 ## The run, in order
 
-1. Run `/sweep` (read-only) to produce `SWEEP-BRIEFING.md`.
+1. Run `/sweep` (read-only) to produce `SWEEP-BRIEFING.md`. The wrapper sets
+   `RHEOSCOPE_UNATTENDED=1`, so the sweep's step 17 renders the pending list and writes its
+   heartbeat rows but never acknowledges — items stay outstanding until a sweep the operator
+   reads. Then, as the **independent observer** the amended ADR #11 condition 4 names
+   (v3.0.50, backlog v3.0-139(c)): `python deploy/pending.py --root . --observe --observer
+   standing-loop`. If no attended sweep has closed ok within `project.yaml`'s
+   `observation_window_days` (default 7), or a sweep cycle opened and never closed / closed
+   `failed`, this writes a durable alarm row (`receipts/pending/alarms.jsonl`) that the next
+   sweep shows as an outstanding item and `/doctor` check 16 WARNs on. It costs the operator
+   nothing: the alarm clears when they read a sweep. Commit the receipt rows with the
+   briefing (receipt class, not project content — the sweep skill's one documented write).
 2. **Parked-handoff retry (v3.0-78):** scan the handoff envelope for current-protocol
    folders at `status: answered, close: pending` (a T1 headless close leg died) or
    `status: open` with a `packet-round-N.md` but no `output-round-N.md` (an answer leg

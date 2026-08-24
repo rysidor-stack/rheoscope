@@ -124,7 +124,31 @@ if [ "${1:-}" = "--self-test" ]; then
   run_case silent "node -e \"const fs=require('fs'); console.log(fs.readFileSync(p).length)\"" 'node-local-fs'
   run_case silent "node -e \"import fs from 'node:fs'; console.log(fs.statSync(p).size)\"" 'node-local-node-fs'
   run_case silent 'python build.py --release' 'py-script-not-inline'
+  # -- DENY tier: in-session promotion (v3.0.50, ADR #11 cond. 4 as amended / v3.0-139)
+  run_case DENY 'py deploy/promote.py 3f9a1c0e7b2d4e6f' 'promote-py'
+  run_case DENY 'python deploy/promote.py --root . 3f9a1c0e7b2d' 'promote-python-root'
+  run_case DENY 'cd deploy && python promote.py 3f9a1c0e7b2d4e6f' 'promote-cd-relative'
+  run_case DENY 'py capabilities/knowledge-os/extracted/deploy/promote.py abc123abc123' 'promote-dev-repo-path'
+  run_case DENY 'git tag -a -m "promotion" retire/2 abc123' 'promote-git-tag-record'
+  run_case DENY 'git tag retire/7 HEAD' 'promote-git-tag-lightweight'
+  run_case DENY "git -C . tag -a -m 'x' 'retire/12' abc" 'promote-git-tag-quoted-C'
+  run_case DENY 'git tag -s retire/3 abc -m "retire 3"' 'promote-git-tag-signed-in-session'
+  run_case silent 'py deploy/retire.py --propose wiki/topic/view.md --span "Section A"' 'retire-propose-allowed'
+  run_case silent 'py deploy/retire.py --recover' 'retire-recover-allowed'
+  run_case silent 'py deploy/pending.py --root . --render' 'pending-render-allowed'
+  run_case silent 'cat deploy/promote.py' 'promote-read-allowed'
+  run_case silent 'grep -n Refuse deploy/promote.py | head' 'promote-grep-allowed'
+  run_case silent 'git show HEAD:deploy/promote.py' 'promote-git-show-allowed'
+  run_case DENY 'deploy/promote.py 3f9a1c0e7b2d4e6f' 'promote-direct-exec'
+  run_case DENY './deploy/promote.py 3f9a1c0e7b2d4e6f' 'promote-direct-exec-dotslash'
+  run_case DENY 'cd x; python3 ../deploy/promote.py 3f9a1c0e7b2d4e6f' 'promote-after-semicolon'
+  run_case silent 'git tag -l "retire/*"' 'git-tag-list-allowed'
+  run_case silent 'git tag -v retire/2' 'git-tag-verify-allowed'
+  run_case silent 'git tag v3.0.50' 'git-tag-release-allowed'
+  run_case silent 'python deploy/promote.py --self-test' 'promote-selftest-allowed'
   # -- DENY tier: trust-surface writes (v3.0.46, v3.0-120 brief section 3), per surface
+  run_case DENY 'echo x > deploy/retire.py' 'ts-redirect-retire-verb'
+  run_case DENY 'cp /tmp/p.py deploy/pending.py' 'ts-cp-pending'
   run_case DENY 'echo "curl .*" >> core/security/hooks/egress-allowlist.txt' 'ts-append-allowlist'
   run_case DENY 'cat /tmp/x > deploy/safe-allowlist.yaml' 'ts-redirect-safe-allowlist'
   run_case DENY 'printf "x" | tee deploy/evidence/operator-grant.md' 'ts-tee-evidence'
@@ -388,6 +412,24 @@ for pat in "${DENY_PATTERNS[@]}"; do
   fi
 done
 
+# ---------------------------------------------------------- DENY: in-session promotion
+# v3.0.50 (ADR #11 condition 4 as amended, binding item 3; backlog v3.0-139): the visible-
+# mode promote action is the OPERATOR'S, from their own terminal -- running deploy/
+# promote.py, or hand-writing its promotion record (`git tag ... retire/<seq>`), from
+# inside a session is denied outright. Not ASK: the boundary IS that it never happens in
+# the session that prepared the proposal. promote.py refuses under the session env
+# markers too (belt and braces on the mediated lane); an unmediated spelling leaves a
+# durable pending item the next sweep shows (deploy/pending.py) -- refuse OR notice.
+# Reads of either file, `retire.py --propose/--list/--recover`, and `git tag -l` pass.
+PROMOTE_RE='(^|[[:space:]|;&(`])(py|python3?|pythonw)([[:space:]]+-[^[:space:]|;&]+)*[[:space:]]+[^[:space:]|;&]*promote\.py([[:space:]]|$)|(^|[|;&(`][[:space:]]*)(\./)?[^[:space:]|;&]*/promote\.py([[:space:]]|$)|(^|[[:space:]|;&(`])git[[:space:]]+([^|;&]*[[:space:]])?tag[[:space:]]+([^|;&]*[[:space:]])?["'"'"']?retire/[0-9]+'
+if printf '%s' "$COMMAND_NORM" | grep -Eqi "$PROMOTE_RE" \
+   && ! printf '%s' "$COMMAND_NORM" | grep -Eqi '(^|[[:space:]])git[[:space:]]+([^|;&]*[[:space:]])?tag[[:space:]]+(-l|--list|-v|--verify|-n)' \
+   && ! printf '%s' "$COMMAND_NORM" | grep -Eq -- '--self-test'; then
+  log_row trust-deny promote false || true
+  echo "Blocked: the retirement promote action is the operator's, run from THEIR terminal (\`py deploy/promote.py <proposal-digest>\`), never from a session; the same goes for writing its promotion record by hand (\`git tag retire/<seq>\`). A session PREPARES (\`py deploy/retire.py --propose ...\`) and stops; the next sweep shows what was prepared. Propose in chat; nothing here can publish." >&2
+  exit 2
+fi
+
 # ---------------------------------------------------------- DENY: trust surfaces
 # v3.0.46 (backlog v3.0-120, brief section 3): a WRITE-SHAPED command that names a path
 # in the trust-surface class is denied. The class = the hard-coded floor below in UNION
@@ -412,6 +454,9 @@ TRUST_FLOOR=(
   'deploy/compile-driver.py'
   'deploy/compile-backends.py'
   'deploy/audit-content.py'
+  'deploy/retire.py'
+  'deploy/promote.py'
+  'deploy/pending.py'
   '.claude/settings.json'
   '.claude/settings.local.json'
   '.git/hooks/**'

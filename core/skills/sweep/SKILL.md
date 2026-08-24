@@ -110,39 +110,73 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     prose, and placeholder tokens are findings — a session wrote engineer output into an
     operator file, and the fix is a rewrite of that file by the session that owns it.
 
-17. **Trust-surface surfacing** (v3.0.36 backlog v3.0-98(b), extended from one file to the
-    whole class by v3.0.46 / v3.0-120) — run `python deploy/trust.py --root . --report`
-    when `deploy/trust.py` exists (else the git-only fallback below) and put its table in
-    the briefing: **one row per trust surface** (the class in
-    `core/security/hooks/trust-surfaces.txt`: the hooks dir incl. `egress-allowlist.txt`,
-    `allowed_signers` and `trust-surfaces.txt` itself; `deploy/safe-allowlist.yaml`;
-    `deploy/evidence/operator-*.md`; `deploy/rulings/**`; `deploy/trust.py`,
-    `compile-driver.py`, `compile-backends.py`, `audit-content.py`; `.claude/settings.json`)
-    with its **last-change commit, author, signature status (operator-signed by which
-    pinned principal, or the refusal reason), and HEAD-identity**. Then the deltas: for
-    every surface whose last-change commit is newer than the previous sweep receipt's
-    timestamp (no prior receipt = all), quote each added or removed line verbatim
-    (`git diff <prev>..HEAD -- <path>`), as before for the egress allowlist. Every trust
-    surface is the operator's own grant — this line makes sure they SEE each change at
-    least once, which remains the backstop for the hooks' honest limit (an unmediated
-    write rides a path no regex sees). **NEEDS-YOU items, phrased per the reporting
-    contract:** a surface that is not HEAD-identical ("someone edited X in the working tree
-    and did not commit it — if it wasn't you, restore it with `git checkout -- X` and treat
-    the session as the finding"); a surface whose newest commit is not operator-signed
-    (under `trust_surface_signing: warn` this is a reminder that the consumer accepted it
-    in cutover; under `required` the consumer is refusing it — "re-commit it with
-    `git commit -S`"; under `visible` no signature is expected and the row is NOT a
-    finding — this table is where the operator SEES and, by reading the sweep,
-    acknowledges each change, v3.0.49 / ADR #11 condition 4 as amended); **no authority
-    mode recorded at all** (`trust.py --report` says so, doctor 16 WARNs) — "this project
-    never chose between `visible` and `required`; content retirement is disabled until
-    you add the line to `project.yaml` (MIGRATION v3.0.48 → v3.0.49)"; a non-presence key listed in `allowed_signers`; and any **retire
-    record without a verified operator tag** ("an unpublished retirement proposal is on the
-    branch — sign `git tag -s retire/<seq> <C>` after inspecting, or revert the record").
-    Git-only fallback (no `deploy/trust.py`): `git log -1 --format='%h %an %ci %G?' -- <path>`
-    + `git diff --quiet HEAD -- <path>` per class member, signature column "unverified
-    (no trust.py)". Nothing in the class present = one silent line skipped, never a finding
-    (absent allowlist means every egress asks — the tightest state).
+17. **The pending list — every retirement and trust-surface change, outstanding until you
+    have read it** (v3.0.36 backlog v3.0-98(b) → whole class v3.0.46 / v3.0-120 → the
+    DURABLE pending list with batched acknowledgement and the missed-sweep alarm, v3.0.50 /
+    ADR #11 condition 4 as amended 2026-08-22, backlog v3.0-139). Three mechanical moves,
+    in this order, when `deploy/pending.py` exists:
+
+    (a) **Heartbeat, first thing in the sweep:** `python deploy/pending.py --root .
+    --heartbeat open --run-id <sweep-run-id>` (any unique id — the UTC timestamp is fine).
+    This row, and its closing twin in (c), are the "previous sweep receipt" every other
+    step refers to (`receipts/pending/sweeps.jsonl`; the term was undefined before
+    v3.0.50). A sweep that opens and never closes is a FAILED cycle the observer alarms on.
+
+    (b) **Render:** `python deploy/pending.py --root . --render` and put its table in the
+    briefing verbatim: one row per pending item — **retirements** (the journal record's
+    seq, view, proposal digest, whether it was PUBLISHED — by your promote action or a
+    verified tag — or is an UNPUBLISHED PROPOSAL that some path journaled without you) and
+    **trust-surface changes** (the class in `core/security/hooks/trust-surfaces.txt`; the
+    hooks dir, `deploy/safe-allowlist.yaml`, `deploy/evidence/operator-*.md`,
+    `deploy/rulings/**`, `deploy/trust.py`, `retire.py`, `promote.py`, `pending.py`, the
+    three HUMAN-GATE consumers, `.claude/settings.json`), each with its commit, parent,
+    author, date and the paths touched — plus any **alarm** the nightly observer wrote
+    (missed observation window, failed cycle). The list is RECONSTRUCTED from git objects
+    on the production branch every run, never read from a file a session could edit: a
+    deleted journal record still appears, a removed acknowledgement reopens its item.
+    Then the deltas, as before: for each pending trust-surface item quote the added and
+    removed lines verbatim (`git diff <parent>..<commit> -- <path>`), and for each pending
+    retirement the span title(s), bytes moved, and the destination (the full preimage is
+    `python deploy/retire.py --show <digest>`). Alongside, the class-wide table from
+    `python deploy/trust.py --root . --report` (HEAD-identity, signature status, the
+    recorded authority mode, the pin) as the per-surface state line.
+
+    (c) **Acknowledge, then close — attended sweeps only:** after the briefing has been
+    written, `python deploy/pending.py --root . --ack --run-id <id> --briefing
+    SWEEP-BRIEFING.md` (or whatever file the briefing landed in), then `--heartbeat ok
+    --run-id <id>` (or `failed` if any step above could not run). The ack rows record that
+    these items were SHOWN to the operator in this briefing — reading the sweep IS the
+    acknowledgement ("acknowledge in the sweep, nothing else"); nothing is asked. An
+    UNATTENDED sweep (the scheduled wrapper sets `RHEOSCOPE_UNATTENDED=1`) runs (a) and (b)
+    and the closing heartbeat but `--ack` REFUSES — the items persist until a sweep you
+    actually read, which is what makes "unread item persists" true rather than claimed.
+    These receipt-class rows (`receipts/pending/*.jsonl`, append-only; commit them with the
+    briefing) are the ONE documented exception to this skill's read-only rule: the sweep
+    records that it ran and what it showed, nothing about the project's content.
+
+    **NEEDS-YOU items, phrased per the reporting contract:** an UNPUBLISHED retirement
+    proposal on the branch ("a content retirement was journaled without your promote
+    action — if you did not run `promote.py`, a session wrote it by an alternate path:
+    inspect with `git show`, then either promote it from your terminal or revert the
+    record"); a surface that is not HEAD-identical ("someone edited X in the working tree
+    and did not commit it — if it wasn't you, restore it with `git checkout -- X`"); under
+    `required` a surface whose newest commit is not operator-signed ("re-commit it with
+    `git commit -S`"; under `visible` no signature is expected — the pending row IS the
+    review); **no authority mode recorded** ("this project never chose between `visible`
+    and `required`; content retirement is disabled until you add the line to
+    `project.yaml`"); a non-presence key in `allowed_signers`; a **missed observation
+    window or failed cycle** ("no sweep you read has closed in N days (window W) — changes
+    may be sitting unread; this one clears it"); and any ledger FINDING from
+    `pending.py` (an acknowledgement naming no item in history, or dated before its item:
+    "an acknowledgement exists that no sweep wrote — delete the row; the item reopens,
+    which is the safe direction"). Every other pending row is a Worth-knowing item: the
+    operator reads it, and that is the whole ceremony.
+
+    Fallbacks: no `deploy/pending.py` but `deploy/trust.py` present → the v3.0.49 table
+    (`trust.py --report`, quote deltas since the last heartbeat row or all) and a
+    Watching line "pending list unavailable (pre-v3.0.50)"; neither → `git log -1
+    --format='%h %an %ci %G?' -- <path>` + `git diff --quiet HEAD -- <path>` per class
+    member. Nothing in the class present = one silent line skipped, never a finding.
 
 18. **Egress log surfacing** (v3.0.47, backlog v3.0-134 / v3.0-136a) — if
     `.claude/egress-log.jsonl` exists: read the rows appended since the previous sweep receipt's
@@ -172,10 +206,11 @@ loop"): readiness before content, structural sensors before behavioral ones, det
 checks before anything judgment-based — cheapest, most-foundational signal first, so a reader
 never has to sit through a slow behavioral replay to learn the environment itself is broken.
 
-**Know your own reflection:** if you read `.claude/sweep-schedule.log` during the sweep, the
-unfinished `sweep run` entry at its tail may be THIS run's own opening line — a run-in-progress
-marker, not a crash. Only a *previous* run's opening line with no matching `sweep done` line
-counts as a failed run worth reporting.
+**Know your own reflection:** if you read `.claude/sweep-schedule.log` or
+`receipts/pending/sweeps.jsonl` during the sweep, the unfinished `sweep run` / `open` entry at
+its tail may be THIS run's own opening line — a run-in-progress marker, not a crash. Only a
+*previous* run's opening line with no matching `sweep done` / `close` row counts as a failed
+run worth reporting (and `pending.py --observe` applies the same rule with a 6-hour grace).
 
 ## The briefing
 
@@ -253,7 +288,10 @@ separate concern, governed by the reversible-cutover runbook, and is explicitly 
 
 ## What this is NOT
 
-- **Not a fixer.** /sweep changes nothing, ever — every check it runs is read-only.
+- **Not a fixer.** /sweep changes nothing in the project, ever — every check it runs is
+  read-only. The one documented exception (v3.0.50, step 17): it appends its own heartbeat
+  and acknowledgement rows to `receipts/pending/*.jsonl` — a receipt that it ran and what it
+  showed, never a change to content, config, or a trust surface.
 - **Not `/compile`.** It writes nothing to the wiki, no matter what it finds.
 - **Not the full conformance sweep.** Step 6 above is smoke tier only; full tier stays a
   deliberate, separately-invoked act at freezes and certification.

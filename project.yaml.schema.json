@@ -298,6 +298,12 @@
       "enum": ["warn", "required", "visible"],
       "description": "The project's AUTHORITY MODE -- an explicit one-time operator choice (v3.0.49; ADR #11 condition 4 as amended 2026-08-22, backlog v3.0-135). There is NO silent default: init asks once and writes the answer (or --authority-mode=visible|required / -AuthorityMode); when ABSENT, HUMAN-GATE consumers run in migration-only `warn` (accept + surface a WARNING line) and content RETIREMENT IS DISABLED (deploy/trust.py refuses publication) until you record a choice -- /doctor check 16 and /sweep step 17 keep naming it. `visible`: reversible-and-visible -- no signature expected, nothing warned; every sensor (committed-identity, append-only journal, first-parent retirement reader, rewind detector, doctor 16, sweep 17) still runs, and a retirement waits for one exact-digest promote action from you per batch (Release 2). `required`: the hardware-key root -- every trust-surface commit and retirement tag must verify against core/security/hooks/allowed_signers with a presence-requiring (sk) key (run the MIGRATION v3.0.45 -> v3.0.46 ceremony first). `warn`: migration-only compatibility for instances born before v3.0.49; not a settled choice for a new project. Committed-identical (working tree == HEAD) is required under every mode."
     },
+    "observation_window_days": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 365,
+      "description": "Optional (v3.0.50; ADR #11 condition 4 as amended 2026-08-22, backlog v3.0-139). The OBSERVATION WINDOW in days for the durable pending list (deploy/pending.py): every retirement and trust-surface change on the production branch is reconstructed from git objects and stays pending until an ATTENDED sweep renders it (reading the sweep is the acknowledgement; an unattended/scheduled sweep renders but never acknowledges). When no attended sweep has closed ok within this many days, the independent observer (the nightly standing-loop tick, `pending.py --observe`) writes a missed-cycle alarm row that is itself pending until acknowledged; a failed sweep cycle raises a failed-cycle alarm regardless of the window. Default 7 when absent. /doctor check 16 (alarm sub-check) and /sweep step 17 name a missed window."
+    },
     "backlog_upstream": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",

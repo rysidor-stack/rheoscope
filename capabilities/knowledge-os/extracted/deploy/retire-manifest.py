@@ -89,10 +89,12 @@ def slug(s):
 
 # ------------------------------------------------------------------ parsing
 def body_region(text):
-    """(pre, body_lines, post, body_start_line) -- body excludes YAML frontmatter and the
-    derivation region (the same exclusions the validator and check-caps use)."""
+    """(lines, body_idx, d_start, d_end) -- body excludes YAML frontmatter and the
+    derivation region (the same exclusions the validator and check-caps use). The region
+    sits WHEREVER the engine put it: assemble.py's canonical layout is frontmatter ->
+    region -> body; legacy fixtures put it at the file end. d_start/d_end are 0-based
+    line indices of the region markers, or None."""
     lines = text.replace("\r\n", "\n").split("\n")
-    i = 0
     fm_end = -1
     if lines and lines[0].strip() == "---":
         for j in range(1, len(lines)):
@@ -110,7 +112,7 @@ def body_region(text):
             break
     body_idx = [k for k in range(start, len(lines))
                 if not (d_start is not None and d_end is not None and d_start <= k <= d_end)]
-    return lines, body_idx
+    return lines, body_idx, d_start, d_end
 
 
 class _FenceTracker(object):
@@ -145,11 +147,38 @@ class _FenceTracker(object):
         return self.open_char is not None
 
 
+def _clip_span_idx(lines, idx, d_start, d_end):
+    """Clip one span's index set against the derivation-region INTERVAL wherever it sits
+    (v3.0-143, shipped with the verb's v3.0-146 interval clip -- the v3.0-132 two-tool
+    rule: this clip and retire.py's produce the SAME span end, pinned by a shared
+    fixture). A span wholly on one side of the region is untouched. A span starting
+    before the region whose extent runs past it is clipped to the line before the region
+    -- trailing blank lines dropped, ONE kept (the verb's exact rule) -- but ONLY when
+    everything past the region inside its extent is blank; a span crossing NON-BLANK
+    post-region text keeps its extent, and the verb REFUSES it (a retirement is one
+    contiguous slice; the manifest never claims a clip the verb would not perform)."""
+    if d_start is None or d_end is None or not idx:
+        return idx
+    if idx[0] >= d_start or idx[-1] < d_start:
+        return idx
+    post = [i for i in idx if i > d_end]
+    if any(lines[i].strip() for i in post):
+        return idx
+    pre_part = [i for i in idx if i < d_start]
+    j = len(pre_part)
+    while j > 1 and not lines[pre_part[j - 1]].strip():
+        j -= 1
+    if j < len(pre_part):
+        j += 1  # keep ONE trailing blank line (parity with retire.py's clip)
+    return pre_part[:j]
+
+
 def parse_spans(text):
     """Parser-defined spans over the body: `(preamble)` + one span per heading (H2-H6), each
     running to the line before the next heading of the same-or-higher level. Returns a list
-    of dicts with 1-based inclusive line numbers into the ORIGINAL file."""
-    lines, body_idx = body_region(text)
+    of dicts with 1-based inclusive line numbers into the ORIGINAL file. Span extents are
+    clipped against the derivation region interval (see _clip_span_idx)."""
+    lines, body_idx, d_start, d_end = body_region(text)
     # code fences are not headings
     fence = _FenceTracker()
     heads = []  # (idx_in_file, level, title)
@@ -165,6 +194,7 @@ def parse_spans(text):
         return spans
     first_head = heads[0][0] if heads else None
     pre_idx = [k for k in body_idx if first_head is None or k < first_head]
+    pre_idx = _clip_span_idx(lines, pre_idx, d_start, d_end)
     if pre_idx and any(lines[k].strip() for k in pre_idx):
         spans.append(_mk_span(lines, pre_idx, 0, "(preamble)", body_idx))
     for n, (k, lvl, title) in enumerate(heads):
@@ -174,6 +204,7 @@ def parse_spans(text):
                 end_excl = k2
                 break
         idx = [i for i in body_idx if k <= i < end_excl]
+        idx = _clip_span_idx(lines, idx, d_start, d_end)
         spans.append(_mk_span(lines, idx, lvl, title, body_idx))
     return spans
 
@@ -433,6 +464,17 @@ def markdown_summary(m):
 
 
 # ------------------------------------------------------------------ self-test
+# The SHARED clip fixture (v3.0-143 / v3.0-146, the v3.0-132 two-tool rule): region at
+# the file END, blank lines between the last span's content and the region, a trailing
+# newline after it. This module's _clip_span_idx and retire.py's propose() clip must
+# yield the SAME span end / sha256 / bytes on it -- retire.py's battery imports this
+# constant and pins the same values, so the two clips can never diverge silently.
+_SHARED_CLIP_FIXTURE = ("---\ntitle: Clip\n---\n\n## Only Section\n\nBody line.\n\n\n"
+                        "# --- derivation (engine-managed; strip region) ---\n"
+                        "schema_version: 3.2\nview: topic\n"
+                        "# --- /derivation ---\n")
+_SHARED_CLIP_EXPECT = "## Only Section\n\nBody line.\n\n"  # clipped span text both tools must produce
+
 _FIXTURE_VIEW = """---
 title: Fixture
 ---
@@ -594,7 +636,51 @@ def self_test():
         ids = [a["id"] for s in sp for a in s["explicit_anchors"]]
         if "not-an-anchor" in ids or "real-anchor" not in ids:
             fails.append("explicit-anchor fence filtering wrong: %r" % ids)
-    n_checks = 25
+        # --- v3.0-143: the SHARED clip fixture (region at END) -- the last span is clipped
+        # to the line before the region, trailing blanks dropped to ONE, and its sha/bytes
+        # are the clipped values (retire.py's battery pins the SAME values on the SAME
+        # constant, so the two tools' clips cannot diverge silently).
+        clip_spans = parse_spans(_SHARED_CLIP_FIXTURE)
+        clip_last = [s for s in clip_spans if s["title"] == "Only Section"]
+        if not clip_last:
+            fails.append("shared clip fixture: 'Only Section' span missing: %r"
+                         % [s["title"] for s in clip_spans])
+        else:
+            cs = clip_last[0]
+            want_sha = hashlib.sha256(_SHARED_CLIP_EXPECT.encode("utf-8")).hexdigest()
+            if cs["sha256"] != want_sha or cs["bytes"] != len(_SHARED_CLIP_EXPECT.encode("utf-8")):
+                fails.append("shared clip fixture: span not clipped to the verb's rule "
+                             "(sha %s.. want %s.., bytes %d)" % (cs["sha256"][:12], want_sha[:12], cs["bytes"]))
+            deriv_line = _SHARED_CLIP_FIXTURE.replace("\r\n", "\n").split("\n").index(
+                "# --- derivation (engine-managed; strip region) ---")
+            if cs["end_line"] > deriv_line:  # end_line 1-based; deriv_line 0-based region start
+                fails.append("shared clip fixture: span end %d extends past the region start" % cs["end_line"])
+        # --- v3.0-146 canonical-fixture rule: a fixture GENERATED by assemble.py's own
+        # canonical shape (frontmatter -> region -> body). The GUARD fails this battery if
+        # assemble.py's fixture shape ever diverges from that layout, so the two tools'
+        # layout models cannot drift apart silently again (fleet inbox #6).
+        _asm = _load_by_path("_rm_asm", "assemble.py")
+        canon = _asm._mk_view(entities=[], summary="canonical layout fixture") + \
+            "\n## Canon A\n\nAlpha body.\n\n## Canon B\n\nBeta body.\n"
+        c_lines, c_body, c_ds, c_de = body_region(canon)
+        fm_end = c_lines.index("---", 1) if c_lines and c_lines[0].strip() == "---" else -1
+        if c_ds is None or c_de is None:
+            fails.append("canonical fixture guard: assemble._mk_view emitted no derivation region")
+        elif c_ds != fm_end + 1:
+            fails.append("canonical fixture guard: assemble.py's shape diverged -- region no longer "
+                         "directly after frontmatter (region at line %d, frontmatter ends %d)" % (c_ds, fm_end))
+        elif any(i < c_ds and c_lines[i].strip() for i in c_body):
+            fails.append("canonical fixture guard: non-blank body BEFORE the region -- not the "
+                         "frontmatter -> region -> body shape")
+        else:
+            c_spans = parse_spans(canon)
+            c_titles = [s["title"] for s in c_spans]
+            if "Canon A" not in c_titles or "Canon B" not in c_titles:
+                fails.append("canonical fixture: spans missing: %r" % c_titles)
+            if any(s["start_line"] - 1 <= c_de for s in c_spans):
+                fails.append("canonical fixture: a span starts at or before the region end "
+                             "(spans must sit wholly after a top-of-file region)")
+    n_checks = 30
     if fails:
         for f in fails:
             print("FAIL: " + f)

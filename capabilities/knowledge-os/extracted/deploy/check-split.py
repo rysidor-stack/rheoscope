@@ -92,6 +92,13 @@ _NUM_RE = re.compile(r"\d+")
 CITE_FIND_RE = re.compile(
     r"lines?\s+(\d+(?:\s*(?:,|and|&|–|-)\s*\d+)*)", re.IGNORECASE)
 
+# v3.0.51 (v3.0-141, brief v4 [R3-C1]): the generation-tagged citation grammar --
+# `view.md:80@<hash8>` -- minted by the absorb pipeline from Release 2 on. ONE home for
+# the pattern (the v3.0-132 parity discipline): deploy/retire.py (resolution through the
+# redirect chain) and deploy/compile-v2.py (minting + bare-citation refusal) both import
+# THIS constant. Byte-identical to the verb's original v3.0.50 pattern.
+TAGGED_CITE_RE = re.compile(r"([A-Za-z0-9._-]+\.md):(\d+)@([0-9a-f]{8})")
+
 # content2-amendment A1.2 -- explicit ID spans: `{#some-id}` attrs and `<a id="some-id">`
 # HTML anchors. These join the heading-slug set to form the full anchor set A(F).
 _ID_ATTR_RE = re.compile(r"\{#([A-Za-z0-9_-]+)\}")
@@ -189,7 +196,10 @@ def _parse_citation(expr):
 
 def cited_citations(text, basename):
     """All citations a text makes against `basename`: (discretes, ranges). Replaces the
-    pre-amendment cited_line_numbers, which silently dropped every number after the first."""
+    pre-amendment cited_line_numbers, which silently dropped every number after the first.
+    v3.0.51 (v3.0-141): a generation-tagged citation `basename:NN@<hash8>` is a discrete
+    citation of line NN too -- the tagged grammar joins the legacy prose grammar here so
+    the split gate's coverage check sees post-Release-2 citations."""
     discretes = set()
     ranges = set()
     if basename not in text:
@@ -200,6 +210,9 @@ def cited_citations(text, basename):
             d, r = _parse_citation(cm.group(1))
             discretes.update(d)
             ranges.update(r)
+    for tm in TAGGED_CITE_RE.finditer(text):
+        if tm.group(1) == basename:
+            discretes.add(int(tm.group(2)))
     return discretes, ranges
 
 
@@ -569,6 +582,19 @@ def self_test():
     v = validate_split(_BEFORE, stub_review, ".", parts_texts=_parts_ok(),
                        cite_files={"raw/x.md": _CITER})
     case("citation healed via REVIEW passes", v == [])
+
+    # 6b. v3.0-141: a generation-TAGGED citation (`F.md:6@<hash8>`) is a citation of
+    #     line 6 to this gate too -- uncovered it trips, covered it passes (the tagged
+    #     grammar joined the legacy grammar; single home for retire.py / compile-v2.py).
+    tagged_citer = "see F.md:6@0a1b2c3d for the rationale\n"
+    d6, r6 = cited_citations(tagged_citer, "F.md")
+    case("tagged citation parsed as discrete line 6", d6 == {6} and r6 == set())
+    v = validate_split(_BEFORE, stub_noline, ".", parts_texts=_parts_ok(),
+                       cite_files={"raw/t.md": tagged_citer})
+    case("uncovered TAGGED citation trips", any("uncovered line citation" in x for x in v))
+    v = validate_split(_BEFORE, _STUB_OK, ".", parts_texts=_parts_ok(),
+                       cite_files={"raw/t.md": tagged_citer})
+    case("covered TAGGED citation passes", v == [])
 
     # 7. missing redirect map
     v = validate_split(_BEFORE, "---\nstatus: superseded\n---\nno map\n", ".",

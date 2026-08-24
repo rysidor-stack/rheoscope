@@ -201,6 +201,37 @@ if [ "${1:-}" = "--self-test" ]; then
   run_case silent 'echo x > wiki/deploy/trust.py.md' 'ts-lookalike-path'
   run_case silent 'cat deploy/trust.py > /dev/null' 'ts-read-to-devnull'
   run_case silent 'type deploy\trust.py > NUL' 'ts-read-to-nul'
+  # -- v3.0.51 (v3.0-144, fleet inbox #4): the class token matches WRITE TARGETS only --
+  # prose that merely MENTIONS a trust-surface path is knowledge intake, not a perimeter
+  # write; a write whose TARGET is a surface still denies. Both directions pinned.
+  run_case silent 'echo "the verifier is deploy/trust.py" >> raw/note.md' 'ts-prose-mention-echo-body'
+  run_case silent 'printf "%s\n" "mentions core/security/hooks/README.md" > raw/note.md' 'ts-prose-mention-printf-body'
+  run_case silent 'cat >> raw/2026-08-23-note.md <<EOF
+see deploy/trust.py for the gate
+EOF' 'ts-prose-mention-heredoc-body'
+  run_case silent 'python export.py --config deploy/safe-allowlist.yaml > /tmp/out.log' 'ts-mention-with-elsewhere-redirect'
+  run_case DENY 'cat /tmp/x | tee core/security/hooks/egress-allowlist.txt' 'ts-tee-target-still-denies'
+  run_case DENY 'echo prose about raw/note.md > deploy/trust.py' 'ts-redirect-target-still-denies'
+  # the standing composed-spelling boundary (out of a regex's reach; committed-identity
+  # is the layer behind it) -- pinned as the boundary, not as coverage:
+  run_case silent 'echo x > "$(echo deploy/trust.py)"' 'ts-composed-target-standing-boundary'
+  run_case DENY 'sed -i "s#raw/note.md#raw/other.md#" core/security/hooks/trust-surfaces.txt' 'ts-sed-i-target-operand'
+  run_case silent 'sed -i "s#x#y#" raw/note.md' 'ts-sed-i-elsewhere-target'
+  # accepted conservative FP: a sed/perl SCRIPT operand naming a class path (deny-over-
+  # allow on the perimeter; the target parser does not parse sed scripts)
+  run_case DENY 'sed -i "s#a#deploy/trust.py#" raw/note.md' 'ts-sed-script-mention-accepted-fp'
+  # cross-vendor round-1 folds (v3.0.51): the `>|` clobber redirect is a target zone;
+  # a multiword PowerShell -Value naming a surface in PROSE passes (the value's grouping
+  # is gone after quote-stripping, so every token to the next flag is value); a
+  # herestring is not an output redirect.
+  run_case DENY 'echo x >| deploy/trust.py' 'ts-clobber-redirect-target'
+  run_case silent 'echo x >| raw/note.md' 'ts-clobber-redirect-elsewhere'
+  run_case silent 'Set-Content -Path raw/note.md -Value "the verifier is deploy/trust.py"' 'ts-ps-value-prose-mention-passes'
+  run_case DENY 'Set-Content -Value "prose" -Path deploy/compile-driver.py' 'ts-ps-value-then-path-target-denies'
+  run_case silent 'cat <<< "see deploy/trust.py for the gate"' 'ts-herestring-not-a-redirect'
+  # accepted conservative over-match (round-2, documented): a write-tool SOURCE operand
+  # naming a surface stays denied (mv/rm destroy sources; cp is kept uniform)
+  run_case DENY 'cp deploy/trust.py /tmp/backup.py' 'ts-cp-surface-source-accepted-overmatch'
   # -- Remove-Item root rule now matched on COMMAND_NORM (v3.0.46 rider)
   run_case DENY "'Remove-Item' -Recurse -Force C:\\" 'removeitem-quoted-cmdlet-root'
   run_case DENY "Remove-Item -Recurse '-Force' 'C:\\'" 'removeitem-quoted-flags-root'
@@ -431,20 +462,41 @@ if printf '%s' "$COMMAND_NORM" | grep -Eqi "$PROMOTE_RE" \
 fi
 
 # ---------------------------------------------------------- DENY: trust surfaces
-# v3.0.46 (backlog v3.0-120, brief section 3): a WRITE-SHAPED command that names a path
-# in the trust-surface class is denied. The class = the hard-coded floor below in UNION
-# with core/security/hooks/trust-surfaces.txt beside this script (fixed relative path;
-# the file can only widen; absent/emptied = floor, never fail-open). DENY, not ASK:
-# perimeter edits are operator-out-of-session by standing doctrine -- there is no
-# legitimate in-session "yes". Write-shaped = a redirection (`>`/`>>`, ignoring the
-# harmless `2>/dev/null` / `2>&1` / `>NUL` forms), the file-writing tools (tee, cp, mv,
-# rm, install, truncate, ln, dd, rsync, `sed -i`, `perl -i`), the PowerShell writers +
-# aliases (Set-Content/sc, Add-Content/ac, Out-File, Copy-Item/cpi, Move-Item/mi,
-# Remove-Item/ri/del, New-Item/ni, Clear-Content/clc, Rename-Item/rni, [IO.File]::Write*),
-# and an interpreter one-liner (`py/python -c`, `node -e`) that so much as mentions the
-# path. Pure reads (cat, grep, ls, diff, git show/log/diff, sed -n, running the sensor
-# as a script) pass. Tripwire honesty, same as every rule here: composed spellings are out
-# of a regex's reach -- deploy/trust.py's signing rule is what makes them non-authoritative.
+# v3.0.46 (backlog v3.0-120, brief section 3), matching narrowed to WRITE TARGETS in
+# v3.0.51 (backlog v3.0-144, fleet inbox #4): a write-shaped command whose TARGET is a
+# path in the trust-surface class is denied. The class = the hard-coded floor below in
+# UNION with core/security/hooks/trust-surfaces.txt beside this script (fixed relative
+# path; the file can only widen; absent/emptied = floor, never fail-open). DENY, not
+# ASK: perimeter edits are operator-out-of-session by standing doctrine -- there is no
+# legitimate in-session "yes".
+# WHY targets, not the whole text (v3.0-144): the v3.0.46 rule matched the class token
+# ANYWHERE in a write-shaped command, so ordinary knowledge intake ABOUT the perimeter
+# (a raw/ note, a receipt, a sweep briefing citing deploy/trust.py by path) was refused
+# on the Bash lane -- prose that mentions a surface is not a write TO it. Target zones:
+#   - every redirection target (the token after `>`/`>>`; the harmless `2>/dev/null` /
+#     `2>&1` / `>NUL` forms removed first),
+#   - the operands of the file-writing tools (tee, cp, mv, rm, install, truncate, ln,
+#     dd, rsync) and the PowerShell writers + aliases (Set-Content/sc, Add-Content/ac,
+#     Out-File, Copy-Item/cpi, Move-Item/mi, Remove-Item/ri/del, New-Item/ni,
+#     Clear-Content/clc, Rename-Item/rni) -- every non-flag token after the tool word in
+#     its command segment, skipping -Value/-InputObject values (to the next flag) and
+#     -Encoding/-ItemType-class single values. ALL operands, sources included, on
+#     purpose: mv/rm/Rename-Item destroy their source, and distinguishing cp's
+#     read-only source from its destination per tool buys little against a deny that
+#     costs nothing legitimate -- `cp deploy/trust.py /tmp/x` stays denied (an accepted
+#     conservative over-match, pinned; read a surface with cat/git show instead),
+#   - `sed -i` / `perl -i`: their non-flag operands (the script text included -- a
+#     script operand naming a class path is a conservative over-match, kept: deny-over-
+#     allow on the perimeter, pinned as an accepted false positive).
+# Interpreter one-liners (`py/python -c`, `node -e`, [IO.File]::Write*) keep WHOLE-TEXT
+# matching: the write target hides inside opaque code no regex can parse, so a one-liner
+# that so much as mentions the path stays denied (the documented accepted FP).
+# Pure reads (cat, grep, ls, diff, git show/log/diff, sed -n, running the sensor as a
+# script) pass; so does prose naming a surface while writing elsewhere. Tripwire honesty,
+# same as every rule here: composed spellings -- `> "$(echo deploy/trust.py)"`, variable
+# indirection, a path arriving via stdin (`... | xargs rm`) -- are DATA FLOW a regex
+# cannot see and are out of this tier's reach, exactly as documented since v3.0.41;
+# deploy/trust.py's committed-identity rule is what makes them non-authoritative.
 TRUST_FLOOR=(
   'core/security/hooks/**'
   'deploy/safe-allowlist.yaml'
@@ -475,7 +527,7 @@ if [ -r "$HOOK_DIR/trust-surfaces.txt" ]; then
 fi
 # Normalized twin for PATH matching: quotes stripped (NORM), backslashes -> /, lowercased.
 COMMAND_PATHS=$(printf '%s' "$COMMAND_NORM" | tr '\\' '/'); COMMAND_PATHS=${COMMAND_PATHS,,}
-TRUST_WRITE_RE='(^|[[:space:]|;&(`])(tee|cp|mv|rm|install|truncate|ln|dd|rsync|set-content|add-content|out-file|copy-item|move-item|remove-item|new-item|clear-content|rename-item|sc|ac|cpi|mi|ni|clc|rni|ri|del)([[:space:]]|$)|(^|[[:space:]|;&(`])sed[[:space:]]+(-[a-z]*i|--in-place)|(^|[[:space:]|;&(`])perl[[:space:]]+-[a-z]*i|\[io\.file\]::write|(^|[[:space:]`$(])(py|python|python3)[[:space:]]+-c|(^|[[:space:]`$(])node[[:space:]]+-e'
+INTERP_WRITE_RE='\[io\.file\]::write|(^|[[:space:]`$(])(py|python|python3)[[:space:]]+-c|(^|[[:space:]`$(])node[[:space:]]+-e'
 # One alternation over the whole class, built in pure bash (no subshells -- the battery
 # runs this hook ~170 times on Windows, where every process costs).
 TRUST_RE=''
@@ -484,19 +536,71 @@ for tg in "${TRUST_CLASS[@]}"; do
   TRUST_RE="${TRUST_RE:+$TRUST_RE|}$tg"
 done
 TRUST_RE="(^|[^a-z0-9_.-])(\./)?($TRUST_RE)([^a-z0-9_.-]|$)"
-trust_write_shaped=0
+# TARGET-ZONE extraction (v3.0-144). Zone 1: redirection targets.
+TRUST_TARGETS=''
 case "$COMMAND_PATHS" in
   *'>'*)
-    # Redirections, with the harmless stderr/null forms removed before the `>` test.
     redir=$(printf '%s' "$COMMAND_PATHS" | sed -E 's#[0-9]*>>?[[:space:]]*(/dev/null|nul([^a-z0-9]|$)|&[0-9]+)##g')
-    case "$redir" in *'>'*) trust_write_shaped=1 ;; esac ;;
+    rt=$(printf '%s' "$redir" | grep -Eo '>>?\|?[[:space:]]*[^[:space:];|&<>]+' | sed -E 's/^>>?\|?[[:space:]]*//') || true
+    [ -n "$rt" ] && TRUST_TARGETS="$rt"
+    ;;
 esac
-if [ $trust_write_shaped -eq 0 ] && printf '%s' "$COMMAND_PATHS" | grep -Eq "$TRUST_WRITE_RE"; then
-  trust_write_shaped=1
+# Zone 2: operands of the write-shaped tools, per simple-command segment (split on
+# | ; & \` and newlines -- heredoc BODY lines become their own segments with no tool
+# word, so prose in them is never an operand; parens are NOT separators, because the
+# quote-stripped twin exposes formerly-quoted parens inside sed/awk scripts -- a tool
+# word behind `(` is caught by stripping its leading parens instead). Pure bash inside
+# one substitution.
+TOOL_TARGETS=$(printf '%s' "$COMMAND_PATHS" | tr '|;&`' '\n\n\n\n' | {
+  out=''
+  while IFS= read -r seg || [ -n "$seg" ]; do
+    tool=''; skipnext=0; valmode=0; sedperl=0; saw_i=0; pending=''
+    set -f
+    # shellcheck disable=SC2086
+    set -- $seg
+    set +f
+    for tok in "$@"; do
+      if [ -z "$tool" ]; then
+        while :; do case "$tok" in \(*) tok=${tok#\(} ;; *) break ;; esac; done
+        case "$tok" in
+          tee|cp|mv|rm|install|truncate|ln|dd|rsync|set-content|add-content|out-file|copy-item|move-item|remove-item|new-item|clear-content|rename-item|sc|ac|cpi|mi|ni|clc|rni|ri|del) tool=$tok ;;
+          sed|perl) tool=$tok; sedperl=1 ;;
+        esac
+        continue
+      fi
+      if [ "$skipnext" -eq 1 ]; then skipnext=0; continue; fi
+      if [ "$valmode" -eq 1 ]; then
+        case "$tok" in -*) valmode=0 ;; *) continue ;; esac
+      fi
+      case "$tok" in
+        -value|-inputobject) valmode=1 ;;
+        -encoding|-itemtype|-stream|-filter|-newname) skipnext=1 ;;
+        --in-place*) saw_i=1 ;;
+        -*) if [ "$sedperl" -eq 1 ]; then case "$tok" in -*i*) saw_i=1 ;; esac; fi ;;
+        *) pending="$pending
+$tok" ;;
+      esac
+    done
+    # sed/perl are writers only with -i; every other listed tool always is
+    if [ -n "$tool" ] && { [ "$sedperl" -eq 0 ] || [ "$saw_i" -eq 1 ]; }; then
+      out="$out$pending"
+    fi
+  done
+  printf '%s' "$out"
+})
+[ -n "$TOOL_TARGETS" ] && TRUST_TARGETS="$TRUST_TARGETS$TOOL_TARGETS"
+deny_trust=0
+if [ -n "$TRUST_TARGETS" ] && printf '%s' "$TRUST_TARGETS" | grep -Eq "$TRUST_RE"; then
+  deny_trust=1
 fi
-if [ $trust_write_shaped -eq 1 ] && printf '%s' "$COMMAND_PATHS" | grep -Eq "$TRUST_RE"; then
+# interpreter one-liners: whole-text matching kept (target unparseable inside code)
+if [ "$deny_trust" -eq 0 ] && printf '%s' "$COMMAND_PATHS" | grep -Eq "$INTERP_WRITE_RE" \
+   && printf '%s' "$COMMAND_PATHS" | grep -Eq "$TRUST_RE"; then
+  deny_trust=1
+fi
+if [ "$deny_trust" -eq 1 ]; then
   log_row trust-deny trust-surface false || true
-  echo "Blocked: write-shaped command names a TRUST SURFACE (see core/security/hooks/trust-surfaces.txt). Trust surfaces are operator-edited only, outside the session, and committed with \`git commit -S\` under the pinned presence-requiring key; every honest consumer refuses one that is not committed-identical and operator-signed. Read it freely (cat/grep/git show); propose the change in chat." >&2
+  echo "Blocked: write-shaped command TARGETS a trust surface (see core/security/hooks/trust-surfaces.txt). Trust surfaces are operator-edited only, outside the session, and committed with \`git commit -S\` under the pinned presence-requiring key; every honest consumer refuses one that is not committed-identical and operator-signed. Read it freely (cat/grep/git show), cite it freely in prose you write elsewhere (v3.0-144); propose the change itself in chat." >&2
   exit 2
 fi
 

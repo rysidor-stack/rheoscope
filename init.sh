@@ -771,8 +771,15 @@ else
         # directory, idempotent if the operator runs it again per the printed next
         # steps -- so the scanner is installed before any commit can exist.
         if [[ ! -d "$SCRIPT_ROOT/.git" ]] && command -v git >/dev/null 2>&1 && [[ -f "$SCANNER_SRC" ]]; then
-            if git -C "$SCRIPT_ROOT" init -q 2>/dev/null; then
-                info "git repository initialized (v3.0-112: the commit scanner must exist before the first commit does)"
+            # v3.0-147 (v3.0.51 stranger run): the branch is NAMED `main` explicitly --
+            # git's built-in default is `master` when the host sets no init.defaultBranch,
+            # and the Release-2 machinery (retire/promote/pending, doctor check 16)
+            # defaults to `main`, so a fresh instance on such a host was born with a
+            # failing doctor and an unusable retire verb. `-b` needs git >= 2.28; the
+            # fallback keeps ancient-git hosts working (they may then need
+            # `git branch -m master main` per MIGRATION).
+            if git -C "$SCRIPT_ROOT" init -q -b main 2>/dev/null || git -C "$SCRIPT_ROOT" init -q 2>/dev/null; then
+                info "git repository initialized on branch main (v3.0-112: the commit scanner must exist before the first commit does; v3.0-147: the branch name matters to the Release-2 machinery)"
             fi
         fi
         if [[ ! -f "$SCANNER_SRC" ]]; then

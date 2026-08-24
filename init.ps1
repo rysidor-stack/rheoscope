@@ -795,9 +795,16 @@ if (Test-Path $hooksDst) {
         # safe on a fresh directory, idempotent when the operator re-runs it per
         # the printed next steps. Identical to init.sh.
         if ((-not (Test-Path (Join-Path $scriptRoot '.git'))) -and (Test-Path $scannerSrc) -and (Get-Command git -ErrorAction SilentlyContinue)) {
-            git -C $scriptRoot init -q 2>$null
+            # v3.0-147 (v3.0.51 stranger run): name the branch `main` explicitly -- git's
+            # built-in default is `master` without init.defaultBranch, and the Release-2
+            # machinery (retire/promote/pending, doctor check 16) defaults to `main`.
+            # `-b` needs git >= 2.28; the fallback keeps ancient-git hosts working.
+            git -C $scriptRoot init -q -b main 2>$null
+            if (-not (Test-Path (Join-Path $scriptRoot '.git'))) {
+                git -C $scriptRoot init -q 2>$null
+            }
             if (Test-Path (Join-Path $scriptRoot '.git')) {
-                Info "git repository initialized (v3.0-112: the commit scanner must exist before the first commit does)"
+                Info "git repository initialized on branch main (v3.0-112: the commit scanner must exist before the first commit does; v3.0-147: the branch name matters to the Release-2 machinery)"
             }
         }
         if (-not (Test-Path $scannerSrc)) {

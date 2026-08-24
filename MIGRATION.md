@@ -260,6 +260,49 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.50 → v3.0.51 (Release 2 unblocked: the verb learns the real view layout; citation tags are minted; the perimeter stops refusing prose)
+
+v3.0.50's retirement verb refused every view the engine actually compiles (it assumed the
+derivation region at the file END; the engine emits it at the TOP — fleet inbox #6), and the
+trust-surface Bash rule refused prose that merely CITED a perimeter path (fleet inbox #4).
+Both are fixed; new citations now carry generation tags so they can never become the bare
+citations that block later retirements. Nothing here asks you a question.
+
+1. **You copy (trust surfaces — three files this release):** from the template:
+   `capabilities/knowledge-os/extracted/deploy/retire.py` → your `deploy/retire.py` (battery
+   84/84 — the interval clip, generation-coordinate recovery, block-shift-tracked redirect
+   entries, the canonical assemble-shaped fixture + guard), and
+   `core/security/hooks/block-dangerous-bash.sh` (board 232/232 — the trust DENY now matches
+   the class token against WRITE TARGETS only; writing a raw/ note that cites
+   `deploy/trust.py` passes, a write whose target is a surface still denies) with
+   `core/security/hooks/README.md` (the reworded row; the README is in the class, so the copy
+   is yours). Under `required`, commit each with `git commit -S`.
+2. **The session copies:** `deploy/retire-manifest.py` (30/30 — span extents clipped against
+   the region interval, parity-pinned to the verb on a shared fixture; closes v3.0-143),
+   `deploy/compile-v2.py` (241/241 — the absorb pipeline MINTS `view.md:NN@<gen8>` on every
+   new colon-form citation of a wiki view and refuses new prose-form / ambiguous / unminted
+   bare citations, v3.0-141), `deploy/check-split.py` (23/23 — the tagged citation grammar's
+   single home; the split gate now sees tagged citations), `deploy/assemble.py` (159/159 —
+   the ECO-1 self-test builds its own git fixture instead of copying your real `.git`, so the
+   doctor stops failing on long ref paths, v3.0-133).
+3. **Once, before your next retirement (optional but recommended):** re-freeze the legacy
+   registry — `py deploy/retire.py --register-legacy`, commit the new
+   `receipts/citations/legacy-<date>.json`. Bare citations written between your v3.0.50
+   adoption and this one join the frozen legacy population; everything the engine writes
+   from now on is generation-tagged at absorb time. A tag minted between two retirements can
+   still go stale under an ordinary absorb of the cited view — the retirement gate then
+   refuses naming it (condition 3's safe direction; re-tag to clear).
+4. **Only if your instance's git branch is not `main`** (`git branch --show-current`): the
+   Release-2 machinery (`retire.py`/`promote.py`/`pending.py`, `/doctor` check 16) defaults to
+   `main`, so on a `master`-branch instance the doctor FAILs and every propose refuses
+   (v3.0-147, caught by this release's stranger run). One command, your terminal:
+   `git branch -m master main` (update any remote's default branch to match). New instances
+   are unaffected — init now runs `git init -b main`.
+5. Stamp `template_release: "v3.0.51"`. Dev-only release tooling also changed
+   (`make-release.py` now refuses a stale `RELEASE` stamp and a MIGRATION recipe naming files
+   absent from the tag; `publish-mirror.py` refuses a dev tag holding shipped-class files the
+   mirror does not track — the fleet inbox #5 lesson); no instance action.
+
 ## v3.0.49 → v3.0.50 (ADR #11 Release 2: content retirement, the promote action, the pending list, the missed-sweep alarm)
 
 The retirement verb exists now. Under `visible` a session prepares a retirement and YOU publish it

@@ -124,7 +124,7 @@ RET_END = "# --- /retirements"
 DERIV_START = _caps.DERIV_START
 DERIV_END = _caps.DERIV_END
 POINTER_TMPL = "> Retired to %s -- journal seq %d."
-TAGGED_CITE_RE = re.compile(r"([A-Za-z0-9._-]+\.md):(\d+)@([0-9a-f]{8})")
+TAGGED_CITE_RE = _split.TAGGED_CITE_RE  # single home: check-split.py (v3.0-141 parity)
 SLUG_MAX = 32  # cold-object section slug cap; the 64-hex content address follows it
 DEFAULT_BLOCK_MAX_ENTRIES = 20
 DEFAULT_BLOCK_MAX_BYTES = 8192
@@ -562,7 +562,10 @@ def walk_redirects(entries, gen_hash, line):
                 via.append(en["seq"])
                 return {"resolved": True, "target": en["target"], "line": line - a + 1,
                         "kind": "cold" if en["target"].startswith(COLD_DIR) else "ledger", "via": via}
-        line += sum(en["shift"] for en in grp if en["span"][1] < line)
+        base = line
+        line += sum(en["shift"] for en in grp if en["span"][1] < base)
+        if base > grp[0].get("bafter", base):
+            line += grp[0].get("bshift", 0)
         via.append(grp[0]["seq"])
         cur = grp[0]["post_hash"]
     if not started and entries:
@@ -677,16 +680,33 @@ def propose(root, view_rel, titles=(), preamble=False, mode="cold", mapping=None
     spans = select_spans(pre_text, list(titles), preamble)
     if not spans:
         raise Refuse("nothing selected: name --span titles and/or --preamble")
-    # The manifest's spans are index SETS over the body (derivation region excluded); the
-    # verb retires a CONTIGUOUS slice, so the last span -- which the manifest extends past
-    # the region to the file's trailing blank line -- is clipped to the line before the
-    # region. Content after the region is never retireable (refuse rather than clip text).
+    # v3.0.51 (v3.0-146, fleet inbox #6): the derivation region sits WHEREVER the engine
+    # put it -- assemble.py's canonical layout is frontmatter -> region -> body; legacy
+    # fixtures put the region at the file end. The BODY is everything outside the region
+    # interval [ds, de], and spans are clipped against that interval, never against an
+    # assumed region-at-end (the v3.0.50 model refused every engine-compiled view). A
+    # span wholly AFTER the region (canonical layout) needs no clip. A span starting
+    # BEFORE the region whose manifest extent runs to/past it (region-at-end: the
+    # manifest extends the last span over the file's trailing blank line) is clipped to
+    # the line before the region, trailing blanks dropped to ONE --
+    # retire-manifest._clip_span_idx applies the SAME rule (the v3.0-132 two-tool
+    # discipline, pinned on _SHARED_CLIP_FIXTURE in both batteries). A span whose extent
+    # crosses NON-BLANK text beyond the region REFUSES: a retirement is one contiguous
+    # slice, and a straddling span is not a compiled-view shape (refuse rather than
+    # silently retire half a section).
     for sp in spans:
+        s0 = sp["start_line"] - 1
+        if s0 > de:
+            continue  # canonical layout: the span sits wholly after the region
+        if s0 >= ds:
+            raise Refuse("span %r starts inside the derivation region (internal)" % sp["title"])
         if sp["end_line"] > ds:  # end_line is 1-based; ds is the 0-based region start
-            tail = [ln for ln in lines[de + 1:] if ln.strip()]
+            tail = [ln for ln in lines[de + 1:sp["end_line"]] if ln.strip()]
             if tail:
-                raise Refuse("body text after the derivation region (%d line(s)) -- not a "
-                             "compiled view layout; nothing retired" % len(tail))
+                raise Refuse("span %r crosses the derivation region onto %d non-blank line(s) "
+                             "beyond it -- a retirement is one contiguous slice and the region "
+                             "is never retired; not a compiled view layout; nothing retired"
+                             % (sp["title"], len(tail)))
             sp["end_line"] = ds  # the line before the region (1-based == ds)
             while sp["end_line"] > sp["start_line"] and not lines[sp["end_line"] - 1].strip():
                 sp["end_line"] -= 1
@@ -781,6 +801,19 @@ def propose(root, view_rel, titles=(), preamble=False, mode="cold", mapping=None
         full = list(existing) + new_entries
         compaction = {"entries": len(full), "previous_index": pointer_old["index"] if pointer_old else None}
         merged, pointer = [], {"index": None, "entries": len(full)}
+    # v3.0.51 (v3.0-146): the block's LINE growth this retirement (structural: markers +
+    # one row per entry + one pointer row; content never changes the row count), and the
+    # PRE-view line below which it applies (the region end marker -- the block lives
+    # inside the region). A citation resolving across this generation transition shifts
+    # by bshift when it points below the region (canonical layout: the whole body);
+    # region-at-end views have no body below the region, so bshift is inert there --
+    # exactly v3.0.50's behavior. Recorded per entry; walk_redirects applies it;
+    # verify_prepared re-derives it (never trusted).
+    _old_blk = (idx_old[1] - idx_old[0] + 1) if idx_old is not None else 0
+    _new_blk = 2 + len(merged) + (1 if pointer else 0)
+    for en in new_entries:
+        en["bshift"] = _new_blk - _old_blk
+        en["bafter"] = de + 1  # 1-based line of the region end marker at the PRE view
 
     def _assemble(entries, pointer_row):
         out = list(body_lines)
@@ -813,7 +846,7 @@ def propose(root, view_rel, titles=(), preamble=False, mode="cold", mapping=None
         raise Refuse("anchor conservation failed: the stub does not preserve the view's anchor "
                      "multiset (internal -- the stub template must copy every heading/anchor)")
     # ---- gate 3: whole-view reconstruction: pre == post with each stub replaced by its span
-    if strip_block(reconstruct(post_text, results, repo, head, blobs)) != strip_block(pre_text):
+    if reconstruct(post_text, results, repo, head, blobs, pre_text=pre_text) != strip_block(pre_text):
         raise Refuse("whole-view reconstruction failed: post view with stubs replaced by the "
                      "cold objects is not byte-identical to the pre view (internal)")
     # ...and the block itself changed by exactly this retirement's entries
@@ -881,15 +914,27 @@ def _build_commit(repo, head, blobs, message):
         shutil.rmtree(td, ignore_errors=True)
 
 
-def reconstruct(post_text, spans, repo, head, blobs=None):
-    """Gate 3 / condition 5: the pre view from the post view + the cold objects (or, for
-    ledger-dedup spans, the span bytes the record carries are NOT stored -- the pre view is
-    recovered from view@parent; here we substitute the spans' own bytes). Returns text."""
-    lines = post_text.split("\n")
+def reconstruct(post_text, spans, repo, head, blobs=None, pre_text=None):
+    """Gate 3 / condition 5: the pre view's GENERATION text (block-stripped) from the post
+    view + the cold objects (or, for ledger-dedup spans, the span bytes the record carries
+    are NOT stored -- the pre view is recovered from view@parent; here we substitute the
+    spans' own bytes). Returns the reconstructed generation text; compare against
+    strip_block(pre). v3.0.51 (v3.0-146): recovery works in GENERATION coordinates because
+    in the canonical frontmatter -> region -> body layout the engine-owned block sits
+    ABOVE the body, so full-file stub positions shift as the block grows. The recorded
+    start_line is a full-PRE-view coordinate; `pre_text` (when given) supplies the PRE
+    block's location so spans below it are offset by its length -- a pre view without a
+    block (every first retirement, and every v3.0.50 region-at-end view) needs no offset.
+    """
+    lines = strip_block(post_text).split("\n")
+    _pe, _pp, pidx = parse_retirements_block(pre_text) if pre_text is not None else (None, None, None)
+    pboff = (pidx[1] - pidx[0] + 1) if pidx is not None else 0
     # TOP-DOWN: once the uppermost stub is replaced by its span, everything below it is back
     # at its pre-retirement line numbers, so each span's recorded start_line is exact.
     for r in sorted(spans, key=lambda s: s["start_line"]):
         a = r["start_line"] - 1
+        if pboff and a > pidx[1]:
+            a -= pboff
         b = a + len(r["stub_lines"]) - 1
         if r["cold_object"]:
             data = None
@@ -1106,10 +1151,26 @@ def verify_prepared(repo, commit):
             return False, "stub for span %r %s" % (s["title"], bad), rec
         spans.append(s)
     try:
-        if strip_block(reconstruct(post_text, spans, repo, commit)) != strip_block(pre_text):
+        if reconstruct(post_text, spans, repo, commit, pre_text=pre_text) != strip_block(pre_text):
             return False, "post view with stubs replaced is not the pre view", rec
     except Refuse as e:
         return False, str(e), rec
+    # v3.0.51: the entries' block-shift fields are REQUIRED on this retirement's own
+    # entries and RE-DERIVED from the two views, never trusted (cross-vendor round-1
+    # catches: a forged bshift mis-resolves citations while conserving content, and an
+    # entry that simply OMITS the fields would otherwise default to no block shift --
+    # this verb always writes them, so absence is forgery, not legacy; chain-historical
+    # v3.0.50 entries are not re-verified here and keep their inert defaults).
+    _dlen = len(post_text.split("\n")) - len(pre_text.split("\n")) - sum(
+        int(s2.get("shift", 0)) for s2 in rec.get("spans", []))
+    _dsp, _dep = _region_bounds(pre_text.split("\n"))
+    for en in rec.get("redirects") or []:
+        if "bshift" not in en or "bafter" not in en:
+            return False, ("redirect entry omits its block-shift fields (bshift/bafter) -- this "
+                           "verb always writes them; an entry without them would silently "
+                           "mis-resolve citations below a top-of-file block"), rec
+        if en["bshift"] != _dlen or (_dep is not None and en.get("bafter") != _dep + 1):
+            return False, "redirect entry block-shift fields do not re-derive from the views", rec
     try:
         pre_chain = all_redirects(repo, parent, view, text=pre_text)
         post_chain = all_redirects(repo, commit, view, text=post_text)
@@ -1785,6 +1846,186 @@ def self_test():
              "absorb validator's immutability rule", block_bytes(cur).startswith(RET_START.encode())
              and block_bytes(cur).endswith(RET_END.encode()) and block_bytes("# x\n\nbody\n") == b"")
 
+        # -------- v3.0.51 (v3.0-146): the CANONICAL layout -- region at TOP, the fixture
+        # GENERATED by assemble.py's own shape (frontmatter -> region -> body). The verb
+        # must propose/verify on it (the v3.0.50 region-at-end model refused every
+        # engine-compiled view, fleet inbox #6); the GUARD case fails if assemble.py's
+        # canonical shape ever diverges, so the two tools' layout models cannot drift
+        # apart silently again (the canonical-fixture rule; same guard in the manifest
+        # battery).
+        _asm = _load_by_path("_retire_asm", "assemble.py")
+        canon = _asm._mk_view(entities=[], summary="canonical layout fixture") + \
+            "\n## Canon A\n\nAlpha canonical body.\n\n## Canon B\n\nBeta canonical body.\n"
+        c_lines = canon.split("\n")
+        c_ds, c_de = _region_bounds(c_lines)
+        c_fm_end = c_lines.index("---", 1)
+        case("guard: assemble.py's generated fixture is frontmatter -> region -> body "
+             "(divergence here fails BOTH batteries -- the canonical-fixture rule)",
+             c_ds == c_fm_end + 1 and c_de is not None
+             and all(not ln.strip() for ln in c_lines[c_fm_end + 1:c_ds]), (c_ds, c_de, c_fm_end))
+        r2 = os.path.join(base, "repo2")
+        os.makedirs(r2)
+
+        def git2(*a):
+            return subprocess.run(["git", "-C", r2] + list(a), capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace")
+
+        def write2(rel, text):
+            p = os.path.join(r2, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
+
+        git2("init", "-q", "-b", "main")
+        git2("config", "user.email", "t@t")
+        git2("config", "user.name", "tester")
+        git2("config", "commit.gpgsign", "false")
+        write2("wiki/topic/canon.md", canon)
+        write2("project.yaml", "project_slug: t2\ntrust_surface_signing: visible\n")
+        j1c = _core.minimal_record("compile", "0" * 40)
+        j1c.update({"seq": 1, "prev_record_hash": None})
+        write2("receipts/journal/1.json", json.dumps(j1c, indent=1, sort_keys=True))
+        git2("add", "-A")
+        git2("commit", "-q", "-m", "canonical seed")
+        resc = propose(r2, "wiki/topic/canon.md", titles=["Canon A"], now="2026-08-24T00:00:00Z")
+        Cc = resc["commit"]
+        case("canonical layout: a span AFTER a top-of-file region PROPOSES (the v3.0.50 "
+             "region-at-end assumption refused every engine-compiled view)",
+             resc["seq"] == 2 and _rev(r2, "refs/retire/2") == Cc, resc)
+        recc = json.loads(_blob(r2, Cc, resc["record"]).decode())
+        spc = recc["spans"][0]
+        postc = _blob(r2, Cc, "wiki/topic/canon.md").decode()
+        case("canonical layout: stub in place, body moved to the cold object, redirect "
+             "entry in the top-of-file region, anchors conserved",
+             "## Canon A" in postc and "Alpha canonical body." not in postc
+             and spc["cold_object"] and _blob(r2, Cc, spc["cold_object"]["path"]) is not None
+             and _split.anchor_multiset(canon) == _split.anchor_multiset(postc), spc)
+        case("canonical layout: whole-view reconstruction from post + cold object == pre",
+             strip_block(reconstruct(postc, [dict(spc)], r2, Cc)) == strip_block(canon))
+        okc, reasonc, _ = verify_prepared(r2, Cc)
+        case("canonical layout: C re-derives consistent from objects", okc, reasonc)
+        git2("update-ref", "-d", "refs/retire/2")
+        # -------- v3.0-143: the SHARED clip fixture -- the verb and the manifest clip the
+        # last span (region at file END) to the SAME bytes (the v3.0-132 two-tool rule);
+        # the manifest battery pins the same constants.
+        write2("wiki/topic/clip.md", _manifest._SHARED_CLIP_FIXTURE)
+        git2("add", "-A")
+        git2("commit", "-q", "-m", "clip fixture")
+        resx = propose(r2, "wiki/topic/clip.md", titles=["Only Section"])
+        recx = json.loads(_blob(r2, resx["commit"], resx["record"]).decode())
+        spx = recx["spans"][0]
+        case("shared clip fixture: the verb's clipped span sha/bytes/cold bytes equal the "
+             "manifest's (_SHARED_CLIP_EXPECT) -- the two clips cannot diverge silently",
+             spx["sha256"] == _sha(_manifest._SHARED_CLIP_EXPECT.encode("utf-8"))
+             and spx["bytes"] == len(_manifest._SHARED_CLIP_EXPECT.encode("utf-8"))
+             and _lf(_blob(r2, resx["commit"], spx["cold_object"]["path"])) ==
+             _manifest._SHARED_CLIP_EXPECT.encode("utf-8"), spx)
+        msx = [s for s in _manifest.parse_spans(_manifest._SHARED_CLIP_FIXTURE)
+               if s["title"] == "Only Section"][0]
+        case("shared clip fixture: manifest parse_spans reports the SAME sha/bytes",
+             msx["sha256"] == spx["sha256"] and msx["bytes"] == spx["bytes"], msx)
+        git2("update-ref", "-d", "refs/retire/%d" % resx["seq"])
+        # a span crossing NON-BLANK text beyond the region refuses (one contiguous slice)
+        strad = ("---\ntitle: S\n---\n\n## Top\n\nAbove region.\n\n"
+                 "# --- derivation (engine-managed; strip region) ---\nschema_version: 3.2\n"
+                 "# --- /derivation ---\n\nBelow region, same section.\n")
+        write2("wiki/topic/strad.md", strad)
+        git2("add", "-A")
+        git2("commit", "-q", "-m", "straddle fixture")
+        try:
+            propose(r2, "wiki/topic/strad.md", titles=["Top"])
+            case("straddling span refused", False)
+        except Refuse as e:
+            case("a span crossing the region onto non-blank text REFUSES (never silently "
+                 "retires half a section)", "crosses the derivation region" in str(e), e)
+        # publish the canonical retirement (as promote.py would), then retire a SECOND
+        # span: the block ABOVE the body grows, and resolution must track the stub delta
+        # AND the block growth (bshift) -- pinned against the real file positions, both
+        # sides computed from the actual texts, never hand-numbered.
+        resc2 = propose(r2, "wiki/topic/canon.md", titles=["Canon A"])
+        git2("tag", "-a", "-m", "promotion\nproposal_digest: sha256:%s\nmode: visible\n" % resc2["digest"],
+             "retire/2", resc2["commit"])
+        pub_c = _trust.publish_retirement(r2, "retire/2", "main")
+        git2("reset", "-q", "--hard")
+        recover(r2)
+        t2 = open(os.path.join(r2, "wiki", "topic", "canon.md"), encoding="utf-8").read().replace("\r\n", "\n")
+        g2h = gen_hash(t2)
+        beta_at_g1 = canon.split("\n").index("Beta canonical body.") + 1
+        beta_at_g2 = t2.split("\n").index("Beta canonical body.") + 1
+        rs_c = resolve(r2, "canon.md:%d@%s" % (beta_at_g1, gen_hash(canon)[:8]))
+        case("canonical bshift: a g1 citation below the top-of-file region resolves through "
+             "stub delta + block growth to the line's REAL current position",
+             pub_c["ok"] and rs_c["resolved"] and rs_c["kind"] == "view"
+             and rs_c["line"] == beta_at_g2, (rs_c, beta_at_g2))
+        resd = propose(r2, "wiki/topic/canon.md", titles=["Canon B"])
+        recd = json.loads(_blob(r2, resd["commit"], resd["record"]).decode())
+        okd2, reasond2, _ = verify_prepared(r2, resd["commit"])
+        case("canonical second retirement (the pre view already carries a block above the "
+             "body): C re-derives consistent (generation-coordinate recovery)", okd2, reasond2)
+        # a FORGED bshift (view block row and record changed together) is rejected: the
+        # field is re-derived from the two views, never trusted
+        post_d = _blob(r2, resd["commit"], "wiki/topic/canon.md").decode()
+        ents_d, ptr_d, idx_d = parse_retirements_block(post_d)
+        ents_f = [dict(x) for x in ents_d]
+        ents_f[-1]["bshift"] = ents_f[-1]["bshift"] + 1
+        pl_d = post_d.split("\n")
+        pl_d[idx_d[0]:idx_d[1] + 1] = render_block(ents_f, ptr_d)
+        forged_v = "\n".join(pl_d)
+        rec_fb = json.loads(_blob(r2, resd["commit"], resd["record"]).decode())
+        rec_fb["redirects"] = [e for e in ents_f if e["seq"] == resd["seq"]]
+        rec_fb["post_view_sha256"] = _sha(forged_v.encode("utf-8"))
+        rec_fb["post_generation"] = gen_hash(forged_v)
+        bad_fb = json.dumps(rec_fb, indent=1, sort_keys=True).encode("utf-8")
+        blobs_fb = {resd["record"]: (bad_fb, _hash_object(r2, bad_fb)),
+                    "wiki/topic/canon.md": (forged_v.encode("utf-8"), _hash_object(r2, forged_v.encode("utf-8")))}
+        for q_fb in (rec_fb["proposal"],):
+            b_fb = _blob(r2, resd["commit"], q_fb)
+            blobs_fb[q_fb] = (b_fb, _hash_object(r2, b_fb))
+        for co_fb in rec_fb["cold_objects"]:
+            b_fb = _blob(r2, resd["commit"], co_fb["path"])
+            blobs_fb[co_fb["path"]] = (b_fb, _hash_object(r2, b_fb))
+        C_fb = _build_commit(r2, _trust._parents(r2, resd["commit"])[0], blobs_fb, "forged bshift")
+        okfb, reasonfb, _ = verify_prepared(r2, C_fb)
+        case("a FORGED block-shift field is rejected on re-verification (re-derived from "
+             "the views, never trusted)", not okfb and "block-shift" in reasonfb, reasonfb)
+        # ...and OMITTING the fields (view block row and record together) is rejected too
+        # (cross-vendor round-1 catch: absence must not default to no-shift)
+        ents_o = [dict(x) for x in ents_d]
+        ents_o[-1].pop("bshift", None)
+        ents_o[-1].pop("bafter", None)
+        pl_o = post_d.split("\n")
+        pl_o[idx_d[0]:idx_d[1] + 1] = render_block(ents_o, ptr_d)
+        omit_v = "\n".join(pl_o)
+        rec_ob = json.loads(_blob(r2, resd["commit"], resd["record"]).decode())
+        rec_ob["redirects"] = [e for e in ents_o if e["seq"] == resd["seq"]]
+        rec_ob["post_view_sha256"] = _sha(omit_v.encode("utf-8"))
+        rec_ob["post_generation"] = gen_hash(omit_v)
+        bad_ob = json.dumps(rec_ob, indent=1, sort_keys=True).encode("utf-8")
+        blobs_ob = {resd["record"]: (bad_ob, _hash_object(r2, bad_ob)),
+                    "wiki/topic/canon.md": (omit_v.encode("utf-8"), _hash_object(r2, omit_v.encode("utf-8")))}
+        for q_ob in (rec_ob["proposal"],):
+            b_ob = _blob(r2, resd["commit"], q_ob)
+            blobs_ob[q_ob] = (b_ob, _hash_object(r2, b_ob))
+        for co_ob in rec_ob["cold_objects"]:
+            b_ob = _blob(r2, resd["commit"], co_ob["path"])
+            blobs_ob[co_ob["path"]] = (b_ob, _hash_object(r2, b_ob))
+        C_ob = _build_commit(r2, _trust._parents(r2, resd["commit"])[0], blobs_ob, "omitted bshift")
+        okob, reasonob, _ = verify_prepared(r2, C_ob)
+        case("an entry OMITTING bshift/bafter is rejected (absence never defaults to "
+             "no-shift; this verb always writes the fields)",
+             not okob and "omits its block-shift" in reasonob, reasonob)
+        git2("tag", "-a", "-m", "promotion\nproposal_digest: sha256:%s\nmode: visible\n" % resd["digest"],
+             "retire/%d" % resd["seq"], resd["commit"])
+        pub_d = _trust.publish_retirement(r2, "retire/%d" % resd["seq"], "main")
+        git2("reset", "-q", "--hard")
+        recover(r2)
+        rs_d = resolve(r2, "canon.md:%d@%s" % (beta_at_g2, g2h[:8]))
+        case("canonical bshift: a g2 citation INTO the second retired span resolves to its "
+             "cold object at the right offset",
+             pub_d["ok"] and rs_d["resolved"] and rs_d["kind"] == "cold"
+             and rs_d["target"] == recd["spans"][0]["cold_object"]["path"]
+             and rs_d["line"] == beta_at_g2 - recd["spans"][0]["start_line"] + 1, rs_d)
+        case("canonical-layout battery leaves nothing prepared", _prepared(r2) == [])
         # -------- release scope switch
         global RELEASE_SCOPE
         RELEASE_SCOPE = "disabled"

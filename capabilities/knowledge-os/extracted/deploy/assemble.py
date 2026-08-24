@@ -2523,6 +2523,67 @@ def _self_test_packet_machinery():
         else:
             check("staleness fixture skipped (git binary unavailable; non-fatal)", True)
 
+    # ---- v3.0-133 pin: the ECO-1 overlay repo NEVER copies the host .git ----
+    # A host repo carrying a deliberately long ref (the Codex refs/codex/turn-diffs/...
+    # class that crossed MAX_PATH when re-rooted under a deeper temp dir) still overlays
+    # fine, and the planted ref is ABSENT from the overlay's fresh history -- proof the
+    # host .git did not travel.
+    with tempfile.TemporaryDirectory() as tmp:
+        host = os.path.join(tmp, "host")
+        _write_tree(host, {
+            "deploy/entities.yaml": "entities: {}\n",
+            "wiki/overlay-pin.md": _mk_view(entities=[], summary="overlay pin view"),
+        })
+        host_git_ok = True
+        for args in (["init", "-q"], ["config", "user.email", "t@t"],
+                     ["config", "user.name", "t"], ["add", "."],
+                     ["commit", "-q", "-m", "host fixture"]):
+            try:
+                host_git_ok = subprocess.run(["git", "-C", host] + args,
+                                             capture_output=True).returncode == 0
+            except OSError:
+                host_git_ok = False
+            if not host_git_ok:
+                break
+        if host_git_ok:
+            long_ref = "refs/codex/turn-diffs/" + "x" * 180
+            planted = subprocess.run(["git", "-C", host, "update-ref", long_ref, "HEAD"],
+                                     capture_output=True).returncode == 0
+            if not planted:
+                # loose-ref plant refused (host path limits) -> plant via packed-refs (a
+                # TEXT file, no per-ref path on disk) so the absence check ALWAYS runs
+                # (cross-vendor round-1 catch: a pin conditional on the plant succeeding
+                # is not a pin)
+                head_sha = subprocess.run(["git", "-C", host, "rev-parse", "HEAD"],
+                                          capture_output=True, text=True).stdout.strip()
+                if head_sha:
+                    with open(os.path.join(host, ".git", "packed-refs"), "a",
+                              encoding="ascii", newline="\n") as prf:
+                        prf.write("%s %s\n" % (head_sha, long_ref))
+                    planted = subprocess.run(
+                        ["git", "-C", host, "show-ref", "--verify", long_ref],
+                        capture_output=True).returncode == 0
+            overlay = os.path.join(tmp, "overlay")
+            os.makedirs(overlay)
+            ok_ov = _overlay_repo(overlay, host)
+            check("v3.0-133: overlay fixture repo builds its OWN git history, never the "
+                  "host .git (long host ref planted=%s)" % planted, ok_ov)
+            if ok_ov and planted:
+                ref_travelled = subprocess.run(
+                    ["git", "-C", overlay, "show-ref", "--verify", long_ref],
+                    capture_output=True).returncode == 0
+                check("v3.0-133: the planted over-long host ref is ABSENT from the overlay "
+                      "repo (the host .git did not travel)", not ref_travelled)
+            elif ok_ov:
+                # cross-vendor round-2 catch: a pin conditional on the plant is not a
+                # pin. With the packed-refs fallback the plant is deterministic on any
+                # working git; failing to establish it FAILS the case loudly rather
+                # than recording a positive-half-only pass.
+                check("v3.0-133: the long-ref plant could not be established even via "
+                      "packed-refs -- the absence pin did NOT run; investigate", False)
+        else:
+            check("v3.0-133 overlay pin skipped (git binary unavailable; non-fatal)", True)
+
     # ---- Sanity: seed views get full-text, closure-only members get summaries ----
     with tempfile.TemporaryDirectory() as tmp:
         _write_tree(tmp, {
@@ -2896,6 +2957,34 @@ def _self_test_manifest_gate():
 # proof, not fixture proof).
 ###############################################################################
 
+def _overlay_repo(tmp, repo_root):
+    """Build the ECO-1 negative-half overlay repo: the host's deploy/ + wiki/ trees copied
+    under tmp and committed at HEAD by tmp's OWN fresh git history. NEVER copies the host
+    .git (v3.0.51, backlog v3.0-133: a long ref path -- e.g. Codex's
+    refs/codex/turn-diffs/... -- re-rooted under a deeper temp dir crossed the Windows
+    path limit, so the doctor FAILed on production hosts for a reason unrelated to the
+    instance; a self-test that depends on the host .git's contents is an environment
+    probe, not a self-test). The staleness semantics are unchanged: HEAD holds the
+    committed copies, the caller then edits the WORKING copy past the verify stamp.
+    Returns True when the fixture repo committed cleanly; False = caller skips."""
+    import shutil
+    import subprocess
+    try:
+        shutil.copytree(os.path.join(repo_root, "deploy"), os.path.join(tmp, "deploy"))
+        shutil.copytree(os.path.join(repo_root, "wiki"), os.path.join(tmp, "wiki"))
+    except OSError:
+        return False
+    for args in (["init", "-q"], ["config", "user.email", "overlay@fixture"],
+                 ["config", "user.name", "overlay"], ["config", "commit.gpgsign", "false"],
+                 ["add", "."], ["commit", "-q", "-m", "overlay fixture"]):
+        try:
+            if subprocess.run(["git", "-C", tmp] + args, capture_output=True).returncode != 0:
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def _self_test_eco1_golden():
     failed = 0
     total = 0
@@ -3081,11 +3170,14 @@ def _self_test_eco1_golden():
               " staleness logic is covered fixture-based in the P4 self-tests)", True)
     else:
         import tempfile
-        import shutil
         with tempfile.TemporaryDirectory() as tmp:
-            shutil.copytree(os.path.join(repo_root, "deploy"), os.path.join(tmp, "deploy"))
-            shutil.copytree(os.path.join(repo_root, "wiki"), os.path.join(tmp, "wiki"))
-            shutil.copytree(os.path.join(repo_root, ".git"), os.path.join(tmp, ".git"))
+            if not _overlay_repo(tmp, repo_root):
+                check("ECO-1 golden negative half: skipped (overlay fixture repo could not "
+                      "be built -- git or copy unavailable; non-fatal)", True)
+                _tool_grant()._rm_allowlist_fixture(_fixture_allowlist)
+                print("assemble.py ECO-1 golden self-test: %s (%d/%d)" %
+                      ("PASS" if failed == 0 else "FAIL", total - failed, total))
+                return failed, total
             target_abs = os.path.join(tmp, target_rel.replace("/", os.sep))
             with open(target_abs, "r", encoding="utf-8") as fh:
                 original = fh.read()

@@ -656,6 +656,177 @@ def retirements_block(text):
     return "\n".join(lines[s:e + 1])
 
 
+_split_mod = None
+
+
+def _split():
+    """check-split.py, loaded lazily (v3.0-141): the citation grammar's single home --
+    the same CITE_FIND_RE/_parse_citation the manifest and the verb use."""
+    global _split_mod
+    if _split_mod is None:
+        _split_mod = _load("check-split.py", "check_split_v2")
+    return _split_mod
+
+
+def strip_retirements_block(text):
+    """The view text without its engine-owned retirements block (markers inclusive).
+    Byte-parity with retire.strip_block (pinned in the battery): stripped only when BOTH
+    markers are present; an unterminated block stays in the text."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    s = e = None
+    for i, ln in enumerate(lines):
+        st = ln.strip()
+        if s is None and st == RETIREMENTS_START:
+            s = i
+        elif s is not None and st == RETIREMENTS_END:
+            e = i
+            break
+    if s is not None and e is not None:
+        lines = lines[:s] + lines[e + 1:]
+    return "\n".join(lines)
+
+
+def _gen_hash(text):
+    """The GENERATION identity of a view (retire.gen_hash parity, battery-pinned):
+    sha256 of the LF text with the retirements block stripped."""
+    return hashlib.sha256(strip_retirements_block(text).encode("utf-8")).hexdigest()
+
+
+# A bare colon-form view citation: `view.md:80` NOT already carrying a generation tag.
+# `(?![0-9@])` blocks the backtrack that would read `view.md:80@...`'s `8` as line 8,
+# and leaves any malformed short tag alone rather than double-tagging it.
+_BARE_COLON_CITE_RE = re.compile(r"([A-Za-z0-9._-]+\.md):(\d+)(?![0-9@])")
+
+
+def _wiki_view_index(repo):
+    """{basename: [repo-relative paths]} over wiki/**/*.md, cold tier excluded -- the
+    same universe shape the manifest and the verb use for citation resolution."""
+    idx = {}
+    for dp, _dns, fns in os.walk(os.path.join(repo, "wiki")):
+        rel_dp = os.path.relpath(dp, repo).replace("\\", "/")
+        if rel_dp == "wiki/cold" or rel_dp.startswith("wiki/cold/"):
+            continue
+        for fn in fns:
+            if fn.endswith(".md"):
+                idx.setdefault(fn, []).append(rel_dp + "/" + fn)
+    return idx
+
+
+def mint_citation_tags(repo, view_rel, old_text, new_text):
+    """v3.0.51 (v3.0-141, brief v4 [R3-C1]): the ENGINE mints the generation tag on every
+    NEW colon-form citation of a wiki view -- `view.md:80` becomes `view.md:80@<gen8>`,
+    gen8 = the first 8 hex of the cited view's CURRENT generation hash (its on-disk text
+    at absorb time, retirements block excluded), so the citation binds the generation it
+    was made against and can never become the bare post-Release-2 citation that blocks a
+    later retirement. Only citations on lines NEW relative to old_text are minted --
+    pre-existing lines are the frozen-registry legacy population and are never rewritten.
+    Self-citations are exempt (they move with the view; the stub/redirect heals them at
+    retirement). A basename resolving to zero wiki views is left alone (not a view
+    citation); an ambiguous one is left for the validator to refuse. Returns the text.
+    "Pre-existing" is counted by OCCURRENCE, not set membership (cross-vendor round-1
+    catch: a NEW line whose text duplicates an old line would otherwise ride as legacy
+    and become exactly the bare citation this mint exists to prevent)."""
+    old_budget = {}
+    for oln in old_text.splitlines():
+        old_budget[oln] = old_budget.get(oln, 0) + 1
+    idx = _wiki_view_index(repo)
+    own = os.path.basename(view_rel)
+
+    def _tag(m):
+        base = m.group(1)
+        if base == own:
+            return m.group(0)
+        homes = idx.get(base) or []
+        if len(homes) != 1:
+            return m.group(0)
+        vp = os.path.join(repo, homes[0].replace("/", os.sep))
+        try:
+            vtext = open(vp, encoding="utf-8-sig").read()
+        except OSError:
+            return m.group(0)
+        return "%s:%s@%s" % (base, m.group(2), _gen_hash(vtext)[:8])
+
+    out_lines = []
+    for ln in new_text.split("\n"):
+        if old_budget.get(ln, 0) > 0:
+            old_budget[ln] -= 1
+            out_lines.append(ln)
+        elif ".md:" not in ln:
+            out_lines.append(ln)
+        else:
+            out_lines.append(_BARE_COLON_CITE_RE.sub(_tag, ln))
+    return "\n".join(out_lines)
+
+
+def check_new_citations_tagged(repo, view_rel, old_text, new_text):
+    """v3.0.51 (v3.0-141): refusals the mint cannot repair. Raises ValidationError on
+    (a) a new PROSE-form citation of a wiki view ("view.md lines 80" -- the legacy
+    grammar has no tagged spelling; write the colon form and the engine mints the tag),
+    (b) a new colon-form citation whose basename resolves to MORE than one wiki view
+    (nothing can mint an ambiguous citation), (c) a new bare colon-form citation that
+    reached validation unminted (a write path that bypassed mint_citation_tags).
+    Pre-existing lines are the frozen-registry legacy population and pass untouched --
+    counted by OCCURRENCE, not set membership (a NEW duplicate of an old line is new);
+    self-citations are exempt; a basename matching no wiki view is not a view citation.
+    The prose-form window is the FULL-TEXT 200-character window after the basename,
+    newlines included -- the exact association check-split's citation grammar (and so
+    the retirement gate's citation universe) uses (cross-vendor round-2 catch: a
+    per-line window missed a basename whose 'lines N' continuation sits on the next
+    line). Stated residual: a citation formed by adding a 'lines N' continuation after
+    a basename on an UNCHANGED old line is not refused here (the anchor line is legacy);
+    it lands in the safe direction -- the retirement gate refuses it as unregistered."""
+    idx = _wiki_view_index(repo)
+    own = os.path.basename(view_rel)
+    old_budget = {}
+    for oln in old_text.splitlines():
+        old_budget[oln] = old_budget.get(oln, 0) + 1
+    sp = _split()
+    new_lines = new_text.split("\n")
+    is_new = []
+    for ln in new_lines:
+        if old_budget.get(ln, 0) > 0:
+            old_budget[ln] -= 1
+            is_new.append(False)
+        else:
+            is_new.append(True)
+    for ln_no, ln in enumerate(new_lines, 1):
+        if not is_new[ln_no - 1] or ".md:" not in ln:
+            continue
+        # colon-form citations are single tokens -- never cross-line
+        for m in _BARE_COLON_CITE_RE.finditer(ln):
+            base = m.group(1)
+            if base == own or base not in idx:
+                continue
+            if len(idx[base]) > 1:
+                raise ValidationError(
+                    "new citation %s:%s on line %d is AMBIGUOUS (%d wiki views share the "
+                    "basename) -- no generation tag can be minted; cite an unambiguous "
+                    "view (v3.0-141)" % (base, m.group(2), ln_no, len(idx[base])))
+            raise ValidationError(
+                "new bare citation %s:%s on line %d carries no generation tag -- post-"
+                "Release-2 citations are minted `%s:%s@<gen8>` (v3.0-141, brief [R3-C1]);"
+                " this write path bypassed mint_citation_tags"
+                % (base, m.group(2), ln_no, base, m.group(2)))
+    # prose-form: full-text windows (check-split parity, newlines included), anchored at
+    # basenames sitting on NEW lines
+    for bm in re.finditer(r"[A-Za-z0-9._-]+\.md", new_text):
+        base = bm.group(0)
+        if base == own or base not in idx:
+            continue
+        ln_no = new_text.count("\n", 0, bm.start()) + 1
+        if not is_new[ln_no - 1]:
+            continue
+        window = new_text[bm.end():bm.end() + 200]
+        for cm in sp.CITE_FIND_RE.finditer(window):
+            d, r = sp._parse_citation(cm.group(1))
+            if d or r:
+                raise ValidationError(
+                    "new PROSE-form citation of %s on line %d ('lines %s') cannot "
+                    "carry a generation tag -- write the tagged colon form "
+                    "`%s:<line>@<gen8>` (the engine mints the tag) (v3.0-141)"
+                    % (base, ln_no, cm.group(1), base))
+
+
 def validate_absorb_output(repo, view_rel, old_text, out, events,
                            registrations_map=None):
     """The orchestrator validates BEFORE anything is journaled (spec sec.7:
@@ -761,6 +932,10 @@ def validate_absorb_output(repo, view_rel, old_text, out, events,
         raise ValidationError("shipped-state section(s) %s changed with no "
                               "corpus_support entry"
                               % sorted({m["section"] for m in shippy}))
+    # v3.0.51 (v3.0-141): every NEW citation of a wiki view must be generation-tagged
+    # (the orchestrator mints colon-form citations via mint_citation_tags BEFORE this
+    # validator runs; what refuses here is what minting cannot repair).
+    check_new_citations_tagged(repo, view_rel, old_text, new_text)
     # P5 pointer-class write ceiling (adjudication 3 / spec sec.10): applied
     # LAST, after every pre-existing check has already passed, so it is
     # purely additive on top of them (never relaxes an existing check, and
@@ -1005,6 +1180,13 @@ def run(repo, plan, absorb_backend, run_type="compile", break_stale=False,
                     raise ValidationError("delta event missing: %s" % erel)
                 events[erel] = open(ep, encoding="utf-8").read()
             out = absorb_backend.absorb(view, old, events)
+            # v3.0.51 (v3.0-141): the engine MINTS generation tags on new colon-form view
+            # citations before validation -- deterministic normalization, the same class
+            # as the derivation-region minter below, but pre-validation because the
+            # validator refuses un-tagged new citations.
+            if out.get("new_text") is not None:
+                out = dict(out, new_text=mint_citation_tags(repo, view, old,
+                                                            out["new_text"]))
             blobs = validate_absorb_output(repo, view, old, out, events,
                                           registrations_map=registrations_map)
             classes = item.get("event_class") or {}
@@ -4921,6 +5103,107 @@ def self_test():
                                        "manifest": [{"event": "e",
                                                      "section":
                                                      "Shipped state"}]}])))
+        # ---- v3.0.51 (v3.0-141): generation-tag minting + bare-citation refusals ----
+        mint_root = tempfile.mkdtemp(prefix="cv2-mint-")
+        try:
+            os.makedirs(os.path.join(mint_root, "wiki", "topic"))
+            os.makedirs(os.path.join(mint_root, "wiki", "cold", "x"))
+            cited = ("---\ntitle: Cited\n---\n\n# Cited\n\nBody line.\n\n"
+                     "# --- retirements\n"
+                     '# {"seq":1,"i":0,"pre_hash":"a","post_hash":"b","span":[1,2],'
+                     '"stub":[1,2],"shift":0,"target":"x","mode":"cold","title":"T"}\n'
+                     "# --- /retirements\n")
+            open(os.path.join(mint_root, "wiki", "topic", "cited.md"), "w",
+                 encoding="utf-8", newline="\n").write(cited)
+            open(os.path.join(mint_root, "wiki", "cold", "x", "cited.md"), "w",
+                 encoding="utf-8", newline="\n").write("cold copy -- excluded\n")
+            g8 = _gen_hash(cited)[:8]
+            # parity pin: _gen_hash == retire.gen_hash (the verb's identity), block-stripped
+            try:
+                _retire_pin = _load("retire.py", "retire_v2_genpin")
+                case("v3.0-141: _gen_hash is byte-parity with retire.gen_hash "
+                     "(single generation identity)",
+                     _retire_pin.gen_hash(cited) == _gen_hash(cited))
+            except Exception:
+                case("v3.0-141: retire.py loadable for the gen-hash parity pin", False)
+            old_v = "# V\n\nsee cited.md:6 already here\n"
+            new_v = old_v + "\nnew fact, see cited.md:6 for the source\n"
+            minted = mint_citation_tags(mint_root, "wiki/v.md", old_v, new_v)
+            case("v3.0-141: a NEW colon-form citation is MINTED with the cited view's "
+                 "current gen8 (cold tier excluded from resolution)",
+                 "new fact, see cited.md:6@%s for the source" % g8 in minted)
+            case("v3.0-141: a PRE-EXISTING bare citation line is never rewritten "
+                 "(the frozen-registry legacy population)",
+                 "see cited.md:6 already here" in minted)
+            # cross-vendor round-1 catch: a NEW line duplicating an old bare-citation
+            # line is NEW (occurrence-counted, not set-membership) -- it is minted, and
+            # unminted it refuses
+            dup_new = old_v + "see cited.md:6 already here\n"
+            dup_minted = mint_citation_tags(mint_root, "wiki/v.md", old_v, dup_new)
+            case("v3.0-141: a NEW duplicate of an old bare-citation line is MINTED "
+                 "(occurrence budget, not line-set membership)",
+                 dup_minted.count("see cited.md:6 already here") == 1
+                 and "see cited.md:6@%s already here" % g8 in dup_minted)
+            try:
+                check_new_citations_tagged(mint_root, "wiki/v.md", old_v, dup_new)
+                case("v3.0-141: unminted duplicate refused", False)
+            except ValidationError as e:
+                case("v3.0-141: the unminted duplicate line is refused by the validator "
+                     "too", "generation tag" in str(e))
+            case("v3.0-141: minted output passes the validator's citation check",
+                 (check_new_citations_tagged(mint_root, "wiki/v.md", old_v, minted)
+                  is None))
+            case("v3.0-141: an already-tagged citation is left alone (no double tag)",
+                 mint_citation_tags(mint_root, "wiki/v.md", "",
+                                    "see cited.md:6@deadbeef x\n")
+                 == "see cited.md:6@deadbeef x\n")
+            case("v3.0-141: a SELF-citation is exempt from minting",
+                 mint_citation_tags(mint_root, "wiki/topic/cited.md", "",
+                                    "see cited.md:6 here\n") == "see cited.md:6 here\n")
+            case("v3.0-141: a basename matching no wiki view is not a view citation "
+                 "(left bare, passes)",
+                 mint_citation_tags(mint_root, "wiki/v.md", "", "see ghost.md:3\n")
+                 == "see ghost.md:3\n"
+                 and check_new_citations_tagged(mint_root, "wiki/v.md", "",
+                                               "see ghost.md:3\n") is None)
+            try:
+                check_new_citations_tagged(mint_root, "wiki/v.md", old_v, new_v)
+                case("v3.0-141: unminted bare citation refused", False)
+            except ValidationError as e:
+                case("v3.0-141: a new bare colon citation reaching validation UNMINTED "
+                     "is refused naming the tag shape", "generation tag" in str(e))
+            try:
+                check_new_citations_tagged(mint_root, "wiki/v.md", "",
+                                           "per cited.md lines 6 and 7\n")
+                case("v3.0-141: prose-form refused", False)
+            except ValidationError as e:
+                case("v3.0-141: a new PROSE-form citation ('lines N') of a wiki view is "
+                     "refused toward the tagged colon form", "PROSE-form" in str(e))
+            # cross-vendor round-2 catch: the prose window is FULL-TEXT (newlines
+            # included), the same association check-split's grammar uses -- a basename
+            # on one new line with its 'lines N' continuation on the NEXT line refuses
+            try:
+                check_new_citations_tagged(mint_root, "wiki/v.md", "",
+                                           "per cited.md\nlines 6 and 7 above\n")
+                case("v3.0-141: cross-line prose citation refused", False)
+            except ValidationError as e:
+                case("v3.0-141: a CROSS-LINE prose citation (basename, newline, "
+                     "'lines N') is refused -- window parity with check-split",
+                     "PROSE-form" in str(e))
+            os.makedirs(os.path.join(mint_root, "wiki", "other"))
+            open(os.path.join(mint_root, "wiki", "other", "cited.md"), "w",
+                 encoding="utf-8", newline="\n").write("# twin\n")
+            case("v3.0-141: an ambiguous basename is NOT minted",
+                 mint_citation_tags(mint_root, "wiki/v.md", "", "see cited.md:6\n")
+                 == "see cited.md:6\n")
+            try:
+                check_new_citations_tagged(mint_root, "wiki/v.md", "", "see cited.md:6\n")
+                case("v3.0-141: ambiguous refused", False)
+            except ValidationError as e:
+                case("v3.0-141: an ambiguous basename is refused (nothing can mint it)",
+                     "AMBIGUOUS" in str(e))
+        finally:
+            shutil.rmtree(mint_root, ignore_errors=True)
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

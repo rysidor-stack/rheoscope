@@ -133,6 +133,10 @@ if [ "${1:-}" = "--self-test" ]; then
   run_case DENY 'git tag retire/7 HEAD' 'promote-git-tag-lightweight'
   run_case DENY "git -C . tag -a -m 'x' 'retire/12' abc" 'promote-git-tag-quoted-C'
   run_case DENY 'git tag -s retire/3 abc -m "retire 3"' 'promote-git-tag-signed-in-session'
+  run_case DENY 'git tag -a -m "promotion" retire/batch/5-6 abc123' 'promote-git-tag-batch-record'
+  run_case DENY 'git tag -s retire/batch/12-14 abc -m "batch"' 'promote-git-tag-batch-signed'
+  run_case DENY 'py deploy/promote.py 3f9a1c0e7b2d4e6f --halt-after 1' 'promote-batch-halt'
+  run_case DENY 'py deploy/promote.py --rollback 3f9a1c0e7b2d4e6f' 'promote-rollback'
   run_case silent 'py deploy/retire.py --propose wiki/topic/view.md --span "Section A"' 'retire-propose-allowed'
   run_case silent 'py deploy/retire.py --recover' 'retire-recover-allowed'
   run_case silent 'py deploy/pending.py --root . --render' 'pending-render-allowed'
@@ -144,6 +148,8 @@ if [ "${1:-}" = "--self-test" ]; then
   run_case DENY 'cd x; python3 ../deploy/promote.py 3f9a1c0e7b2d4e6f' 'promote-after-semicolon'
   run_case silent 'git tag -l "retire/*"' 'git-tag-list-allowed'
   run_case silent 'git tag -v retire/2' 'git-tag-verify-allowed'
+  run_case silent 'git tag -v retire/batch/5-6' 'git-tag-verify-batch-allowed'
+  run_case silent 'git tag -l "retire/batch/*"' 'git-tag-list-batch-allowed'
   run_case silent 'git tag v3.0.50' 'git-tag-release-allowed'
   run_case silent 'python deploy/promote.py --self-test' 'promote-selftest-allowed'
   # -- DENY tier: trust-surface writes (v3.0.46, v3.0-120 brief section 3), per surface
@@ -449,10 +455,13 @@ done
 # promote.py, or hand-writing its promotion record (`git tag ... retire/<seq>`), from
 # inside a session is denied outright. Not ASK: the boundary IS that it never happens in
 # the session that prepared the proposal. promote.py refuses under the session env
-# markers too (belt and braces on the mediated lane); an unmediated spelling leaves a
+# markers too (belt and braces on the mediated lane); v3.0.52: the BATCH promotion
+# record (`git tag ... retire/batch/<first>-<last>`) and the rollback flags ride the
+# same rule -- promote.py in any spelling, and any retire/* tag write, are the
+# operator's; an unmediated spelling leaves a
 # durable pending item the next sweep shows (deploy/pending.py) -- refuse OR notice.
 # Reads of either file, `retire.py --propose/--list/--recover`, and `git tag -l` pass.
-PROMOTE_RE='(^|[[:space:]|;&(`])(py|python3?|pythonw)([[:space:]]+-[^[:space:]|;&]+)*[[:space:]]+[^[:space:]|;&]*promote\.py([[:space:]]|$)|(^|[|;&(`][[:space:]]*)(\./)?[^[:space:]|;&]*/promote\.py([[:space:]]|$)|(^|[[:space:]|;&(`])git[[:space:]]+([^|;&]*[[:space:]])?tag[[:space:]]+([^|;&]*[[:space:]])?["'"'"']?retire/[0-9]+'
+PROMOTE_RE='(^|[[:space:]|;&(`])(py|python3?|pythonw)([[:space:]]+-[^[:space:]|;&]+)*[[:space:]]+[^[:space:]|;&]*promote\.py([[:space:]]|$)|(^|[|;&(`][[:space:]]*)(\./)?[^[:space:]|;&]*/promote\.py([[:space:]]|$)|(^|[[:space:]|;&(`])git[[:space:]]+([^|;&]*[[:space:]])?tag[[:space:]]+([^|;&]*[[:space:]])?["'"'"']?retire/(batch/)?[0-9]+'
 if printf '%s' "$COMMAND_NORM" | grep -Eqi "$PROMOTE_RE" \
    && ! printf '%s' "$COMMAND_NORM" | grep -Eqi '(^|[[:space:]])git[[:space:]]+([^|;&]*[[:space:]])?tag[[:space:]]+(-l|--list|-v|--verify|-n)' \
    && ! printf '%s' "$COMMAND_NORM" | grep -Eq -- '--self-test'; then

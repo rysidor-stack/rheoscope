@@ -217,11 +217,23 @@ def _diff_identity(repo, parent, commit, paths=None):
     return hashlib.sha256(out.encode("utf-8")).hexdigest() if rc == 0 else None
 
 
-def reconstruct(repo, branch="main"):
+def _resolve_branch(repo, branch=None):
+    """v3.0.52 (v3.0-151): the production branch through the one home
+    (trust.production_branch: project.yaml key, else the checked-out branch); explicit
+    wins; unresolvable refuses -- never a silent `main`. Doctor 16(f) inherits this
+    default, so a non-main instance passes with no flag."""
+    try:
+        return _trust.resolve_branch(repo, branch)
+    except _trust.TrustError as e:
+        raise Refuse(str(e))
+
+
+def reconstruct(repo, branch=None):
     """Every item on the branch's first-parent chain, tip-most first. Items:
     retire:<commit>  a commit that introduced/modified a retire record (trust.py's walk)
     trust:<commit>   a commit touching any trust-surface class path (hook-lane untracked
                      members excepted -- they are never in history)"""
+    branch = _resolve_branch(repo, branch)
     head_rc, head, _ = _git(repo, "rev-parse", "--verify", "--quiet", "refs/heads/%s^{commit}" % branch)
     head = head.strip()
     if head_rc != 0:
@@ -254,6 +266,8 @@ def reconstruct(repo, branch="main"):
                               "parent": parent, "author": author, "date": date, "subject": subject,
                               "seq": rec.get("seq"), "proposal_digest": rec.get("proposal_digest"),
                               "view": rec.get("view"), "record": p,
+                              "batch": rec.get("batch"),
+                              "rollback_of": rec.get("rollback_of"),
                               "diff_identity": _diff_identity(repo, parent, sha) if parent else None,
                               "cold_objects": cold_ident})
             seen_retire.add(sha)
@@ -286,8 +300,9 @@ def reconstruct(repo, branch="main"):
     return items, head
 
 
-def status(repo, branch="main", now=None):
+def status(repo, branch=None, now=None):
     now = now or _now()
+    branch = _resolve_branch(repo, branch)
     items, head = reconstruct(repo, branch)
     acks = _rows(repo, ACKS)
     sweeps = _rows(repo, SWEEPS)
@@ -431,7 +446,7 @@ def heartbeat(repo, kind, run_id, outcome=None, now=None):
     return row
 
 
-def ack(repo, run_id, briefing, branch="main", now=None):
+def ack(repo, run_id, briefing, branch=None, now=None):
     """Attended sweeps ONLY. Acknowledges every currently pending item (the sweep rendered
     them into `briefing`)."""
     if not attended():
@@ -499,7 +514,7 @@ def rendered_in(briefing_text, item):
     return len(c) >= 12 and c[:12] in briefing_text
 
 
-def observe(repo, observer="standing-loop", branch="main", now=None):
+def observe(repo, observer="standing-loop", branch=None, now=None):
     """The independent observer: writes an alarm row when the window was missed or a cycle
     failed, unless an identical alarm is already outstanding. Returns (status, new_rows)."""
     now = now or _now()
@@ -543,8 +558,15 @@ def render(st):
     out.append("%-9s %-12s %-24s %-20s %s" % ("kind", "commit", "author", "date", "detail"))
     for it in st["pending"]:
         if it["kind"] == "retirement":
-            detail = "seq %s view %s digest %s -- %s%s" % (
-                it.get("seq"), it.get("view"), (it.get("proposal_digest") or "?")[7:19],
+            btag = ""
+            if it.get("batch"):
+                btag = "batch %s member %s/%s -- " % (it["batch"].get("id"),
+                                                     (it["batch"].get("index") or 0) + 1,
+                                                     it["batch"].get("n"))
+            if it.get("rollback_of") is not None:
+                btag += "ROLLBACK of seq %s -- " % it["rollback_of"]
+            detail = "%sseq %s view %s digest %s -- %s%s" % (
+                btag, it.get("seq"), it.get("view"), (it.get("proposal_digest") or "?")[7:19],
                 "PUBLISHED (%s)" % it.get("authority") if it.get("published") else "UNPUBLISHED PROPOSAL",
                 "" if it.get("published") else ": " + str(it.get("status"))[:120])
         elif it["kind"] == "trust-surface":
@@ -864,6 +886,32 @@ def self_test():
         rall = render(status(r, now=t6))
         case("render: names the window line and the table header",
              "observation window" in rall and "kind" in rall and "commit" in rall)
+        # ---- v3.0.52 (v3.0-151): a non-main instance resolves with NO branch argument
+        r5 = os.path.join(base, "repo5")
+        os.makedirs(r5)
+        subprocess.run(["git", "-C", r5, "init", "-q", "-b", "dogfood/fork-v3"], capture_output=True)
+        for cfg in (["user.email", "t@t"], ["user.name", "t"], ["commit.gpgsign", "false"]):
+            subprocess.run(["git", "-C", r5, "config"] + cfg, capture_output=True)
+        p5 = os.path.join(r5, "core", "security", "hooks")
+        os.makedirs(p5, exist_ok=True)
+        with open(os.path.join(p5, "egress-allowlist.txt"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("# none\n")
+        with open(os.path.join(r5, "project.yaml"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("trust_surface_signing: visible\n")
+        subprocess.run(["git", "-C", r5, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", r5, "commit", "-q", "-m", "seed"], capture_output=True)
+        st5 = status(r5)
+        case("v3.0-151: status() with no branch on a `dogfood/fork-v3` checkout resolves and "
+             "reconstructs (doctor 16(f)'s exact invocation shape passes on a non-main "
+             "instance)", len(st5["pending"]) == 1
+             and st5["pending"][0]["kind"] == "trust-surface", st5["pending"])
+        subprocess.run(["git", "-C", r5, "checkout", "-q", "--detach"], capture_output=True)
+        try:
+            status(r5)
+            case("v3.0-151: detached refused", False)
+        except Refuse as e5:
+            case("v3.0-151: a DETACHED head with no production_branch key REFUSES, never a "
+                 "silent `main`", "unresolvable" in str(e5), e5)
     finally:
         if saved_env is None:
             os.environ.pop(UNATTENDED_ENV, None)
@@ -879,7 +927,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="pending.py", description=__doc__.split("\n\n")[0])
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--root", default=".")
-    ap.add_argument("--branch", default="main")
+    ap.add_argument("--branch", default=None,
+                    help="production branch (default: project.yaml production_branch, "
+                         "else the checked-out branch -- v3.0-151)")
     ap.add_argument("--render", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--heartbeat", choices=["open", "ok", "failed"])

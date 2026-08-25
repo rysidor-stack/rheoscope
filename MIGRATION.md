@@ -260,6 +260,60 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.51 → v3.0.52 (ADR #11 Release 3: the batch — one promote for N views — the brake, lineage-stable cap debt, and correction pairing)
+
+Two lanes, and **the lane ORDER is load-bearing (v3.0-150):** the session lane lands FIRST.
+The trust-lane verbs pin their session-lane siblings' interface (`check-split.SPLIT_IFACE`),
+so a half-migrated instance now refuses with a named message instead of dying in a raw
+AttributeError mid-ceremony (the first fork's v3.0.51 adoption window, 166b772→5738b1c) — but
+the right move is not to open the window at all.
+
+**Step 1 — SESSION lane (any session copies these; commit together):**
+`deploy/check-split.py` (the `SPLIT_IFACE` pin), `deploy/retire-manifest.py`
+(`splice_sections`), `deploy/compile-v2.py` (the cap-debt brake, section-scoped absorb, the
+`cap_episodes` pre-gate, the v3.0-150 skew guard), `deploy/debt.py` (**NEW** — lineage-stable
+cap episodes; run `py deploy/debt.py --self-test`, then `--report` for your first corpus
+debt reading), `deploy/assemble.py`, `deploy/check-frontmatter.py` (the optional `view_id`
+region key), `deploy/backfill-derivation.py` (`mint_view_id` — the one identity mint),
+`deploy/engine-caps.yaml` (append the `episode_grace_days` / `episode_grace_absorbs` keys;
+defaults 30/10 apply when absent), `docs/engine/OPERATIONS.md` § 9a,
+`docs/engine/memory-engine-v3-spec.md` (the §7 cap-breach amendment), `docs/wiki-schema.md`
+(§ 17.1 optional keys), your compile skill from the template's
+`capabilities/knowledge-os/extracted/compile/SKILL.md.template` (section-scoped answers +
+the brake note; substitute your `{{...}}` values as usual),
+`.claude/skills/sweep/SKILL.md` (step 17 batch rendering + step (b2) cap debt),
+`.claude/skills/orient/SKILL.md` (browser-pane row), `core/governance/CLAUDE.md` — append
+the new "### Browser-pane automation" subsection under § Session discipline (v3.0-153,
+fleet inbox #2), `core/governance/check-reference-integrity.py` (the quoted-record sweep
+exclusion, v3.0-152, fleet inbox #7 — declare extra dirs via `quoted_record_dirs:` in
+`project.yaml` if your evidence lives elsewhere than `deploy/evidence/`).
+
+**Step 2 — OPERATOR-COPY lane (trust surfaces; you copy and commit these yourself — under
+`required`, `git commit -S`):** `deploy/retire.py` (splice, batch, rollback, branch
+resolution, skew refusal), `deploy/promote.py` (batch promotion, `--halt-after`,
+`--rollback`), `deploy/pending.py` (batch rendering, branch resolution),
+`deploy/trust.py` (`production_branch` — the one branch home — plus batch publication),
+`core/security/hooks/block-dangerous-bash.sh` (the in-session promotion DENY now covers
+`retire/batch/*` tags and the rollback spellings). Run the boards after:
+`bash core/security/hooks/block-dangerous-bash.sh --self-test` and
+`py deploy/trust.py --self-test`.
+
+**Step 3 — branch configuration [your call, most instances: nothing].** Every Release-2/3
+entry point now resolves the production branch from `project.yaml`'s optional
+`production_branch:` key, else the CHECKED-OUT branch (v3.0-151, fleet inbox #8). A
+non-main instance (e.g. a dogfood fork) can DROP every `--branch` workaround — the echoed
+commands now carry the resolved branch and run verbatim. Set the key only if your checkout
+routinely sits on a branch other than the production one. `register-legacy` now REFUSES on
+an unresolvable branch instead of freezing a hashless registry; if your instance ever froze
+one (null `view_sha256` rows), re-freeze once: `py deploy/retire.py --register-legacy`.
+
+**Step 4 — nothing else migrates.** `view_id` mints into each region at its next engine
+touch; legacy regions resolve to the same identity by path (no backfill pass needed). Cap
+episodes are computed, never stored — your first `debt.py --report` IS the migration.
+Batch usage from here: `py deploy/retire.py --propose-batch spec.json` → ONE
+`py deploy/promote.py <batch-digest>` from your terminal; `--halt-after N` and
+`py deploy/promote.py --rollback <digest>` are the brake. Finish with `/doctor`.
+
 ## v3.0.50 → v3.0.51 (Release 2 unblocked: the verb learns the real view layout; citation tags are minted; the perimeter stops refusing prose)
 
 v3.0.50's retirement verb refused every view the engine actually compiles (it assumed the

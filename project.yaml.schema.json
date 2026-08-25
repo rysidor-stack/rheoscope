@@ -304,6 +304,12 @@
       "maximum": 365,
       "description": "Optional (v3.0.50; ADR #11 condition 4 as amended 2026-08-22, backlog v3.0-139). The OBSERVATION WINDOW in days for the durable pending list (deploy/pending.py): every retirement and trust-surface change on the production branch is reconstructed from git objects and stays pending until an ATTENDED sweep renders it (reading the sweep is the acknowledgement; an unattended/scheduled sweep renders but never acknowledges). When no attended sweep has closed ok within this many days, the independent observer (the nightly standing-loop tick, `pending.py --observe`) writes a missed-cycle alarm row that is itself pending until acknowledged; a failed sweep cycle raises a failed-cycle alarm regardless of the window. Default 7 when absent. /doctor check 16 (alarm sub-check) and /sweep step 17 name a missed window."
     },
+    "production_branch": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._/-]+$",
+      "description": "Optional (v3.0.52, backlog v3.0-151, fleet inbox #8). The PRODUCTION BRANCH the retirement machinery publishes to and reads from (deploy/retire.py, promote.py, pending.py, doctor 16(f), every echoed command). When absent, the machinery resolves the CHECKED-OUT branch (symbolic-ref HEAD) -- correct for almost every instance, including non-main branches like a dogfood fork. Set this only when the checkout routinely sits on a branch other than the production one. An explicit --branch flag always wins; an unresolvable branch REFUSES (never a silent `main`)."
+    },
     "backlog_upstream": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",

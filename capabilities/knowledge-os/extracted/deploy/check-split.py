@@ -99,6 +99,15 @@ CITE_FIND_RE = re.compile(
 # THIS constant. Byte-identical to the verb's original v3.0.50 pattern.
 TAGGED_CITE_RE = re.compile(r"([A-Za-z0-9._-]+\.md):(\d+)@([0-9a-f]{8})")
 
+# v3.0.52 (v3.0-150): the cross-file interface pin for single-home symbols. This file
+# exports symbols other engine tools import (TAGGED_CITE_RE, CITE_FIND_RE, anchor_multiset);
+# a two-lane MIGRATION copy can transiently pair a NEWER importer with an OLDER copy of
+# this file, and the failure was a bare AttributeError mid-ceremony (the first fork's v3.0.51
+# adoption's lane order). Importers pin a minimum and refuse NAMED on skew. Bump this when
+# an exported symbol is added or its contract changes; never on internal edits.
+#   2 = the v3.0.51 single-home set (TAGGED_CITE_RE) + this pin (v3.0.52).
+SPLIT_IFACE = 2
+
 # content2-amendment A1.2 -- explicit ID spans: `{#some-id}` attrs and `<a id="some-id">`
 # HTML anchors. These join the heading-slug set to form the full anchor set A(F).
 _ID_ATTR_RE = re.compile(r"\{#([A-Za-z0-9_-]+)\}")

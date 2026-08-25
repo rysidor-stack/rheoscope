@@ -2035,7 +2035,10 @@ def _mk_view(entities=None, bundle=None, tier="T1", consumed_status="verified-co
     if no_deriv:
         return "---\ntitle: x\n---\nNo derivation block.\n"
     lines = ["---", "title: x", "---", "# --- derivation (engine-managed; strip region) ---",
-              "schema_version: 3.2", "view: topic"]
+              "schema_version: 3.2", "view: topic",
+              # v3.0.52 (ADR #11 Release 3): real regions carry the logical identity from
+              # birth (backfill-derivation.render_region), so the canonical fixture does too
+              "view_id: v-0000000000000000"]
     lines.append('summary: "%s"' % summary)
     lines.append("entities: [%s]" % ", ".join(entities or []))
     lines.append("tier: %s" % tier)

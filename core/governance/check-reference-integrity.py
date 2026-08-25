@@ -71,6 +71,19 @@ tracked .py (module docstring + lines carrying `FIX:`), then classifies each aga
   * Append-only history (HARNESS-CHANGELOG.md, MIGRATION.md, changelog.md) is excluded as a
     SOURCE (same v2.0 #10c rationale as phase 1): old entries legitimately rot. Dev-only
     history dirs (audits/, harness-v*/, verifier-reviews/, design-history/) likewise.
+  * QUOTED-RECORD sources (v3.0.52, backlog v3.0-152, fleet inbox #7): cross-vendor
+    evidence packets under deploy/evidence/ quote wiki prose VERBATIM, relative links
+    included — a link correct relative to wiki/systems/ necessarily dangles from
+    deploy/evidence/, and no edit can repair it without falsifying the quote. On the
+    first production instance this class alone held the sweep at ~123k permanent
+    "violations", so operators learned to ignore the sensor. Dangling citations whose
+    SOURCE file lives under a quoted-record directory are therefore EXCLUDED from the
+    headline count and the exit code, but stay VISIBLE on their own reported line
+    (counted, never silent — same rule as every other skip class). Default:
+    deploy/evidence/. A project extends the list via a `quoted_record_dirs:` YAML
+    block list in project.yaml at the repo root (repo-relative posix dir prefixes;
+    read line-level, no YAML dependency). Per-doc gate mode is UNAFFECTED: an evidence
+    file named explicitly as an argument is still fully checked.
   * Everything else that dangles in BOTH layouts is a violation. What this sweep can NOT
     catch, stated honestly: citations that resolve on the template but die at init (the
     post-init dead-path class — core/skills/ cites in TOUR/GLOSSARY survive init's
@@ -302,6 +315,45 @@ SWEEP_EXCLUDE_SRC_PREFIXES = (
 # deferred capability designs cite files their build would create
 SWEEP_EXCLUDE_SRC_FRAGMENTS = ('/deferred/', '/examples/', '/test-fixtures/')
 
+# Quoted-record SOURCES (v3.0.52, backlog v3.0-152, fleet inbox #7): directories
+# whose files quote OTHER records verbatim, relative links included -- the links
+# are correct in the quoted original and necessarily dangle from the quoting
+# file, so no edit can repair them without falsifying the quote. Dangling
+# citations from these sources are excluded from the failing count / exit code
+# but reported on their own line (counted, never silent). Unlike the SOURCE
+# excludes above, the files are still swept -- the class stays visible.
+QUOTED_RECORD_DIRS_DEFAULT = ('deploy/evidence/',)
+
+
+def load_quoted_record_dirs(root):
+    """Quoted-record dir prefixes: the defaults plus any `quoted_record_dirs:`
+    block-list entries in project.yaml at the repo root. Minimal line-level
+    read -- no YAML dependency (check-template-updates.py house style). Entries
+    are repo-relative posix dir prefixes; a missing file or absent key just
+    yields the defaults."""
+    dirs = list(QUOTED_RECORD_DIRS_DEFAULT)
+    path = os.path.join(root, 'project.yaml')
+    if not os.path.isfile(path):
+        return dirs
+    in_list = False
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        for line in f:
+            if re.match(r'^quoted_record_dirs\s*:\s*(#.*)?$', line):
+                in_list = True
+                continue
+            if in_list:
+                m = re.match(r'''^\s+-\s*["']?([^"'#\n]+?)["']?\s*(#.*)?$''', line)
+                if m:
+                    d = m.group(1).strip().replace('\\', '/')
+                    if d and not d.endswith('/'):
+                        d += '/'
+                    if d and d not in dirs:
+                        dirs.append(d)
+                    continue
+                if line.strip():
+                    in_list = False   # left the block list
+    return dirs
+
 # Citation targets that are minted at runtime on an instance and can never
 # exist in a template tree -- skipped as a NAMED class, counted, never silent.
 RUNTIME_TARGET_PREFIXES = (
@@ -457,6 +509,7 @@ def run_sweep(root=None):
         print('RESULT: INCONCLUSIVE — could not list the HEAD tree.')
         return 2
     head_files = set(filter(None, tree.splitlines()))
+    quoted_dirs = load_quoted_record_dirs(REPO_ROOT)
 
     SRC_EXT = ('.md', '.py', '.yaml', '.yml', '.yaml.example', '.yml.example')
     sources = [p for p in sorted(head_files)
@@ -470,7 +523,8 @@ def run_sweep(root=None):
 
     head_basenames = {p.rsplit('/', 1)[-1] for p in head_files}
 
-    violations = []   # (source, target)
+    violations = []   # (source, target) — repairable: these gate the result
+    quoted = []       # (source, target) — dangling from a quoted-record source
     n_checked = 0
     n_runtime = 0
     n_placeholder = 0
@@ -481,6 +535,9 @@ def run_sweep(root=None):
         rc, text = run_git('show', 'HEAD:%s' % src)
         if rc != 0:
             continue
+        # dangling citations from a quoted-record source are verbatim quotes of
+        # ANOTHER doc's links — unrepairable by definition, diverted off the result
+        src_quoted = any(src.startswith(q) for q in quoted_dirs)
         if src.endswith('.md'):
             tokens = sweep_extract_md(text)
         elif src.endswith('.py'):
@@ -512,7 +569,7 @@ def run_sweep(root=None):
                         or (t.endswith('.example') and t[:-8] in head_basenames):
                     n_basename += 1
                 else:
-                    violations.append((src, t))
+                    (quoted if src_quoted else violations).append((src, t))
                 continue
             n_checked += 1
             cands = set(sweep_candidates(t))
@@ -529,11 +586,13 @@ def run_sweep(root=None):
             if not any(c in head_files or dir_member(head_files, c)
                        for c in cands) \
                     and not any(p.endswith('/' + t) for p in head_files):
-                violations.append((src, t))
+                (quoted if src_quoted else violations).append((src, t))
 
     print('  %d unique citation(s) checked (%d resolved by basename); skipped '
           'as runtime-minted: %d; illustrative: %d; placeholder/non-path: %d'
           % (n_checked, n_basename, n_runtime, n_illustrative, n_placeholder))
+    print('  quoted-record citations (excluded from the result, not repairable): '
+          '%d across %d file(s)' % (len(quoted), len({s for s, _ in quoted})))
     print()
     if violations:
         by_target = {}
@@ -636,10 +695,33 @@ def run_sweep_self_test():
                       '`missing-dir/ghost-hook.sh` must still be caught.\n',
             'hook.sh': '#!/bin/sh\n',
         }, 1, {'missing-dir/ghost-hook.sh'}),
+        # v3.0.52 (backlog v3.0-152): the quoted-record exclusion, pinned BOTH
+        # directions — the same dangling link FAILs from a shipped doc but only
+        # COUNTS from a quoted-record source, and the sweep exits 0 when the
+        # quoted class is all that dangles.
+        ('quoted-record source: dangling quote excluded from the result but '
+         'counted (v3.0-152)', {
+            'deploy/evidence/packet-a.md': 'Quoted wiki prose: see '
+                      '[pricing](sections/pricing-model.md) for the derivation.\n',
+        }, 0, set(), (1, 1)),
+        ('same dangling link: shipped doc FAILs, quoted-record twins only count '
+         '(v3.0-152)', {
+            'doc.md': 'Canon is [pricing](sections/pricing-model.md).\n',
+            'deploy/evidence/packet-a.md': 'Quoted: [pricing](sections/pricing-model.md).\n',
+            'deploy/evidence/packet-b.md': 'Also quoted: `sections/pricing-model.md`.\n',
+        }, 1, {'sections/pricing-model.md'}, (2, 2)),
+        ('project.yaml quoted_record_dirs extends the excluded set (v3.0-152)', {
+            'project.yaml': 'name: t\nquoted_record_dirs:\n  - attic/evidence/\n',
+            'attic/evidence/quote.md': 'Verbatim: [x](sections/missing-doc.md).\n',
+        }, 0, set(), (1, 1)),
     ]
     import io
     from contextlib import redirect_stdout
-    for name, files, want_rc, want_targets in cases:
+    QUOTED_LINE_RE = re.compile(
+        r'quoted-record citations \(excluded from the result, not repairable\): '
+        r'(\d+) across (\d+) file\(s\)')
+    for name, files, want_rc, want_targets, *rest in cases:
+        want_quoted = rest[0] if rest else (0, 0)
         d = build_repo(files)
         try:
             buf = io.StringIO()
@@ -647,21 +729,46 @@ def run_sweep_self_test():
                 rc = run_sweep(root=d)
             out = buf.getvalue()
             got_targets = set(re.findall(r'DANGLING\s+(\S+)', out))
-            if rc != want_rc or got_targets != want_targets:
-                failures.append('%s: rc=%s (want %s), targets=%s (want %s)'
+            qm = QUOTED_LINE_RE.search(out)
+            got_quoted = (int(qm.group(1)), int(qm.group(2))) if qm else None
+            if rc != want_rc or got_targets != want_targets \
+                    or got_quoted != want_quoted:
+                failures.append('%s: rc=%s (want %s), targets=%s (want %s), '
+                                'quoted=%s (want %s)'
                                 % (name, rc, want_rc, sorted(got_targets),
-                                   sorted(want_targets)))
+                                   sorted(want_targets), got_quoted, want_quoted))
         finally:
             REPO_ROOT = saved_root
             shutil.rmtree(d, ignore_errors=True)
+
+    # per-doc gate mode is UNAFFECTED by the quoted-record exclusion (v3.0-152):
+    # an evidence file named explicitly as an argument is still fully checked and
+    # still FAILs on a dangling link — the exclusion lives in the sweep only.
+    total = len(cases) + 1
+    d = build_repo({
+        'deploy/evidence/packet.md': 'Quoted: [pricing](sections/pricing-model.md).\n',
+    })
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            REPO_ROOT = d
+            rc = run_targeted(['deploy/evidence/packet.md'])
+        out = buf.getvalue()
+        if rc != 1 or 'DANGLING' not in out:
+            failures.append('per-doc gate on an evidence file still checks: '
+                            'rc=%s (want 1), DANGLING %sreported'
+                            % (rc, '' if 'DANGLING' in out else 'NOT '))
+    finally:
+        REPO_ROOT = saved_root
+        shutil.rmtree(d, ignore_errors=True)
 
     if failures:
         for f in failures:
             print('  FAIL  %s' % f)
         print('check-reference-integrity self-test: FAIL (%d/%d)'
-              % (len(cases) - len(failures), len(cases)))
+              % (total - len(failures), total))
         return 1
-    print('check-reference-integrity self-test: PASS (%d/%d)' % (len(cases), len(cases)))
+    print('check-reference-integrity self-test: PASS (%d/%d)' % (total, total))
     return 0
 
 

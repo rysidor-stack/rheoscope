@@ -202,7 +202,11 @@ F16). It may **no-op** — but a no-op on a **T1 / correction / lock / `informed
 `PENDING_NOOP_CANDIDATE`, **not consumed**, until VERIFY confirms (against the full event body, not the
 empty diff) it carries zero load-bearing claims. The orchestrator validates output (parses, bounds,
 manifest matches the real diff, `corpus_support` lines actually appear in the cited artifact) then writes
-the journal record. Cap breach → split proposal as a dispatched session. Circuit breaker: 15 rebuilds/run.
+the journal record. Cap breach → retirement proposals (forget-down, §2; ADR #11 — the manifest ranks
+retireable spans by bytes and the cap episode's brake refuses ordinary growth until hot bytes retire);
+split only for the genuine multi-topic case, and a split transfers cap debt to its parts (v3.0.52
+amendment per the ratified brief §2.3 — the original text read "split proposal as a dispatched
+session", which conserves mass and cannot discharge a breach). Circuit breaker: 15 rebuilds/run.
 
 **Content audit (migration-era, §13).** Before a `legacy-assumed` or `absorbed-without-source` T1 /
 correction / lock view is served to a build/fix task, a one-time audit (event claims → view hunks) must

@@ -150,7 +150,12 @@ DERIVATION_KEYS = {
         "schema_version", "view", "summary", "entities", "status", "tier",
         "consumed_status", "origin_max", "subscribes", "bundle", "verified",
     },
-    "optional": {"minted_by"},
+    # view_id (v3.0.52, ADR #11 Release 3, backlog v3.0-129): the view's stable LOGICAL
+    # identity -- minted from the BIRTH path by render_region (backfill-derivation.py, the
+    # single mint home), carried through rename/move by the region itself, consulted by
+    # deploy/debt.py for lineage-stable cap debt. Optional: legacy regions lack it and
+    # debt.py derives the same value from the path until the next mint.
+    "optional": {"minted_by", "view_id"},
 }
 ENUMS = {
     "view": {"topic", "dashboard", "index", "briefing"},

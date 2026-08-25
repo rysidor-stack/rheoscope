@@ -69,6 +69,7 @@ rows resolve to their `capabilities/knowledge-os/extracted/...` source instead �
 | The wiki/raw/receipt structural contract | `docs/wiki-schema.md` |
 | Why a capability exists, what it needs, known lessons | `docs/recipes/<capability>/*.RECIPE.md` (deferred recipes; docs-only capabilities carry the full `RECIPE.md` too) |
 | Session contract, core directories, session discipline | `core/governance/CLAUDE.md` |
+| Driving a web UI in the browser pane (read BEFORE the first click) | `core/governance/CLAUDE.md` § Session discipline → Browser-pane automation |
 | The decision-inquiry protocol (authoring/receiving/closing) | `core/handoffs/README.md` and the three `HANDOFF-*.md` specs alongside it |
 | What a specific orchestrator run actually did | `receipts/` (machine-readable; `changelog.md` is the human-readable narrative companion) |
 | What shipped, when, and why (release history) | `HARNESS-CHANGELOG.md` |

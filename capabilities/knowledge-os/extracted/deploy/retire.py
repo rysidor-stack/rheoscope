@@ -109,11 +109,17 @@ _split = _load_by_path("_retire_split", "check-split.py")
 _core = _load_by_path("_retire_core", "compile-core.py")
 _caps = _manifest._caps
 
-# The G2 state of this build (ADR #11 condition 10 / the amended acceptance item 5):
-# "disabled" = the verb refuses --propose; "targeted" = Release-2 production use (one view
-# per proposal, operator-promoted). Flipped ONLY by the build that ran the clean-oracle
-# acceptance (harness-v3.0/stranger-tests/v3.0.50-g2-e2e.py) to PASS.
-RELEASE_SCOPE = "targeted"
+# The release-phasing state of this build (ADR #11 condition 10):
+# "disabled" = the verb refuses --propose; "targeted" = Release-2 production use (one
+# view per proposal, operator-promoted; flipped by the v3.0.50 build after its
+# clean-oracle G2 run passed); "broad" = Release-3 -- multi-view batches allowed
+# (--propose-batch), flipped ONLY by the v3.0.52 build after its Release-3 review:
+# the G4/G3-batch acceptance run (harness-v3.0/stranger-tests/v3.0.52-g4-e2e.py,
+# 29/29 with the four batch adversarial cases and the measured rollback) plus the
+# two-round cross-vendor review (verifier-reviews/v3.0.52-release-3-review-*.md).
+# ENABLEABLE is not SCHEDULED: broad migration on an instance remains operator-run,
+# manifest-driven, batch-at-a-time (brief section 5).
+RELEASE_SCOPE = "broad"
 
 JOURNAL_DIR = "receipts/journal"
 RULINGS_DIR = "deploy/rulings"
@@ -124,7 +130,25 @@ RET_END = "# --- /retirements"
 DERIV_START = _caps.DERIV_START
 DERIV_END = _caps.DERIV_END
 POINTER_TMPL = "> Retired to %s -- journal seq %d."
-TAGGED_CITE_RE = _split.TAGGED_CITE_RE  # single home: check-split.py (v3.0-141 parity)
+# single home: check-split.py (v3.0-141 parity). getattr, not attribute access: a
+# two-lane MIGRATION copy can transiently pair this verb with an OLDER check-split.py,
+# and that state must refuse NAMED at the entry points (_split_skew), never die with an
+# AttributeError at import (v3.0.52, v3.0-150 -- the first fork's v3.0.51 adoption's lane order).
+TAGGED_CITE_RE = getattr(_split, "TAGGED_CITE_RE", None)
+SPLIT_IFACE_MIN = 2  # the exporter's pin lives in check-split.SPLIT_IFACE
+
+
+def _split_skew():
+    """None when the loaded check-split.py is new enough; else the named refusal
+    (v3.0-150). Checked at every public entry point, not at import, so --self-test and
+    error reporting still work under skew."""
+    if getattr(_split, "SPLIT_IFACE", 0) >= SPLIT_IFACE_MIN:
+        return None
+    return ("deploy/check-split.py is OLDER than this verb (interface %s < %d: the "
+            "v3.0.51+ single-home symbols are missing) -- complete the SESSION-lane copy "
+            "first (MIGRATION step: retire-manifest.py, compile-v2.py, check-split.py, "
+            "assemble.py from the same tag as this file), then re-run (v3.0-150)"
+            % (getattr(_split, "SPLIT_IFACE", "none"), SPLIT_IFACE_MIN))
 SLUG_MAX = 32  # cold-object section slug cap; the 64-hex content address follows it
 DEFAULT_BLOCK_MAX_ENTRIES = 20
 DEFAULT_BLOCK_MAX_BYTES = 8192
@@ -537,8 +561,11 @@ def inbound_citations_at(universe, view_rel):
 
 def walk_redirects(entries, gen_hash, line):
     """Resolve (generation, line) forward through the redirect chain. Returns
-    {'resolved', 'target', 'line', 'via'} -- target is the view (current generation) or a
-    cold object when the line fell inside a retired span."""
+    {'resolved', 'target', 'line', 'via'} -- target is the view (current generation), a
+    cold object when the line fell inside a retired span, or -- v3.0.52 -- the view at a
+    PRESERVED position when it fell inside a spliced or rolled-back span (those
+    transitions rewrite content in place, so the position survives, clamped to the new
+    extent; the entry's `stub` field is the new extent under every mode)."""
     via = []
     cur = gen_hash
     started = False
@@ -556,14 +583,24 @@ def walk_redirects(entries, gen_hash, line):
                 started = True
             else:
                 continue
+        hit = None
         for en in grp:
             a, b = en["span"]
             if a <= line <= b:
-                via.append(en["seq"])
-                return {"resolved": True, "target": en["target"], "line": line - a + 1,
-                        "kind": "cold" if en["target"].startswith(COLD_DIR) else "ledger", "via": via}
+                hit = en
+                break
+        if hit is not None and hit.get("mode") not in ("splice", "rollback"):
+            via.append(hit["seq"])
+            return {"resolved": True, "target": hit["target"],
+                    "line": line - hit["span"][0] + 1,
+                    "kind": "cold" if hit["target"].startswith(COLD_DIR) else "ledger",
+                    "via": via}
         base = line
         line += sum(en["shift"] for en in grp if en["span"][1] < base)
+        if hit is not None:
+            off = base - hit["span"][0]
+            new_len = (hit["stub"][1] - hit["stub"][0] + 1) if hit.get("stub") else 1
+            line = min(line, line - off + new_len - 1)
         if base > grp[0].get("bafter", base):
             line += grp[0].get("bshift", 0)
         via.append(grp[0]["seq"])
@@ -616,6 +653,231 @@ def citation_gate(root, repo, head, view_rel, pre_text, pre_hash, spans, existin
     return hits
 
 
+def _rollback_entries(post_text, restored_text, seq):
+    """The rollback generation step's redirect entries, derived DETERMINISTICALLY by
+    diffing the two texts with their blocks masked to identical sentinels (the block's
+    own growth rides bshift/bafter exactly as retire entries do). difflib opcodes give
+    per-region line mappings: a replaced region maps in place (clamped), inserts and
+    deletes shift everything below -- so a citation tagged with the rolled-back stub
+    generation still resolves to its true position in the restored view. Returns
+    (entries, bafter) -- bshift is filled by the caller from the measured block growth."""
+    def _mask(t, force_len=None):
+        lines = t.replace("\r\n", "\n").split("\n")
+        _e, _p, idx = parse_retirements_block(t)
+        if idx is not None:
+            n = force_len if force_len is not None else (idx[1] - idx[0] + 1)
+            lines = lines[:idx[0]] + ["#__block__"] * n + lines[idx[1] + 1:]
+        return lines, idx
+    a_lines, a_idx = _mask(post_text)
+    a_blk = (a_idx[1] - a_idx[0] + 1) if a_idx is not None else None
+    b_lines, _b_idx = _mask(restored_text, force_len=a_blk)
+    sm = difflib.SequenceMatcher(a=a_lines, b=b_lines, autojunk=False)
+    entries = []
+    k = 0
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "equal":
+            continue
+        entries.append({"seq": seq, "i": k, "pre_hash": None, "post_hash": None,
+                        "span": [i1 + 1, i2], "stub": [j1 + 1, j2],
+                        "shift": (j2 - j1) - (i2 - i1), "target": "view",
+                        "mode": "rollback", "title": "(rollback)"})
+        k += 1
+    bafter = (a_idx[1] + 1) if a_idx is not None else 0
+    return entries, bafter
+
+
+def prepare_rollback(root, member_seq, branch=None, now=None):
+    """v3.0.52 (ADR #11 Release 3 -- the BRAKE's undo): prepare the INVERSE of a
+    PUBLISHED retirement as a normal complete-or-absent commit on refs/retire/<seq>.
+    The restored view is re-derived from git objects alone (the member's parent view --
+    conditions 1/2/5's recovery guarantee made a verb): hot bytes return, cold objects
+    REMAIN (append-only conservation), the redirect block ADVANCES with rollback
+    entries so every generation-tagged citation still resolves, and deploy/debt.py
+    voids the member's discharge (the debt reopens). Publication is the operator's
+    promote action, exactly like any retirement -- atomic per view. Refuses when the
+    view has moved past the member's post generation."""
+    skew = _split_skew()
+    if skew:
+        raise Refuse(skew)
+    branch = _resolve_branch(root, branch)
+    repo = root
+    if not _trust.mode_chosen(repo):
+        raise Refuse("retirement disabled: " + _trust.ABSENT_MODE_NOTE)
+    head = _rev(repo, "refs/heads/%s" % branch)
+    if head is None:
+        raise Refuse("production branch %s does not resolve" % branch)
+    hist = _trust._retire_records_history(repo, head)
+    hits = [(p, sha, r) for p, sha, r in hist if r.get("seq") == member_seq]
+    if not hits:
+        raise Refuse("no published retire record seq %s on %s" % (member_seq, branch))
+    p_m, member_c, rec_m = hits[0]
+    if rec_m.get("rollback_of") is not None:
+        raise Refuse("seq %s is itself a rollback -- roll forward instead (retire again)"
+                     % member_seq)
+    if any(r.get("rollback_of") == member_seq for _p2, _s2, r in hist):
+        raise Refuse("seq %s was already rolled back" % member_seq)
+    view_rel = rec_m.get("view")
+    tip_b = _blob(repo, head, view_rel)
+    if tip_b is None:
+        raise Refuse("%s is not in %s's tree" % (view_rel, branch))
+    tip_text = _lf(tip_b).decode("utf-8")
+    if gen_hash(tip_text) != rec_m.get("post_generation"):
+        raise Refuse("view %s has moved past the rolled-back generation (%s.. is current, "
+                     "%s.. was seq %s's) -- only the CURRENT generation rolls back; undo "
+                     "later changes first" % (view_rel, gen_hash(tip_text)[:8],
+                                              str(rec_m.get("post_generation"))[:8],
+                                              member_seq))
+    if not _worktree_matches(repo, head, view_rel):
+        raise Refuse("working-tree %s differs from %s -- commit or discard first" % (
+            view_rel, branch))
+    parent_m = (_trust._parents(repo, member_c) or [None])[0]
+    pre_m_b = _blob(repo, parent_m, view_rel)
+    if pre_m_b is None:
+        raise Refuse("the member's parent view is unreadable -- cannot restore")
+    seq, prev_hash = _next_seq(repo, head)
+    if _rev(repo, "refs/retire/%d" % seq):
+        raise Refuse("refs/retire/%d already exists -- promote or --recover first" % seq)
+    # restored = the member's PARENT body + the TIP block advanced with the rollback
+    # entries (append-only; a block over its caps compacts at the NEXT retirement --
+    # recorded residual, the compaction trigger fires there)
+    restored_body = strip_block(_lf(pre_m_b).decode("utf-8"))
+    ents_tip, pointer_tip, idx_tip = parse_retirements_block(tip_text)
+    r_lines = restored_body.split("\n")
+    r_ds, r_de = _region_bounds(r_lines)
+    if r_ds is None or r_de is None:
+        raise Refuse("restored view has no derivation region (internal)")
+
+    def _restored_with(entries):
+        out = list(r_lines)
+        out[r_de:r_de] = render_block(list(ents_tip) + entries, pointer_tip)
+        return "\n".join(out)
+
+    inverse, bafter = _rollback_entries(tip_text, _restored_with([]), seq)
+    if not inverse:
+        raise Refuse("rollback would change nothing (internal)")
+    # block growth is arithmetic (rows are one line each), so bshift is stamped BEFORE
+    # the block renders -- the written rows and the record's entries are identical
+    _it = parse_retirements_block(tip_text)[2]
+    _old_blk = (_it[1] - _it[0] + 1) if _it is not None else 0
+    _new_blk = 2 + len(ents_tip) + len(inverse) + (1 if pointer_tip else 0)
+    for en in inverse:
+        en["pre_hash"] = rec_m.get("post_generation")
+        en["post_hash"] = rec_m.get("pre_generation")
+        en["bafter"] = bafter
+        en["bshift"] = _new_blk - _old_blk
+    post_text = _restored_with(inverse)
+    if gen_hash(post_text) != rec_m.get("pre_generation"):
+        raise Refuse("restored generation does not equal the member's pre generation "
+                     "(internal -- conservation would be violated; nothing prepared)")
+    post_bytes = post_text.encode("utf-8")
+    blobs = {}
+    rec_path = "%s/%d.json" % (JOURNAL_DIR, seq)
+    prop_path = "%s/retire-%d/proposal.md" % (RULINGS_DIR, seq)
+    diff = difflib.unified_diff(tip_text.split("\n"), post_text.split("\n"),
+                                "a/" + view_rel, "b/" + view_rel, lineterm="")
+    prop_text = "\n".join(
+        ["# Rollback proposal -- seq %d (rolls back retirement seq %s)" % (seq, member_seq),
+         "",
+         "- view: `%s` (branch `%s`, tip %s)" % (view_rel, branch, head[:12]),
+         "- rolls back: seq %s, commit `%s` (its cold objects REMAIN; hot bytes return)"
+         % (member_seq, member_c[:12]),
+         "- restored generation: `%s` (the member's pre generation, re-derived from git "
+         "objects)" % rec_m.get("pre_generation"),
+         "- bytes: %d -> %d" % (len(tip_text.encode("utf-8")), len(post_bytes)),
+         "", "## Whole-view diff", "", "```diff"] + list(diff) + ["```", ""])
+    prop_bytes = prop_text.encode("utf-8")
+    digest = _sha(prop_bytes)
+    blobs[prop_path] = (prop_bytes, _hash_object(repo, prop_bytes))
+    blobs[view_rel] = (post_bytes, _hash_object(repo, post_bytes))
+    rec = _core.minimal_record("retire", parent_git_sha=head)
+    rec.update({"seq": seq, "prev_record_hash": prev_hash, "tag": "retire/%d" % seq,
+                "proposal": prop_path, "proposal_digest": "sha256:" + digest,
+                "view": view_rel, "branch": branch, "parent": head,
+                "pre_view_sha256": _sha(_lf(tip_b)), "post_view_sha256": _sha(post_bytes),
+                "pre_generation": rec_m.get("post_generation"),
+                "post_generation": rec_m.get("pre_generation"),
+                "pre_view_blob": _hash_object(repo, _lf(tip_b)),
+                "post_view_blob": blobs[view_rel][1],
+                "spans": [], "redirects": inverse, "compaction": None,
+                "inbound_citations": [], "prepared_at": now or _now(),
+                "cold_objects": [], "rollback_of": member_seq,
+                "rollback_commit": member_c, "restored_from": parent_m})
+    _core.validate_record(rec)
+    rec_bytes = json.dumps(rec, indent=1, sort_keys=True).encode("utf-8")
+    blobs[rec_path] = (rec_bytes, _hash_object(repo, rec_bytes))
+    commit = _build_commit(repo, head, blobs, "rollback %d: %s -- undoes retire %s" % (
+        seq, view_rel, member_seq))
+    rc, _o, err = _git_text(repo, "update-ref", "refs/retire/%d" % seq, commit, "0" * 40)
+    if rc != 0:
+        raise Refuse("refs/retire/%d could not be created: %s" % (seq, err.strip()))
+    return {"seq": seq, "commit": commit, "digest": digest, "record": rec_path,
+            "proposal": prop_path, "view": view_rel, "tag": "retire/%d" % seq,
+            "branch": branch, "rollback_of": member_seq}
+
+
+def _verify_rollback(repo, commit, parent, rec, prop, pre_text, post_text):
+    """The rollback twin of verify_prepared's body (dispatched after the shared record /
+    digest / view-hash checks). Everything re-derived from objects, nothing trusted."""
+    mseq = rec.get("rollback_of")
+    hist = _trust._retire_records_history(repo, parent)
+    hits = [(p, sha, r) for p, sha, r in hist if r.get("seq") == mseq
+            and r.get("rollback_of") is None]
+    if not hits:
+        return False, "rollback names seq %s which is not a published retirement on the "                       "parent chain" % mseq, rec
+    p_m, member_c, rec_m = hits[0]
+    if rec.get("rollback_commit") != member_c:
+        return False, "rollback_commit does not match the chain's member commit", rec
+    if any(r.get("rollback_of") == mseq for _p2, _s2, r in hist):
+        return False, "seq %s was already rolled back below the parent" % mseq, rec
+    if rec.get("pre_generation") != gen_hash(pre_text)             or rec.get("pre_generation") != rec_m.get("post_generation"):
+        return False, "rollback pre generation does not match the member's post", rec
+    if rec.get("post_generation") != gen_hash(post_text)             or rec.get("post_generation") != rec_m.get("pre_generation"):
+        return False, "restored generation does not equal the member's pre generation "                       "(conservation)", rec
+    parent_m = (_trust._parents(repo, member_c) or [None])[0]
+    pre_m_b = _blob(repo, parent_m, rec.get("view"))
+    if pre_m_b is None:
+        return False, "member's parent view unreadable", rec
+    if strip_block(post_text) != strip_block(_lf(pre_m_b).decode("utf-8")):
+        return False, "restored view is not byte-identical to the member's parent view "                       "(generation coordinates) -- conservation violated", rec
+    try:
+        pre_chain = all_redirects(repo, parent, rec.get("view"), text=pre_text)
+        post_chain = all_redirects(repo, commit, rec.get("view"), text=post_text)
+    except Refuse as e:
+        return False, "redirect chain unreadable: %s" % e, rec
+    if post_chain != pre_chain + list(rec.get("redirects") or []):
+        return False, "redirect chain at R is not the tip's chain + the rollback entries", rec
+    ents_tip, pointer_tip, _it = parse_retirements_block(pre_text)
+    r_lines = strip_block(_lf(pre_m_b).decode("utf-8")).split("\n")
+    r_ds, r_de = _region_bounds(r_lines)
+    base_restored = list(r_lines)
+    base_restored[r_de:r_de] = render_block(list(ents_tip), pointer_tip)
+    expected, bafter = _rollback_entries(pre_text, "\n".join(base_restored), rec.get("seq"))
+    _pi = parse_retirements_block(pre_text)[2]
+    _qi = parse_retirements_block(post_text)[2]
+    blk_growth = (((_qi[1] - _qi[0] + 1) if _qi else 0)
+                  - ((_pi[1] - _pi[0] + 1) if _pi else 0))
+    for en in expected:
+        en["pre_hash"] = rec_m.get("post_generation")
+        en["post_hash"] = rec_m.get("pre_generation")
+        en["bafter"] = bafter
+        en["bshift"] = blk_growth
+    if list(rec.get("redirects") or []) != expected:
+        return False, "rollback redirect entries do not re-derive from the two views", rec
+    recs_delta_rc, ns = _git_text(repo, "diff-tree", "--no-commit-id", "--name-status",
+                                  "-r", parent, commit)[0:2]
+    delta = [l.split("\t", 1) for l in ns.splitlines() if "\t" in l]
+    allowed = {rec.get("view"), rec.get("proposal"),
+               "%s/%d.json" % (JOURNAL_DIR, rec.get("seq"))}
+    extra = [q for _st, q in delta if q not in allowed]
+    if extra:
+        return False, "R touches paths outside the rollback: %s" % ", ".join(extra[:5]), rec
+    prop_text2 = prop.decode("utf-8", "replace")
+    if "## Whole-view diff" not in prop_text2 or ("rolls back retirement seq %s" % mseq)             not in prop_text2:
+        return False, "the rollback proposal does not display the diff and the member it "                       "undoes (condition 5)", rec
+    return True, "consistent ROLLBACK of seq %s: restored generation %s.., %d redirect "                  "entr(y/ies)" % (mseq, str(rec.get("post_generation"))[:8],
+                                  len(rec.get("redirects") or [])), rec
+
+
 # ------------------------------------------------------------------ propose
 def _next_seq(repo, head):
     rc, out, _ = _git_text(repo, "ls-tree", "--name-only", head, "--", JOURNAL_DIR + "/")
@@ -643,9 +905,34 @@ def _worktree_matches(repo, head, rel):
     return b is not None and _lf(raw) == _lf(b)
 
 
+def _resolve_branch(root, branch=None):
+    """v3.0.52 (v3.0-151): the production branch, resolved ONCE through the single home
+    (trust.production_branch: project.yaml key, else the checked-out branch); an explicit
+    branch wins; unresolvable refuses -- never a silent `main`."""
+    try:
+        return _trust.resolve_branch(root, branch)
+    except _trust.TrustError as e:
+        raise Refuse(str(e))
+
+
 def propose(root, view_rel, titles=(), preamble=False, mode="cold", mapping=None,
-            branch="main", now=None):
-    """Prepare a retirement. Returns {'seq','commit','digest','record','proposal','spans'}."""
+            branch=None, now=None, splice=None, splice_events=None, parent=None,
+            batch=None):
+    """Prepare a retirement. Returns {'seq','commit','digest','record','proposal','spans'}.
+
+    v3.0.52 (ADR #11 Release 3): `splice` = {section title: replacement} CORRECTION
+    PAIRING (condition 7 / brief [R3-C3]) -- the correction's projection rides IN the
+    prepared commit, so it executes in the same atomic transaction as the retirement and
+    publishes only when the operator promotes; the brake's check is the MEASURED final
+    size (post <= pre LF bytes, enforced here and re-derived at verification, never a
+    predicted size). `splice_events` names the correction's ledger events for the
+    record. `parent` chains a batch member onto the previous member's commit instead of
+    the branch head; `batch` stamps {'id','tag','index','n'} into the record so every
+    reader can resolve the member through the batch tag."""
+    skew = _split_skew()
+    if skew:
+        raise Refuse(skew)
+    branch = _resolve_branch(root, branch)
     if RELEASE_SCOPE == "disabled":
         raise Refuse("production retirement is DISABLED in this build (ADR #11 Release 2 G2 "
                      "not yet passed)")
@@ -654,22 +941,41 @@ def propose(root, view_rel, titles=(), preamble=False, mode="cold", mapping=None
         raise Refuse("%s is not a git repository" % repo)
     if not _trust.mode_chosen(repo):
         raise Refuse("retirement disabled: " + _trust.ABSENT_MODE_NOTE)
-    head = _rev(repo, "refs/heads/%s" % branch)
-    if head is None:
+    branch_head = _rev(repo, "refs/heads/%s" % branch)
+    if branch_head is None:
         raise Refuse("production branch %s does not resolve" % branch)
+    head = parent or branch_head
     view_rel = view_rel.replace("\\", "/")
     if view_rel.startswith(COLD_DIR + "/"):
         raise Refuse("cold objects are immutable; they are never retired")
     pre_b = _blob(repo, head, view_rel)
     if pre_b is None:
         raise Refuse("%s is not in %s's tree" % (view_rel, branch))
-    if not _worktree_matches(repo, head, view_rel):
+    if not _worktree_matches(repo, branch_head, view_rel):
         raise Refuse("working-tree %s differs from %s -- commit or discard the edit first "
                      "(a retirement builds on the committed view, never on a half-staged one)"
                      % (view_rel, branch))
-    pre_text = _lf(pre_b).decode("utf-8")
-    pre_hash = gen_hash(pre_text)
+    parent_text = _lf(pre_b).decode("utf-8")
+    parent_gen = gen_hash(parent_text)
     pre_file_sha = _sha(_lf(pre_b))
+    # v3.0.52 correction pairing: the splice is applied FIRST (parent generation ->
+    # spliced generation), then the spans are selected and retired from the SPLICED
+    # text; a splice may never name a retiring span (the cold object must hold the
+    # complete ORIGINAL span, condition 2), and the redirect chain records the splice
+    # as its own in-place generation step so every citation still resolves.
+    if splice:
+        for t in splice:
+            if t in set(titles) or (t == "(preamble)" and preamble):
+                raise Refuse("splice names section %r which this proposal also RETIRES -- "
+                             "a correction never rides a retiring span (the cold object "
+                             "holds the original bytes)" % t)
+        try:
+            pre_text = _manifest.splice_sections(parent_text, splice)
+        except ValueError as e:
+            raise Refuse("splice: %s" % e)
+    else:
+        pre_text = parent_text
+    pre_hash = gen_hash(pre_text)
     lines = pre_text.split("\n")
     ds, de = _region_bounds(lines)
     if ds is None or de is None:
@@ -723,7 +1029,12 @@ def propose(root, view_rel, titles=(), preamble=False, mode="cold", mapping=None
     for _p, _sha_c, r in _trust._retire_records_history(repo, head):
         if r.get("seq") == seq:
             raise Refuse("seq %d already consumed on %s" % (seq, branch))
-    hits = citation_gate(root, repo, head, view_rel, pre_text, pre_hash, spans, existing)
+    # gate 2 runs against the PARENT text and coordinates: the retiring spans exist
+    # identically there (a splice never names a retiring span), and the frozen registry
+    # and the existing redirect chain speak parent-generation coordinates (v3.0.52).
+    gate_spans = select_spans(parent_text, list(titles), preamble) if splice else spans
+    hits = citation_gate(root, repo, head, view_rel, parent_text, parent_gen, gate_spans,
+                         existing)
     vslug = _view_slug(view_rel)
     # ---- per span, bottom-up so earlier line numbers never shift under us
     new_lines = list(lines)
@@ -790,15 +1101,30 @@ def propose(root, view_rel, titles=(), preamble=False, mode="cold", mapping=None
                             # bare title: a `{#id}` inside a block row would read as an
                             # explicit anchor to check-split's grammar (gate 1 parity)
                             "title": _bare_title(r["title"])})
+    splice_entries = []
+    if splice:
+        p_spans = {s["title"]: s for s in _manifest.parse_spans(parent_text)}
+        for k, t in enumerate(sorted(splice)):
+            ps = p_spans.get(t)
+            if ps is None:
+                raise Refuse("splice section %r vanished between parse passes (internal)" % t)
+            rl = splice[t].replace("\r\n", "\n")
+            n_new = len(rl[:-1].split("\n")) if rl.endswith("\n") else len(rl.split("\n"))
+            splice_entries.append({
+                "seq": seq, "i": "s%d" % k, "pre_hash": parent_gen, "post_hash": pre_hash,
+                "span": [ps["start_line"], ps["end_line"]],
+                "stub": [ps["start_line"], ps["start_line"] + n_new - 1],
+                "shift": n_new - (ps["end_line"] - ps["start_line"] + 1),
+                "target": "view", "mode": "splice", "title": _bare_title(t)})
     cfg = _caps_cfg()
     compaction = None
-    merged = list(entries_old) + new_entries
+    merged = list(entries_old) + splice_entries + new_entries
     pointer = pointer_old
     rendered = render_block(merged, pointer)
     if len(merged) > cfg["entries"] or len("\n".join(rendered).encode("utf-8")) > cfg["bytes"]:
         # compaction: the whole chain (old index entries + block entries + new) into ONE
         # content-addressed cold index; the block keeps one pointer row
-        full = list(existing) + new_entries
+        full = list(existing) + splice_entries + new_entries
         compaction = {"entries": len(full), "previous_index": pointer_old["index"] if pointer_old else None}
         merged, pointer = [], {"index": None, "entries": len(full)}
     # v3.0.51 (v3.0-146): the block's LINE growth this retirement (structural: markers +
@@ -814,6 +1140,12 @@ def propose(root, view_rel, titles=(), preamble=False, mode="cold", mapping=None
     for en in new_entries:
         en["bshift"] = _new_blk - _old_blk
         en["bafter"] = de + 1  # 1-based line of the region end marker at the PRE view
+    # the physical block write happens ONCE; the retire group (the final generation
+    # step) carries the whole growth, the splice group carries zero -- a walk crossing
+    # both steps therefore applies it exactly once (v3.0.52)
+    for en in splice_entries:
+        en["bshift"] = 0
+        en["bafter"] = de + 1
 
     def _assemble(entries, pointer_row):
         out = list(body_lines)
@@ -832,7 +1164,7 @@ def propose(root, view_rel, titles=(), preamble=False, mode="cold", mapping=None
     if compaction is None:
         post_text = _assemble(merged, pointer)
     else:
-        full = list(existing) + new_entries
+        full = list(existing) + splice_entries + new_entries
         ib = (json.dumps({"view": view_rel, "entries": full}, sort_keys=True, indent=1) + "\n").encode("utf-8")
         pointer = {"index": "%s/%s/redirects--%s.json" % (COLD_DIR, vslug, _sha(ib)), "entries": len(full)}
         post_text = _assemble([], pointer)
@@ -851,27 +1183,39 @@ def propose(root, view_rel, titles=(), preamble=False, mode="cold", mapping=None
                      "cold objects is not byte-identical to the pre view (internal)")
     # ...and the block itself changed by exactly this retirement's entries
     if compaction is None:
-        if parse_retirements_block(post_text)[0] != list(entries_old) + new_entries:
+        if parse_retirements_block(post_text)[0] != list(entries_old) + splice_entries + new_entries:
             raise Refuse("redirect block delta is not exactly this retirement's entries (internal)")
     # ---- proposal artifact (gate 5: displayed, never collapsed)
     rec_path = "%s/%d.json" % (JOURNAL_DIR, seq)
     prop_path = "%s/retire-%d/proposal.md" % (RULINGS_DIR, seq)
-    prop_text = render_proposal(view_rel, branch, head, seq, pre_hash, post_hash, pre_text,
-                                post_text, results, new_entries, compaction, hits, now or _now())
+    prop_text = render_proposal(view_rel, branch, head, seq, parent_gen, post_hash,
+                                pre_text, post_text, results,
+                                splice_entries + new_entries, compaction, hits,
+                                now or _now(), diff_base=parent_text, splice=splice)
     prop_bytes = prop_text.encode("utf-8")
     digest = _sha(prop_bytes)
     blobs[prop_path] = (prop_bytes, _hash_object(repo, prop_bytes))
     blobs[view_rel] = (post_bytes, _hash_object(repo, post_bytes))
+    if splice and len(post_bytes) > len(_lf(pre_b)):
+        raise Refuse("correction pairing: the MEASURED final view (%d LF bytes) exceeds "
+                     "the pre-run view (%d) -- the brake's check is the measured size, "
+                     "never a prediction (condition 7); retire more or splice less"
+                     % (len(post_bytes), len(_lf(pre_b))))
     rec = _core.minimal_record("retire", parent_git_sha=head)
     rec.update({"seq": seq, "prev_record_hash": prev_hash, "tag": tag, "proposal": prop_path,
                 "proposal_digest": "sha256:" + digest, "view": view_rel, "branch": branch,
                 "parent": head, "pre_view_sha256": pre_file_sha, "post_view_sha256": _sha(post_bytes),
-                "pre_generation": pre_hash, "post_generation": post_hash,
+                "pre_generation": parent_gen, "post_generation": post_hash,
                 "pre_view_blob": _hash_object(repo, _lf(pre_b)), "post_view_blob": blobs[view_rel][1],
                 "spans": [{k: v for k, v in r.items() if k != "span_text"} for r in results],
-                "redirects": new_entries, "compaction": compaction,
+                "redirects": splice_entries + new_entries, "compaction": compaction,
                 "inbound_citations": hits, "prepared_at": now or _now(),
                 "cold_objects": [r["cold_object"] for r in results if r["cold_object"]]})
+    if splice:
+        rec["splice"] = {"sections": dict(splice), "events": sorted(splice_events or []),
+                         "spliced_generation": pre_hash}
+    if batch:
+        rec["batch"] = dict(batch)
     _core.validate_record(rec)
     rec_bytes = json.dumps(rec, indent=1, sort_keys=True).encode("utf-8")
     blobs[rec_path] = (rec_bytes, _hash_object(repo, rec_bytes))
@@ -882,7 +1226,7 @@ def propose(root, view_rel, titles=(), preamble=False, mode="cold", mapping=None
         raise Refuse("refs/retire/%d could not be created (exists?): %s" % (seq, err.strip()))
     return {"seq": seq, "commit": commit, "digest": digest, "record": rec_path,
             "proposal": prop_path, "spans": results, "view": view_rel, "tag": tag,
-            "compaction": compaction}
+            "branch": branch, "compaction": compaction, "batch": batch}
 
 
 def _build_commit(repo, head, blobs, message):
@@ -1037,7 +1381,8 @@ def _stub_defect(span_text, stub_lines, seq):
 
 
 def render_proposal(view_rel, branch, head, seq, pre_hash, post_hash, pre_text, post_text,
-                    results, entries, compaction, hits, when):
+                    results, entries, compaction, hits, when, diff_base=None,
+                    splice=None):
     def fence_for(text):
         longest = max([len(m.group(0)) for m in re.finditer(r"`{3,}", text)] + [3])
         return "`" * (longest + 1)
@@ -1064,6 +1409,13 @@ def render_proposal(view_rel, branch, head, seq, pre_hash, post_hash, pre_text, 
         if r["extracted_anchors"]:
             out += ["- extracted inline anchors: " + ", ".join(
                 "%s (from line %d)" % (x["id"], x["extracted_from"]) for x in r["extracted_anchors"]), ""]
+    if splice:
+        out += ["## Correction splice (publishes in THIS commit -- the condition-7 "
+                "pairing; measured final size <= pre-run size)", ""]
+        for t in sorted(splice):
+            f2 = fence_for(splice[t])
+            out += ["### %s (replacement, verbatim)" % t, "", f2,
+                    splice[t].rstrip("\n"), f2, ""]
     out += ["## Redirect entries", ""]
     for en in entries:
         out.append("- `%s`" % json.dumps(en, sort_keys=True))
@@ -1076,10 +1428,163 @@ def render_proposal(view_rel, branch, head, seq, pre_hash, post_hash, pre_text, 
                                                   h["generation"], h["heals"]))
     if not hits:
         out.append("- none")
-    diff = difflib.unified_diff(pre_text.split("\n"), post_text.split("\n"),
+    diff = difflib.unified_diff((diff_base or pre_text).split("\n"),
+                                post_text.split("\n"),
                                 "a/" + view_rel, "b/" + view_rel, lineterm="")
     out += ["", "## Whole-view diff", "", "```diff"] + list(diff) + ["```", ""]
     return "\n".join(out)
+
+
+def propose_batch(root, spec, branch=None, now=None):
+    """v3.0.52 (ADR #11 Release 3; the amended condition 4's locked wording, 'one
+    promote per batch'): N single-view retirements PREPARED as a chain C1..CN -- each
+    member the existing complete-or-absent single-view commit, every gate run per member
+    against the state it will publish onto -- bound by a BINDER commit M whose tree adds
+    exactly the batch manifest (deploy/rulings/retire-batch-<first>-<last>/manifest.json)
+    naming every member's commit, seq, view and proposal digest. The BATCH DIGEST is the
+    sha256 of the manifest bytes: the operator's ONE promote action names it, and
+    substituting, reordering, inserting or dropping a member changes it. Nothing
+    publishes here. spec = {"members": [{"view", "spans": [titles], "preamble", "mode",
+    "mapping", "splice", "splice_events"}, ...]}. Multi-view batches are the BROAD
+    surface ADR #11 phases behind the Release-3 review (RELEASE_SCOPE 'broad')."""
+    skew = _split_skew()
+    if skew:
+        raise Refuse(skew)
+    branch = _resolve_branch(root, branch)
+    if RELEASE_SCOPE == "disabled":
+        raise Refuse("production retirement is DISABLED in this build")
+    members = spec.get("members") or []
+    if not members:
+        raise Refuse("batch spec names no members")
+    if len(members) > 1 and RELEASE_SCOPE != "broad":
+        raise Refuse("a multi-view batch is Release 3's BROAD retirement surface; this "
+                     "build's scope is %r -- broad retirement is enableable only behind "
+                     "the Release-3 review (ADR #11 phasing)" % RELEASE_SCOPE)
+    views = [str(m.get("view", "")).replace("\\", "/") for m in members]
+    if len(set(views)) != len(views):
+        raise Refuse("a batch names each view at most once (fold a view's spans into one "
+                     "member)")
+    head0 = _rev(root, "refs/heads/%s" % branch)
+    if head0 is None:
+        raise Refuse("production branch %s does not resolve" % branch)
+    first, _ph = _next_seq(root, head0)
+    last = first + len(members) - 1
+    bid = "%d-%d" % (first, last)
+    btag = "retire/batch/%s" % bid
+    if _rev(root, "refs/retire/batch/%s" % bid):
+        raise Refuse("refs/retire/batch/%s already exists -- promote it, or `--recover` "
+                     "first" % bid)
+    results, created = [], []
+    parent = head0
+    try:
+        for i, m in enumerate(members):
+            res = propose(root, m["view"], titles=m.get("spans") or (),
+                          preamble=bool(m.get("preamble")), mode=m.get("mode", "cold"),
+                          mapping=m.get("mapping"), branch=branch, now=now,
+                          splice=m.get("splice"), splice_events=m.get("splice_events"),
+                          parent=parent,
+                          batch={"id": bid, "tag": btag, "index": i, "n": len(members)})
+            parent = res["commit"]
+            created.append("refs/retire/%d" % res["seq"])
+            results.append(res)
+        if results[0]["seq"] != first or results[-1]["seq"] != last:
+            raise Refuse("batch seq window moved during preparation (internal)")
+        manifest = {"batch": bid, "branch": branch, "parent_head": head0,
+                    "prepared_at": now or _now(),
+                    "members": [{"seq": r["seq"], "commit": r["commit"], "view": r["view"],
+                                 "proposal_digest": "sha256:" + r["digest"],
+                                 "spans": [s["title"] for s in r["spans"]],
+                                 "bytes": sum(s["bytes"] for s in r["spans"])}
+                                for r in results]}
+        mb = (json.dumps(manifest, indent=1, sort_keys=True) + "\n").encode("utf-8")
+        digest = _sha(mb)
+        mpath = "%s/retire-batch-%s/manifest.json" % (RULINGS_DIR, bid)
+        M = _build_commit(root, parent, {mpath: (mb, _hash_object(root, mb))},
+                          "retire batch %s: %d view(s), one promote" % (bid, len(members)))
+        rc, _o, err = _git_text(root, "update-ref", "refs/retire/batch/%s" % bid, M, "0" * 40)
+        if rc != 0:
+            raise Refuse("refs/retire/batch/%s could not be created: %s" % (bid, err.strip()))
+        created.append("refs/retire/batch/%s" % bid)
+    except BaseException:
+        for ref in created:  # a batch is complete-or-absent, like its members
+            _git_text(root, "update-ref", "-d", ref)
+        raise
+    return {"batch": bid, "tag": btag, "digest": digest, "commit": M, "manifest": mpath,
+            "members": results, "branch": branch}
+
+
+def _prepared_batches(repo):
+    rc, out, _ = _git_text(repo, "for-each-ref", "--format=%(refname)", "refs/retire/batch/")
+    rows = []
+    for r in out.split():
+        m = re.match(r"^refs/retire/batch/(\d+-\d+)$", r)
+        if m:
+            rows.append((m.group(1), r))
+    return rows
+
+
+def verify_batch(repo, bid):
+    """Re-derive a prepared batch from objects alone: M's delta is exactly the manifest;
+    the chain M^ = CN .. C1 bottoms out at the manifest's parent head; every member
+    re-derives (verify_prepared) and matches its manifest row EXACTLY -- substitution,
+    reordering, insertion and truncation all break either the chain, a row, or the
+    digest. Returns (ok, reason, manifest, chain C1..CN)."""
+    M = _rev(repo, "refs/retire/batch/%s" % bid)
+    if M is None:
+        return False, "no prepared batch %s" % bid, None, []
+    parents = _trust._parents(repo, M) or []
+    if len(parents) != 1:
+        return False, "M has %d parents" % len(parents), None, []
+    mpath = "%s/retire-batch-%s/manifest.json" % (RULINGS_DIR, bid)
+    rc, ns, _ = _git_text(repo, "diff-tree", "--no-commit-id", "--name-status", "-r",
+                          parents[0], M)
+    delta = [l.split("\t", 1) for l in ns.splitlines() if "\t" in l]
+    if delta != [["A", mpath]]:
+        return False, "M's delta is not exactly the batch manifest (got: %s)" % (
+            ", ".join("%s %s" % (st, q) for st, q in delta) or "nothing"), None, []
+    mb = _blob(repo, M, mpath)
+    try:
+        manifest = json.loads(mb.decode("utf-8-sig"))
+    except Exception:
+        return False, "batch manifest unreadable", None, []
+    rows = manifest.get("members") or []
+    if not rows:
+        return False, "batch manifest names no members", manifest, []
+    chain, c = [], parents[0]
+    for _row in rows:
+        chain.append(c)
+        ps = _trust._parents(repo, c) or []
+        if len(ps) != 1:
+            return False, "member commit %s is not single-parent" % c[:12], manifest, []
+        c = ps[0]
+    chain.reverse()
+    if c != manifest.get("parent_head"):
+        return False, ("batch chain does not bottom out at the manifest's parent head "
+                       "(%s vs %s)" % (c[:12], str(manifest.get("parent_head"))[:12])),                manifest, chain
+    for row, ci in zip(rows, chain):
+        if row.get("commit") != ci:
+            return False, ("member seq %s: manifest names commit %s but the chain carries "
+                           "%s -- member SUBSTITUTION" % (row.get("seq"),
+                                                          str(row.get("commit"))[:12],
+                                                          ci[:12])), manifest, chain
+        ok, reason, rec = verify_prepared(repo, ci)
+        if not ok:
+            return False, "member seq %s (%s): %s" % (row.get("seq"), ci[:12], reason),                    manifest, chain
+        pb = _blob(repo, ci, rec.get("proposal", ""))
+        if pb is None or "sha256:" + _sha(pb) != row.get("proposal_digest")                 or rec.get("seq") != row.get("seq") or rec.get("view") != row.get("view"):
+            return False, "member seq %s: record does not match its manifest row"                    % row.get("seq"), manifest, chain
+        if (rec.get("batch") or {}).get("id") != bid:
+            return False, "member seq %s: record does not name batch %s"                    % (row.get("seq"), bid), manifest, chain
+    return True, "batch %s consistent: %d member(s), digest sha256:%s" % (
+        bid, len(rows), _sha(mb)), manifest, chain
+
+
+def batch_digest(repo, bid):
+    M = _rev(repo, "refs/retire/batch/%s" % bid)
+    if M is None:
+        return None
+    mb = _blob(repo, M, "%s/retire-batch-%s/manifest.json" % (RULINGS_DIR, bid))
+    return _sha(mb) if mb is not None else None
 
 
 # ------------------------------------------------------------------ recover / list / show
@@ -1123,7 +1628,27 @@ def verify_prepared(repo, commit):
     if _sha(_lf(pre)) != rec.get("pre_view_sha256") or _sha(_lf(post)) != rec.get("post_view_sha256"):
         return False, "view hashes do not match the record", rec
     pre_text, post_text = _lf(pre).decode("utf-8"), _lf(post).decode("utf-8")
-    pre_lines = pre_text.split("\n")
+    if rec.get("rollback_of") is not None:
+        return _verify_rollback(repo, commit, parent, rec, prop, pre_text, post_text)
+    # v3.0.52 correction pairing: with a recorded splice, the spans were selected against
+    # the SPLICED text (parent -> spliced -> post); re-derive it from the parent view +
+    # the recorded sections -- never trusted -- and enforce the measured-size brake.
+    base_text = pre_text
+    spl = rec.get("splice")
+    if spl:
+        try:
+            base_text = _manifest.splice_sections(pre_text, spl.get("sections") or {})
+        except ValueError as e:
+            return False, "recorded splice does not apply to the parent view: %s" % e, rec
+        if spl.get("spliced_generation") != gen_hash(base_text):
+            return False, ("spliced generation does not re-derive from the parent view + "
+                           "recorded sections"), rec
+        if len(post_text.encode("utf-8")) > len(pre_text.encode("utf-8")):
+            return False, ("correction growth: the MEASURED final view exceeds the "
+                           "pre-run view (condition 7 -- the pairing's whole point)"), rec
+        if set(spl.get("sections") or {}) & {s.get("title") for s in rec.get("spans", [])}:
+            return False, "splice names a retired span (the cold object must hold the "                           "original bytes)", rec
+    pre_lines = base_text.split("\n")
     spans = []
     for s in rec.get("spans", []):
         s = dict(s)
@@ -1151,7 +1676,7 @@ def verify_prepared(repo, commit):
             return False, "stub for span %r %s" % (s["title"], bad), rec
         spans.append(s)
     try:
-        if reconstruct(post_text, spans, repo, commit, pre_text=pre_text) != strip_block(pre_text):
+        if reconstruct(post_text, spans, repo, commit, pre_text=base_text) != strip_block(base_text):
             return False, "post view with stubs replaced is not the pre view", rec
     except Refuse as e:
         return False, str(e), rec
@@ -1161,16 +1686,47 @@ def verify_prepared(repo, commit):
     # entry that simply OMITS the fields would otherwise default to no block shift --
     # this verb always writes them, so absence is forgery, not legacy; chain-historical
     # v3.0.50 entries are not re-verified here and keep their inert defaults).
-    _dlen = len(post_text.split("\n")) - len(pre_text.split("\n")) - sum(
-        int(s2.get("shift", 0)) for s2 in rec.get("spans", []))
-    _dsp, _dep = _region_bounds(pre_text.split("\n"))
+    # v3.0.52: block growth measured DIRECTLY from the two views' blocks (with a splice
+    # in the same commit, whole-file line deltas mix content and block growth; the block
+    # is the authority on its own growth). Retire-step entries carry the whole growth,
+    # splice-step entries carry zero -- a walk crossing both steps applies it once.
+    try:
+        _pi = parse_retirements_block(pre_text)[2]
+        _qi = parse_retirements_block(post_text)[2]
+    except Refuse as e:
+        return False, "retirements block unreadable: %s" % e, rec
+    _blk_growth = (((_qi[1] - _qi[0] + 1) if _qi else 0)
+                   - ((_pi[1] - _pi[0] + 1) if _pi else 0))
+    _dsp, _dep = _region_bounds(pre_lines)
     for en in rec.get("redirects") or []:
         if "bshift" not in en or "bafter" not in en:
             return False, ("redirect entry omits its block-shift fields (bshift/bafter) -- this "
                            "verb always writes them; an entry without them would silently "
                            "mis-resolve citations below a top-of-file block"), rec
-        if en["bshift"] != _dlen or (_dep is not None and en.get("bafter") != _dep + 1):
+        _want = 0 if en.get("mode") == "splice" else _blk_growth
+        if en["bshift"] != _want or (_dep is not None and en.get("bafter") != _dep + 1):
             return False, "redirect entry block-shift fields do not re-derive from the views", rec
+    if spl:
+        sp_ents = [e for e in rec.get("redirects") or [] if e.get("mode") == "splice"]
+        p_spans = {s["title"]: s for s in _manifest.parse_spans(pre_text)}
+        expected = []
+        for k, t in enumerate(sorted(spl.get("sections") or {})):
+            ps = p_spans.get(t)
+            if ps is None:
+                return False, "splice section %r is not a span of the parent view" % t, rec
+            rl = spl["sections"][t].replace("\r\n", "\n")
+            n_new = len(rl[:-1].split("\n")) if rl.endswith("\n") else len(rl.split("\n"))
+            expected.append({"seq": rec.get("seq"), "i": "s%d" % k,
+                             "pre_hash": rec.get("pre_generation"),
+                             "post_hash": spl.get("spliced_generation"),
+                             "span": [ps["start_line"], ps["end_line"]],
+                             "stub": [ps["start_line"], ps["start_line"] + n_new - 1],
+                             "shift": n_new - (ps["end_line"] - ps["start_line"] + 1),
+                             "target": "view", "mode": "splice",
+                             "title": _bare_title(t), "bshift": 0,
+                             "bafter": (_dep + 1) if _dep is not None else None})
+        if sp_ents != expected:
+            return False, "splice redirect entries do not re-derive from the parent view "                           "+ recorded sections", rec
     try:
         pre_chain = all_redirects(repo, parent, view, text=pre_text)
         post_chain = all_redirects(repo, commit, view, text=post_text)
@@ -1180,9 +1736,13 @@ def verify_prepared(repo, commit):
         return False, "redirect chain at C is not the parent's chain + this retirement's entries", rec
     # one redirect entry per span (cross-vendor round-5 catch: a nonempty retirement with
     # redirects:[] and an unchanged block would otherwise reconstruct as consistent)
-    if len(rec.get("redirects") or []) != len(spans):
-        return False, ("this retirement moves %d span(s) but records %d redirect entr(y/ies) -- "
-                       "every retired span leaves a redirect" % (len(spans), len(rec.get("redirects") or []))), rec
+    if len([e for e in rec.get("redirects") or []
+            if e.get("mode") not in ("splice", "rollback")]) != len(spans):
+        return False, ("this retirement moves %d span(s) but records %d span-redirect "
+                       "entr(y/ies) -- every retired span leaves a redirect"
+                       % (len(spans),
+                          len([e for e in rec.get("redirects") or []
+                               if e.get("mode") not in ("splice", "rollback")]))), rec
     if rec.get("pre_generation") != gen_hash(pre_text) or rec.get("post_generation") != gen_hash(post_text):
         return False, "generation hashes do not match the record", rec
     # the proposal the operator promotes must DISPLAY exactly what C moves (cross-vendor
@@ -1207,13 +1767,48 @@ def verify_prepared(repo, commit):
         recs[0], _sha(prop)[:12], len(spans)), rec
 
 
-def recover(repo, branch="main"):
+def recover(repo, branch=None):
     """Deterministic: each refs/retire/<seq> is COMPLETE (kept) or DISCARDED (deleted)."""
+    branch = _resolve_branch(repo, branch)
     head = _rev(repo, "refs/heads/%s" % branch)
     rc, fp, _ = _git_text(repo, "rev-list", "--first-parent", head or "HEAD")
     on_branch = set(fp.split())
     out = []
+    batch_member_refs = set()
+    for bid, bref in _prepared_batches(repo):
+        ok, reason, manifest, chain = verify_batch(repo, bid)
+        member_refs = []
+        if manifest:
+            member_refs = ["refs/retire/%d" % r.get("seq") for r in
+                           manifest.get("members") or [] if r.get("seq") is not None]
+        batch_member_refs.update(member_refs)
+        published = [ci for ci in chain if ci in on_branch]
+        if ok and manifest.get("parent_head") == head:
+            out.append({"seq": bid, "commit": _rev(repo, bref), "action": "kept",
+                        "reason": reason + " -- awaiting the one promote"})
+            continue
+        if published and len(published) < len(chain):
+            reason2 = ("HALTED/interrupted batch: %d/%d member(s) published; the "
+                       "REMAINDER IS REFUSED (never half-applied views) -- re-propose "
+                       "what should still retire and promote it freshly"
+                       % (len(published), len(chain)))
+        elif chain and published:
+            reason2 = "fully published on %s (refs no longer needed)" % branch
+        elif ok:
+            reason2 = ("STALE batch: prepared on %s but %s moved -- re-prepare"
+                       % (str((manifest or {}).get("parent_head"))[:12], branch))
+        else:
+            reason2 = "INCONSISTENT: " + reason
+        for ref in member_refs + [bref]:
+            c2 = _rev(repo, ref)
+            if c2:
+                _git_text(repo, "update-ref", "-d", ref, c2)
+        out.append({"seq": bid, "commit": _rev(repo, bref), "action":
+                    "pruned" if (chain and published and len(published) == len(chain))
+                    else "discarded", "reason": reason2})
     for seq, ref in _prepared(repo):
+        if ref in batch_member_refs:
+            continue  # the batch loop above adjudicated the whole batch
         c = _rev(repo, ref)
         if c in on_branch:
             _git_text(repo, "update-ref", "-d", ref, c)
@@ -1221,6 +1816,16 @@ def recover(repo, branch="main"):
                         "reason": "already published on %s (ref no longer needed)" % branch})
             continue
         ok, reason, rec = verify_prepared(repo, c)
+        if ok and rec and rec.get("batch"):
+            # a member whose batch ref vanished (crash between member and binder
+            # writes): without its binder the one-promote binding cannot exist --
+            # discard, deterministic (complete-or-absent applies to the batch too)
+            _git_text(repo, "update-ref", "-d", ref, c)
+            out.append({"seq": seq, "commit": c, "action": "discarded",
+                        "reason": "ORPHANED batch member (batch %s has no binder ref) -- "
+                                  "a batch is complete-or-absent; re-propose"
+                                  % rec["batch"].get("id")})
+            continue
         parent = (_trust._parents(repo, c) or [None])[0]
         if ok and parent == head:
             out.append({"seq": seq, "commit": c, "action": "kept", "reason": reason + " -- awaiting promotion"})
@@ -1235,18 +1840,30 @@ def recover(repo, branch="main"):
     return out
 
 
-def list_prepared(repo, branch="main"):
+def list_prepared(repo, branch=None):
+    branch = _resolve_branch(repo, branch)
     head = _rev(repo, "refs/heads/%s" % branch)
     rows = []
     for seq, ref in _prepared(repo):
         c = _rev(repo, ref)
         ok, reason, rec = verify_prepared(repo, c)
         parent = (_trust._parents(repo, c) or [None])[0]
+        b = (rec or {}).get("batch")
         rows.append({"seq": seq, "commit": c, "consistent": ok, "reason": reason,
-                     "stale": parent != head, "digest": (rec or {}).get("proposal_digest"),
+                     "stale": (parent != head) and not b, "digest": (rec or {}).get("proposal_digest"),
                      "view": (rec or {}).get("view"),
-                     "tag": (rec or {}).get("tag"),
-                     "publishable": _trust.check_publishable(repo, "retire/%d" % seq, branch)["ok"]})
+                     "tag": (rec or {}).get("tag"), "batch": b,
+                     "publishable": False if b else
+                     _trust.check_publishable(repo, "retire/%d" % seq, branch)["ok"]})
+    for bid, bref in _prepared_batches(repo):
+        ok, reason, manifest, chain = verify_batch(repo, bid)
+        rows.append({"seq": "batch/%s" % bid, "commit": _rev(repo, bref), "consistent": ok,
+                     "reason": reason, "view": "%d member(s)" % len(chain),
+                     "stale": bool(manifest) and manifest.get("parent_head") != head,
+                     "digest": "sha256:%s" % batch_digest(repo, bid), "tag": "retire/batch/%s" % bid,
+                     "batch": {"id": bid},
+                     "publishable": _trust.check_publishable_batch(repo, "retire/batch/%s" % bid, branch)["ok"]
+                     if hasattr(_trust, "check_publishable_batch") else False})
     return rows
 
 
@@ -1269,9 +1886,22 @@ def find_by_digest(repo, digest):
     return hits[0]
 
 
-def register_legacy(root, branch="main", now=None):
+def register_legacy(root, branch=None, now=None):
     repo = root
+    skew = _split_skew()
+    if skew:
+        raise Refuse(skew)
+    branch = _resolve_branch(root, branch)
     head = _rev(repo, "refs/heads/%s" % branch)
+    if head is None:
+        # v3.0.52 (v3.0-151, fleet inbox #8): the v3.0.50/51 build FROZE a registry here
+        # with `source: "seed at ?"` and view_sha256: null on every row -- a silent,
+        # data-shaped degrade on any instance whose branch name differed. The safe
+        # direction propose/reconstruct already take: refuse, name the branch.
+        raise Refuse("production branch %s does not resolve -- refusing to freeze a legacy "
+                     "registry without branch-tip view hashes (a hashless registry cannot "
+                     "anchor citation generations); pass --branch or set project.yaml "
+                     "production_branch (v3.0-151)" % branch)
     m, status = _manifest.build_manifest(root, views=None, all_views=False)
     if m is None:
         raise Refuse(status)
@@ -1295,8 +1925,12 @@ def register_legacy(root, branch="main", now=None):
     return os.path.relpath(p, root).replace("\\", "/"), len(rows)
 
 
-def resolve(repo, cite, branch="main", from_artifact=None):
+def resolve(repo, cite, branch=None, from_artifact=None):
     """`view.md:80` (legacy: needs the registry) or `view.md:80@hash8`."""
+    skew = _split_skew()
+    if skew:
+        raise Refuse(skew)
+    branch = _resolve_branch(repo, branch)
     head = _rev(repo, "refs/heads/%s" % branch)
     m = re.match(r"^([A-Za-z0-9._/-]+\.md):(\d+)(?:@([0-9a-f]{8}))?$", cite.strip())
     if not m:
@@ -2028,6 +2662,7 @@ def self_test():
         case("canonical-layout battery leaves nothing prepared", _prepared(r2) == [])
         # -------- release scope switch
         global RELEASE_SCOPE
+        _scope_saved = RELEASE_SCOPE
         RELEASE_SCOPE = "disabled"
         try:
             propose(r, "wiki/topic/view.md", titles=["Section C"])
@@ -2035,8 +2670,303 @@ def self_test():
         except Refuse as e:
             case("RELEASE_SCOPE disabled -> every --propose refuses naming G2", "DISABLED" in str(e), e)
         finally:
-            RELEASE_SCOPE = "targeted"
+            RELEASE_SCOPE = _scope_saved
         case("a cold object is never retired", _refuses(lambda: propose(r, cpath5, titles=["x"]), "immutable"))
+        # -------- v3.0.52 (v3.0-151): branch resolution through the one home, both directions
+        r4 = os.path.join(base, "repo4")
+        os.makedirs(r4)
+
+        def git4(*a):
+            return subprocess.run(["git", "-C", r4] + list(a), capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace")
+
+        def write4(rel, t):
+            p4 = os.path.join(r4, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(p4), exist_ok=True)
+            with open(p4, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(t)
+
+        git4("init", "-q", "-b", "dogfood/fork-v3")
+        git4("config", "user.email", "t@t")
+        git4("config", "user.name", "tester")
+        git4("config", "commit.gpgsign", "false")
+        canon4 = _asm._mk_view(entities=[], summary="branch fixture") + \
+            "\n## Solo\n\nSolo body.\n"
+        write4("wiki/topic/b.md", canon4)
+        write4("project.yaml", "project_slug: t4\ntrust_surface_signing: visible\n")
+        j4 = _core.minimal_record("compile", "0" * 40)
+        j4.update({"seq": 1, "prev_record_hash": None})
+        write4("receipts/journal/1.json", json.dumps(j4, indent=1, sort_keys=True))
+        git4("add", "-A")
+        git4("commit", "-q", "-m", "seed on a non-main branch")
+        res_b = propose(r4, "wiki/topic/b.md", titles=["Solo"])
+        case("v3.0-151: propose with NO branch argument on a `dogfood/fork-v3` checkout "
+             "resolves the checked-out branch (no local main exists) and records it",
+             res_b["seq"] == 2 and res_b["branch"] == "dogfood/fork-v3"
+             and json.loads(_blob(r4, res_b["commit"], res_b["record"]).decode())["branch"]
+             == "dogfood/fork-v3", res_b)
+        case("v3.0-151: recover/list with no branch resolve the same way",
+             recover(r4)[0]["action"] == "kept" and list_prepared(r4)[0]["seq"] == 2)
+        git4("update-ref", "-d", "refs/retire/2")
+        case("v3.0-151: register_legacy on an unresolvable branch REFUSES (never freezes a "
+             "hashless registry)", _refuses(lambda: register_legacy(r4, branch="nope"),
+                                            "hashless registry" if False else "does not resolve"))
+        write4("project.yaml", "project_slug: t4\ntrust_surface_signing: visible\n"
+               "production_branch: release/prod\n")
+        case("v3.0-151: the project.yaml production_branch key WINS (and refuses here, "
+             "because no such branch exists -- named, not silent)",
+             _refuses(lambda: propose(r4, "wiki/topic/b.md", titles=["Solo"]),
+                      "release/prod does not resolve"))
+        # -------- v3.0.52 (v3.0-150): an OLDER check-split.py refuses NAMED, never a traceback
+        _saved_iface = getattr(_split, "SPLIT_IFACE", None)
+        try:
+            if hasattr(_split, "SPLIT_IFACE"):
+                delattr(_split, "SPLIT_IFACE")
+            case("v3.0-150: with check-split.py lacking SPLIT_IFACE (pre-v3.0.52 copy), "
+                 "propose refuses NAMING the session-lane migration step",
+                 _refuses(lambda: propose(r, "wiki/topic/view.md", titles=["Section C"]),
+                          "SESSION-lane copy"))
+            case("v3.0-150: register_legacy refuses the same way under skew",
+                 _refuses(lambda: register_legacy(r), "SESSION-lane copy"))
+        finally:
+            if _saved_iface is not None:
+                _split.SPLIT_IFACE = _saved_iface
+        case("v3.0-150: with the current check-split.py the skew guard is silent",
+             _split_skew() is None)
+        # -------- v3.0.52: correction pairing (--splice) on the canonical layout
+        r6 = os.path.join(base, "repo6")
+        os.makedirs(r6)
+
+        def git6(*a):
+            return subprocess.run(["git", "-C", r6] + list(a), capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace")
+
+        def write6(rel, t):
+            p6 = os.path.join(r6, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(p6), exist_ok=True)
+            with open(p6, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(t)
+
+        git6("init", "-q", "-b", "main")
+        git6("config", "user.email", "t@t")
+        git6("config", "user.name", "tester")
+        git6("config", "commit.gpgsign", "false")
+        canon6 = _asm._mk_view(entities=[], summary="splice fixture") + \
+            "\n## Keep\n\nwrong fact line.\n\n## Go\n\n" + ("z" * 2000) + "\n"
+        write6("wiki/topic/c.md", canon6)
+        write6("project.yaml", "project_slug: t6\ntrust_surface_signing: visible\n")
+        j6 = _core.minimal_record("compile", "0" * 40)
+        j6.update({"seq": 1, "prev_record_hash": None})
+        write6("receipts/journal/1.json", json.dumps(j6, indent=1, sort_keys=True))
+        git6("add", "-A")
+        git6("commit", "-q", "-m", "seed")
+        SPL = {"Keep": "## Keep\n\ncorrected fact line.\n\n"}
+        res_s = propose(r6, "wiki/topic/c.md", titles=["Go"], splice=SPL,
+                        splice_events=["raw/2026-08-24-correction.md"])
+        rec_s = json.loads(_blob(r6, res_s["commit"], res_s["record"]).decode())
+        post_s = _blob(r6, res_s["commit"], "wiki/topic/c.md").decode()
+        case("splice: the correction publishes IN the retirement commit (condition 7 "
+             "pairing) -- corrected text in, wrong text out, retired span in cold, "
+             "measured final size <= pre",
+             "corrected fact line." in post_s and "wrong fact line." not in post_s
+             and "zzz" not in post_s and rec_s.get("splice", {}).get("events")
+             and len(post_s.encode()) <= len(canon6.encode()), post_s[:200])
+        case("splice: the record carries splice + retire redirect entries as TWO "
+             "generation steps (parent -> spliced -> post)",
+             [e.get("mode") for e in rec_s["redirects"]] == ["splice", "cold"]
+             or [e.get("mode") for e in rec_s["redirects"]] == ["splice", None]
+             and rec_s["redirects"][0]["pre_hash"] == gen_hash(canon6), rec_s["redirects"])
+        oks, reasons_s, _ = verify_prepared(r6, res_s["commit"])
+        case("splice: C re-derives from objects (spliced base recomputed, never trusted)",
+             oks, reasons_s)
+        case("splice: the proposal DISPLAYS the correction replacement verbatim and the "
+             "REAL parent->post diff",
+             "Correction splice" in _blob(r6, res_s["commit"], rec_s["proposal"]).decode()
+             and "corrected fact line." in _blob(r6, res_s["commit"], rec_s["proposal"]).decode())
+        # forged splice: record sections changed -> spliced generation mismatch
+        rec_f = json.loads(_blob(r6, res_s["commit"], res_s["record"]).decode())
+        rec_f["splice"]["sections"]["Keep"] = "## Keep\n\nsomething else.\n\n"
+        bad_f = json.dumps(rec_f, indent=1, sort_keys=True).encode()
+        blobs_f = {res_s["record"]: (bad_f, _hash_object(r6, bad_f))}
+        for q_f in (rec_f["view"], rec_f["proposal"]):
+            b_f = _blob(r6, res_s["commit"], q_f)
+            blobs_f[q_f] = (b_f, _hash_object(r6, b_f))
+        for co_f in rec_f["cold_objects"]:
+            b_f = _blob(r6, res_s["commit"], co_f["path"])
+            blobs_f[co_f["path"]] = (b_f, _hash_object(r6, b_f))
+        C_f = _build_commit(r6, _trust._parents(r6, res_s["commit"])[0], blobs_f, "forged splice")
+        okf2, reasonf2, _ = verify_prepared(r6, C_f)
+        case("splice: FORGED recorded sections are rejected (the spliced generation is "
+             "re-derived)", not okf2 and "splice" in reasonf2.lower(), reasonf2)
+        git6("update-ref", "-d", "refs/retire/%d" % res_s["seq"])
+        case("splice naming a RETIRING span refuses (the cold object holds the original)",
+             _refuses(lambda: propose(r6, "wiki/topic/c.md", titles=["Go"],
+                                      splice={"Go": "## Go\n\nx\n"}), "also RETIRES"))
+        case("splice that would GROW the view past its pre-run size refuses (measured, "
+             "condition 7)",
+             _refuses(lambda: propose(r6, "wiki/topic/c.md", titles=["Keep"],
+                                      splice={"Go": "## Go\n\n" + "w" * 3000 + "\n"}),
+                      "MEASURED final view"))
+        # round-1 fold (c4): citations RESOLVE across a LENGTH-CHANGING splice -- above,
+        # inside (clamped), below, and into the retired span -- positions computed from
+        # the real texts, never hand-numbered
+        canon7 = _asm._mk_view(entities=[], summary="splice resolve fixture") + \
+            "\n## Above\n\nabove line.\n\n## Fix\n\nold one.\nold two.\nold three.\n\n" \
+            "## Retire Me\n\n" + ("q" * 2500) + "\n\n## Below\n\nbelow line.\n"
+        write6("wiki/topic/d.md", canon7)
+        git6("add", "-A")
+        git6("commit", "-q", "-m", "splice resolve fixture")
+        g1_hash = gen_hash(canon7)
+        SPL7 = {"Fix": "## Fix\n\ncorrected single line.\n\n"}
+        res7s = propose(r6, "wiki/topic/d.md", titles=["Retire Me"], splice=SPL7)
+        git6("-c", "tag.gpgSign=false", "tag", "-a", "-m",
+             "promotion\nproposal_digest: sha256:%s\nmode: visible\n" % res7s["digest"],
+             "retire/%d" % res7s["seq"], res7s["commit"])
+        pub7 = _trust.publish_retirement(r6, "retire/%d" % res7s["seq"], "main")
+        git6("reset", "-q", "--hard")
+        recover(r6)
+        c7lines = canon7.split("\n")
+        post7 = open(os.path.join(r6, "wiki", "topic", "d.md"), encoding="utf-8").read() \
+            .replace("\r\n", "\n")
+        above_at = c7lines.index("above line.") + 1
+        inside_at = c7lines.index("old three.") + 1
+        below_at = c7lines.index("below line.") + 1
+        into_at = c7lines.index("q" * 2500) + 1
+        r_above = resolve(r6, "d.md:%d@%s" % (above_at, g1_hash[:8]))
+        r_inside = resolve(r6, "d.md:%d@%s" % (inside_at, g1_hash[:8]))
+        r_below = resolve(r6, "d.md:%d@%s" % (below_at, g1_hash[:8]))
+        r_into = resolve(r6, "d.md:%d@%s" % (into_at, g1_hash[:8]))
+        post7_lines = post7.split("\n")
+        case("c4 fold: a citation ABOVE a shrinking splice resolves to its unmoved line",
+             pub7["ok"] and r_above["resolved"] and r_above["kind"] == "view"
+             and post7_lines[r_above["line"] - 1] == "above line.", (r_above,))
+        case("c4 fold: a citation INSIDE the spliced section resolves in place, CLAMPED "
+             "to the shorter replacement (never past it)",
+             r_inside["resolved"] and r_inside["kind"] == "view"
+             and "corrected" in " ".join(post7_lines[r_inside["line"] - 3:r_inside["line"] + 1]),
+             (r_inside, post7_lines[max(0, r_inside["line"] - 3):r_inside["line"] + 1]))
+        case("c4 fold: a citation BELOW both the splice and the retired span lands on its "
+             "REAL current line through splice shift + stub shift + block growth",
+             r_below["resolved"] and r_below["kind"] == "view"
+             and post7_lines[r_below["line"] - 1] == "below line.",
+             (r_below, post7_lines[r_below["line"] - 2:r_below["line"] + 1]))
+        case("c4 fold: a citation INTO the retired span resolves to the cold object at "
+             "the right offset", r_into["resolved"] and r_into["kind"] == "cold"
+             and "q" * 2500 in _lf(open(os.path.join(r6, r_into["target"].replace("/", os.sep)),
+                                        "rb").read()).decode(), r_into)
+        # -------- v3.0.52: batch propose/verify/recover (publication is promote's battery)
+        _saved_scope = RELEASE_SCOPE
+        globals()["RELEASE_SCOPE"] = "broad"
+        try:
+            canonA = _asm._mk_view(entities=[], summary="batch A") + "\n## BA\n\naa.\n"
+            canonB = _asm._mk_view(entities=[], summary="batch B") + "\n## BB\n\nbb.\n"
+            write6("wiki/topic/ba.md", canonA)
+            write6("wiki/topic/bb.md", canonB)
+            git6("add", "-A")
+            git6("commit", "-q", "-m", "batch views")
+            case("batch: a duplicate view refuses",
+                 _refuses(lambda: propose_batch(r6, {"members": [
+                     {"view": "wiki/topic/ba.md", "spans": ["BA"]},
+                     {"view": "wiki/topic/ba.md", "spans": ["BA"]}]}), "at most once"))
+            bres = propose_batch(r6, {"members": [
+                {"view": "wiki/topic/ba.md", "spans": ["BA"]},
+                {"view": "wiki/topic/bb.md", "spans": ["BB"]}]})
+            case("batch: members chain C1<-C2<-M, each a complete single-view retirement; "
+                 "the manifest names commits + digests; ONE batch digest",
+                 len(bres["members"]) == 2
+                 and _trust._parents(r6, bres["members"][1]["commit"])[0]
+                 == bres["members"][0]["commit"]
+                 and _trust._parents(r6, bres["commit"])[0] == bres["members"][1]["commit"],
+                 bres)
+            okb, reasonb, mfb, chb = verify_batch(r6, bres["batch"])
+            case("batch: verify_batch re-derives the whole chain", okb, reasonb)
+            # member SUBSTITUTION: binder rebuilt with a manifest naming a different commit
+            mf_f = json.loads(json.dumps(mfb))
+            mf_f["members"][1]["commit"] = "f" * 40
+            mb_f = (json.dumps(mf_f, indent=1, sort_keys=True) + "\n").encode()
+            mpath_f = "%s/retire-batch-%s/manifest.json" % (RULINGS_DIR, bres["batch"])
+            M_f = _build_commit(r6, bres["members"][1]["commit"],
+                                {mpath_f: (mb_f, _hash_object(r6, mb_f))}, "forged binder")
+            git6("update-ref", "-d", "refs/retire/batch/%s" % bres["batch"])
+            git6("update-ref", "refs/retire/batch/%s" % bres["batch"], M_f)
+            okf3, reasonf3, _m3, _c3 = verify_batch(r6, bres["batch"])
+            case("batch: member SUBSTITUTION in the manifest is rejected",
+                 not okf3 and "SUBSTITUTION" in reasonf3, reasonf3)
+            git6("update-ref", "-d", "refs/retire/batch/%s" % bres["batch"])
+            git6("update-ref", "refs/retire/batch/%s" % bres["batch"], bres["commit"])
+            outr = recover(r6)
+            case("batch: recover KEEPS a consistent current batch (one row, not three)",
+                 any(o["action"] == "kept" and str(o["seq"]) == bres["batch"] for o in outr)
+                 and not any(o["action"] == "discarded" for o in outr), outr)
+            # an intervening absorb -> the WHOLE batch is stale; recover discards all refs
+            write6("wiki/topic/ba.md", canonA.replace("aa.", "aa. moved."))
+            git6("add", "-A")
+            git6("commit", "-q", "-m", "intervening absorb")
+            outr2 = recover(r6)
+            case("batch: after the branch moves, recover discards the whole batch "
+                 "deterministically (STALE; members + binder gone)",
+                 any(o["action"] == "discarded" and "STALE" in o["reason"] for o in outr2)
+                 and _prepared(r6) == [] and _prepared_batches(r6) == [], outr2)
+            # round-1 fold: a member commit that ALSO touches another member's view is
+            # refused by the PUBLISHER itself (per-view atomicity is check_publishable_
+            # batch's own pin, not its caller's)
+            bres4 = propose_batch(r6, {"members": [
+                {"view": "wiki/topic/ba.md", "spans": ["BA"]},
+                {"view": "wiki/topic/bb.md", "spans": ["BB"]}]})
+            m1 = bres4["members"][0]
+            rec_m1 = json.loads(_blob(r6, m1["commit"], m1["record"]).decode())
+            head_r6 = _rev(r6, "refs/heads/main")
+            blobs_x = {}
+            for st_x, q_x in [l.split("\t", 1) for l in _git_text(
+                    r6, "diff-tree", "--no-commit-id", "--name-status", "-r",
+                    head_r6, m1["commit"])[1].splitlines() if "\t" in l]:
+                b_x = _blob(r6, m1["commit"], q_x)
+                blobs_x[q_x] = (b_x, _hash_object(r6, b_x))
+            sneak = _blob(r6, head_r6, "wiki/topic/bb.md") + b"smuggled edit\n"
+            blobs_x["wiki/topic/bb.md"] = (sneak, _hash_object(r6, sneak))
+            C_x = _build_commit(r6, head_r6, blobs_x, "member 1 smuggling a member-2 edit")
+            m2_rec = json.loads(_blob(r6, bres4["members"][1]["commit"],
+                                      bres4["members"][1]["record"]).decode())
+            # rebuild member 2 + binder atop the smuggling commit so the CHAIN itself is
+            # intact -- only the per-member delta pin can catch this shape
+            blobs_y = {}
+            for st_y, q_y in [l.split("\t", 1) for l in _git_text(
+                    r6, "diff-tree", "--no-commit-id", "--name-status", "-r",
+                    bres4["members"][0]["commit"], bres4["members"][1]["commit"])[1]
+                    .splitlines() if "\t" in l]:
+                b_y = _blob(r6, bres4["members"][1]["commit"], q_y)
+                blobs_y[q_y] = (b_y, _hash_object(r6, b_y))
+            C_y = _build_commit(r6, C_x, blobs_y, "member 2 rebuilt")
+            mfx = json.loads(_blob(r6, bres4["commit"],
+                                   "%s/retire-batch-%s/manifest.json"
+                                   % (RULINGS_DIR, bres4["batch"])).decode())
+            mfx["members"][0]["commit"] = C_x
+            mfx["members"][1]["commit"] = C_y
+            mbx = (json.dumps(mfx, indent=1, sort_keys=True) + "\n").encode()
+            mpx = "%s/retire-batch-%s/manifest.json" % (RULINGS_DIR, bres4["batch"])
+            M_x = _build_commit(r6, C_y, {mpx: (mbx, _hash_object(r6, mbx))}, "binder")
+            git6("-c", "tag.gpgSign=false", "tag", "-a", "-m",
+                 "promotion\nproposal_digest: sha256:%s\nmode: visible\n"
+                 % _sha(mbx), "retire/batch/%s-x" % bres4["batch"], M_x)
+            # name it under a distinct tag matching the batch grammar via a fresh bid is
+            # not possible (bid is seq-derived); check the publisher DIRECTLY on M_x by
+            # re-pointing the real batch tag
+            git6("tag", "-d", "retire/batch/%s-x" % bres4["batch"])
+            git6("-c", "tag.gpgSign=false", "tag", "-a", "-m",
+                 "promotion\nproposal_digest: sha256:%s\nmode: visible\n"
+                 % _sha(mbx), "retire/batch/%s" % bres4["batch"], M_x)
+            chk_x = _trust.check_publishable_batch(r6, "retire/batch/%s" % bres4["batch"],
+                                                   "main")
+            case("round-1 fold: a member commit that also edits ANOTHER member's view is "
+                 "refused by check_publishable_batch itself (atomic-per-view is the "
+                 "publisher's own pin)", not chk_x["ok"]
+                 and "outside its own" in chk_x["reason"], chk_x["reason"])
+            git6("tag", "-d", "retire/batch/%s" % bres4["batch"])
+            for _ref4 in ["refs/retire/%d" % m4["seq"] for m4 in bres4["members"]] + \
+                    ["refs/retire/batch/%s" % bres4["batch"]]:
+                git6("update-ref", "-d", _ref4)
+        finally:
+            globals()["RELEASE_SCOPE"] = _saved_scope
         case("nothing prepared is left behind by the battery", _prepared(r) == [])
     finally:
         shutil.rmtree(base, ignore_errors=True)
@@ -2057,8 +2987,19 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="retire.py", description=__doc__.split("\n\n")[0])
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--root", default=".")
-    ap.add_argument("--branch", default="main")
+    ap.add_argument("--branch", default=None,
+                    help="production branch (default: project.yaml production_branch, "
+                         "else the checked-out branch -- v3.0-151)")
     ap.add_argument("--propose", metavar="VIEW")
+    ap.add_argument("--propose-batch", metavar="SPEC_JSON",
+                    help="batch spec file: {\"members\": [{\"view\", \"spans\", "
+                         "\"preamble\", \"mode\", \"mapping\", \"splice\"}, ...]} "
+                         "-- one prepared chain, ONE promote (v3.0.52)")
+    ap.add_argument("--splice", metavar="JSON",
+                    help="correction pairing: {section: replacement} file, applied and "
+                         "published IN the prepared commit (condition 7)")
+    ap.add_argument("--splice-events", metavar="CSV",
+                    help="ledger events the splice projects (recorded)")
     ap.add_argument("--span", action="append", default=[], metavar="TITLE")
     ap.add_argument("--preamble", action="store_true")
     ap.add_argument("--mode", choices=["cold", "dedup"], default="cold")
@@ -2075,9 +3016,29 @@ def main(argv=None):
         return self_test()
     root = os.path.abspath(a.root)
     try:
+        if a.propose_batch:
+            spec = json.load(open(a.propose_batch, encoding="utf-8"))
+            res = propose_batch(root, spec, a.branch)
+            print("PREPARED batch %s on refs/retire/batch/%s (binder commit %s)" % (
+                res["batch"], res["batch"], res["commit"][:12]))
+            for r in res["members"]:
+                print("  member seq %d %s view %s: %s" % (
+                    r["seq"], r["commit"][:12], r["view"],
+                    "; ".join("%r %d bytes -> %s" % (s["title"], s["bytes"], s["mode"])
+                              for s in r["spans"])))
+            print("  batch manifest: %s" % res["manifest"])
+            print("  BATCH digest: sha256:%s" % res["digest"])
+            print("Nothing is published. ONE promote covers the whole batch. From YOUR terminal:")
+            print("  py deploy/promote.py %s --branch %s" % (res["digest"][:16], res["branch"]))
+            print("(the brake: add --halt-after N to publish only the first N views; the "
+                  "remainder is refused, never half-applied)")
+            return 0
         if a.propose:
             mapping = json.load(open(a.mapping, encoding="utf-8")) if a.mapping else None
-            res = propose(root, a.propose, a.span, a.preamble, a.mode, mapping, a.branch)
+            splice = json.load(open(a.splice, encoding="utf-8")) if a.splice else None
+            sevents = [s.strip() for s in (a.splice_events or "").split(",") if s.strip()]
+            res = propose(root, a.propose, a.span, a.preamble, a.mode, mapping, a.branch,
+                          splice=splice, splice_events=sevents or None)
             if a.json:
                 print(json.dumps(res, indent=1, default=str))
             else:
@@ -2088,8 +3049,11 @@ def main(argv=None):
                 print("  proposal: %s" % res["proposal"])
                 print("  proposal digest: sha256:%s" % res["digest"])
                 print("Nothing is published. To publish (trust_surface_signing: visible), from YOUR terminal:")
-                print("  py deploy/promote.py %s" % res["digest"][:16])
-                print("(under required: inspect C, then `git tag -s retire/%d %s` and `py deploy/trust.py --publish retire/%d`)" % (res["seq"], res["commit"][:12], res["seq"]))
+                # the echoed command must run VERBATIM on this instance, so it carries the
+                # resolved branch explicitly (v3.0-151: the v3.0.51 echo omitted it and
+                # refused word-for-word on every non-main instance, fleet inbox #8)
+                print("  py deploy/promote.py %s --branch %s" % (res["digest"][:16], res["branch"]))
+                print("(under required: inspect C, then `git tag -s retire/%d %s` and `py deploy/trust.py --publish retire/%d --branch %s`)" % (res["seq"], res["commit"][:12], res["seq"], res["branch"]))
             return 0
         if a.recover:
             out = recover(root, a.branch)

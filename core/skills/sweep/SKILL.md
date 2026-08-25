@@ -137,9 +137,21 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     Then the deltas, as before: for each pending trust-surface item quote the added and
     removed lines verbatim (`git diff <parent>..<commit> -- <path>`), and for each pending
     retirement the span title(s), bytes moved, and the destination (the full preimage is
-    `python deploy/retire.py --show <digest>`). Alongside, the class-wide table from
+    `python deploy/retire.py --show <digest>`). BATCH members render grouped (v3.0.52:
+    each row names its batch id and member position — one promote covered them all, so
+    the briefing shows them together; a `ROLLBACK of seq N` row is the brake's undo and
+    reads as its own retirement). Alongside, the class-wide table from
     `python deploy/trust.py --root . --report` (HEAD-identity, signature status, the
     recorded authority mode, the pin) as the per-surface state line.
+
+    (b2) **Cap debt** (v3.0.52, ADR #11 Release 3, backlog v3.0-129/-130): if
+    `deploy/debt.py` exists, `python deploy/debt.py --root . --report` and carry its
+    episode lines into the briefing — one row per open episode (view, own/inherited,
+    bytes remaining, crossing, state). An `escalated` episode is a **Needs-you** item
+    ("view X has owed N bytes of retirement since <date> and the grace window passed —
+    growth is refused until you promote a retirement or commit an expiring exception");
+    `open` episodes are Worth-knowing. DECISIONS-PENDING projects the escalated ones from
+    this briefing — that is the obligation's escalation channel, no separate inbox write.
 
     (c) **Acknowledge, then close — attended sweeps only:** after the briefing has been
     written, `python deploy/pending.py --root . --ack --run-id <id> --briefing

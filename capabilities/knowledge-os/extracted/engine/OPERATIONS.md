@@ -333,10 +333,61 @@ inconsistent); nothing in between exists. `retire.py --list` shows what is prepa
 
 Scope in Release 2 (ADR #11 condition 10, brief §5 build-C2): TARGETED retirements — the views
 blocking verified corrections, one view per proposal, largest spans first per the manifest
-(`retire-manifest.py`, Release 1). Broad migration waits for Release 3's brake (lineage-stable
-cap debt): a retired view can otherwise regrow. A retire record advances no absorption baseline
+(`retire-manifest.py`, Release 1). A retire record advances no absorption baseline
 and adjudicates no verdict (`staleness.py` ignores it; `compile-driver` readers filter on
 `run_type: compile`).
+
+### 9a. Release 3 — logical identity, debt, the batch, and the brake (v3.0.52)
+
+**Logical identity.** Every derivation region minted from v3.0.52 carries `view_id:` (one
+mint home: `backfill-derivation.render_region`, deterministic from the birth path); a legacy
+region without the key resolves to the same value its next mint would write, so legacy views
+key identically. Rename/move carry the id in the region; **cap debt follows lineage, not
+path**.
+
+**Debt (`deploy/debt.py`).** Computed from git objects on every question, never stored: an
+over-cap view opens an episode at its crossing commit (rename-following, so a move never
+resets the clock); a SPLIT apportions the parent's excess across the parts by size — under-cap
+children still owe [R3-C4]; a deleted-while-owing view's excess follows path reuse and
+view_id reuse (recreation, equivalent-query, nonstandard creation). Only PUBLISHED retirement
+bytes discharge; a proposed, refused, unauthorized, interrupted or ROLLED-BACK retirement
+counts nothing (G4). The obligation is one per episode, never renewed: `open` →
+(`engine-caps.yaml: episode_grace_days|absorbs`) → `escalated` (enforcement, not discharge:
+growth stays refused; the sweep surfaces it and DECISIONS-PENDING projects it) → terminal
+only as `discharged` or `exception-approved` (`deploy/rulings/cap-exception-*.md`, committed,
+`expires:` dated; expiry returns it to escalated).
+
+**The brake (condition 7).** During an open/escalated episode `validate_absorb_output`
+refuses any absorb that grows the view's LF bytes. The outs, exactly the ADR's: a net-zero
+rewrite; a correction PAIRED with a retirement that executes in the same prepared commit
+(`retire.py --propose … --splice corrections.json` — the splice publishes with the
+retirement under the one promote; the check is the MEASURED final size ≤ the pre-run size,
+enforced at propose and re-derived at verification); or the operator exception. Section-scoped
+absorb ships with it: a backend may return `{"sections": {title: replacement}}` and the
+ENGINE splices (`retire-manifest.splice_sections`, the retirement gate's own span grammar),
+so untouched sections cannot drift. Every compile run journals the touched views' open
+episodes on its record (`cap_episodes`) — the warn-with-obligation pre-gate.
+
+**The batch (`--propose-batch spec.json` → ONE promote).** N single-view retirements prepare
+as a chain C1..CN — each member the full single-view machinery, every gate per member —
+bound by a binder commit M whose tree adds exactly the batch manifest
+(`deploy/rulings/retire-batch-<first>-<last>/manifest.json`, naming every member commit, seq,
+view, digest). The BATCH DIGEST = sha256 of the manifest; `py deploy/promote.py
+<batch-digest>` is the operator's one action ("one promote per batch", the amended condition
+4's locked words); under `required`, one signed tag on M covers the chain the manifest names.
+Publication is member-by-member fast-forward — **atomic per view, never a half-applied
+view**. Substituting, reordering, inserting or dropping a member changes the chain or the
+digest and refuses.
+
+**The brake on a batch.** `--halt-after N` publishes only the first N views; the remainder's
+refs are deleted and the consumed digest can never publish it — refused, re-propose freshly.
+`py deploy/promote.py --rollback <digest> [--last N]` is the undo, operator-terminal only:
+each published view is RESTORED by an inverse commit re-derived from git objects (hot bytes
+return, cold objects remain — append-only conservation), the redirect chain advances with
+rollback entries so generation-tagged citations still resolve, and `debt.py` voids the
+rolled-back discharge. Broad production retirement (multi-view batches) is gated on
+`retire.py RELEASE_SCOPE = "broad"`, flipped only by the build that passed the Release-3
+review.
 
 ### Stage-only commit, worktree-per-shard discipline
 

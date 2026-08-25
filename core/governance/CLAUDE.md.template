@@ -123,6 +123,15 @@ Only `/compile` writes to `wiki/<domain>/*.md`. Direct human edits to compiled w
 
 When locking a T1 or T2 decision, explicitly audit whether the hypothesis was rationalized through the verifier output or genuinely tested. If `hypothesis_outcome` is `confirmed` and the verifier reasoning is thin, push back before locking. The `/handoff-close` skill's Step 5 includes this audit; manual locks should do it explicitly.
 
+### Browser-pane automation
+
+Applies to any session driving a web UI in the Claude Code browser pane (v3.0.52, backlog v3.0-153, fleet inbox #2).
+
+- **Calibrate before the first click.** The pane does not honour the coordinate frame the click tool reports: clicks land off the CSS frame by a pane-geometry-dependent scale factor (~3.58× in one measured session, ~2× in another — the factor varies per pane geometry, so never reuse a previously measured constant). Before the first click, arm a capture-phase probe (`window.__probe = []; document.addEventListener('click', e => window.__probe.push({x: e.clientX, y: e.clientY}), true)`), click one known coordinate, read the probe, compute `factor = measured / sent`, then divide every `getBoundingClientRect()` centre by that factor for all subsequent clicks.
+- **`ref`-based clicks and screenshot-frame coordinates are unreliable in the pane** — they miss silently, with no error. Calibrated coordinates only.
+- **A click's return value is never evidence.** A miss reports success while the UI is untouched (`document.activeElement` stays a DIV; form fields never take focus), and a text-only DOM read still reports success. Verify every action by re-reading the DOM — `document.activeElement`, the field's value — before proceeding.
+- The defect is filed upstream against the pane tool itself (fleet inbox #2); this discipline is the workaround until that ships.
+
 ## What this file is not
 
 - Not a project plan — that's the flight plan (`/flight-plan` is a core skill; plans live at `wiki/flight-plans/`)

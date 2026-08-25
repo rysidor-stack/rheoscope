@@ -245,6 +245,56 @@ def _mk_span(lines, idx, level, title, body_idx):
     }
 
 
+def splice_sections(text, sections):
+    """v3.0.52 (ADR #11 Release 3, brief section 2.2): SECTION-SCOPED ABSORB's one
+    splicing home -- the author returns {title: replacement} pairs and the ENGINE
+    splices them into the view, so untouched sections cannot drift and the span grammar
+    is exactly the retirement gate's (parse_spans; the v3.0-132 parity discipline).
+    Contract, refuse-shaped (ValueError, surfaced by the validator): a title must match
+    exactly ONE span (`(preamble)` addresses the preamble); a non-preamble replacement
+    must BEGIN with the span's own verbatim heading line (a heading edit does not ride a
+    body splice); selected spans may not nest/overlap; the derivation region and the
+    engine-owned retirements block are outside every span by construction, so a splice
+    cannot touch them. The replacement is the span's EXACT new extent -- include your own
+    trailing blank line to keep section separation (the engine splices bytes, it does not
+    reflow). Returns the spliced text, LF-normalized."""
+    src = text.replace("\r\n", "\n")
+    lines = src.split("\n")
+    spans = parse_spans(src)
+    chosen = []
+    for title in sorted(sections):
+        body = sections[title]
+        hits = [s for s in spans if s["title"] == title]
+        if not hits:
+            raise ValueError("splice: no span titled %r (spans: %s)" % (
+                title, ", ".join(repr(s["title"]) for s in spans)[:300]))
+        if len(hits) > 1:
+            raise ValueError("splice: span title %r is ambiguous (%d headings) -- "
+                             "rename one first" % (title, len(hits)))
+        s = hits[0]
+        if not isinstance(body, str) or not body.strip():
+            raise ValueError("splice: replacement for %r is empty (a section retires "
+                             "through deploy/retire.py, never through a splice)" % title)
+        rep = body.replace("\r\n", "\n")
+        rep_lines = rep[:-1].split("\n") if rep.endswith("\n") else rep.split("\n")
+        if s["level"]:
+            head_line = lines[s["start_line"] - 1]
+            if not rep_lines or rep_lines[0] != head_line:
+                raise ValueError("splice: replacement for %r must begin with the span's "
+                                 "own heading line %r (a heading edit does not ride a "
+                                 "body splice)" % (title, head_line))
+        chosen.append((s, rep_lines))
+    chosen.sort(key=lambda t: t[0]["start_line"])
+    for (a, _ra), (b, _rb) in zip(chosen, chosen[1:]):
+        if b["start_line"] <= a["end_line"]:
+            raise ValueError("splice: spans %r and %r overlap (one nests the other) -- "
+                             "splice the outer one alone" % (a["title"], b["title"]))
+    out = list(lines)
+    for s, rep_lines in sorted(chosen, key=lambda t: -t[0]["start_line"]):
+        out[s["start_line"] - 1:s["end_line"]] = rep_lines
+    return "\n".join(out)
+
+
 # ------------------------------------------------------------------ citations
 def citation_universe(root, walk=os.walk):
     """Every registered artifact (the registration chain is the enumeration) + the wiki
@@ -680,7 +730,38 @@ def self_test():
             if any(s["start_line"] - 1 <= c_de for s in c_spans):
                 fails.append("canonical fixture: a span starts at or before the region end "
                              "(spans must sit wholly after a top-of-file region)")
-    n_checks = 30
+        # --- v3.0.52 splice_sections (section-scoped absorb, both directions)
+        sp_fix = ("---\ntitle: S\n---\n\n"
+                  "# --- derivation (engine-managed; strip region) ---\nschema_version: 3.2\n"
+                  "# --- /derivation ---\n\npreamble text\n\n## Alpha\n\nold alpha body.\n\n"
+                  "## Beta\n\nbeta body.\n")
+        spliced = splice_sections(sp_fix, {"Alpha": "## Alpha\n\nnew alpha body.\n"})
+        if "new alpha body." not in spliced or "old alpha body." in spliced \
+                or "beta body." not in spliced or "preamble text" not in spliced:
+            fails.append("splice: single-section replacement did not land cleanly: %r" % spliced)
+        if "# --- derivation" not in spliced or "schema_version: 3.2" not in spliced:
+            fails.append("splice: the derivation region must ride through untouched")
+        sp_pre = splice_sections(sp_fix, {"(preamble)": "new preamble.\n"})
+        if "new preamble." not in sp_pre or "preamble text" in sp_pre:
+            fails.append("splice: (preamble) replacement did not land: %r" % sp_pre)
+        for bad, needle, label in (
+                ({"Nope": "## Nope\n\nx\n"}, "no span titled", "unknown section"),
+                ({"Alpha": "## AlphaX\n\nx\n"}, "own heading line", "heading edit"),
+                ({"Alpha": "   "}, "is empty", "empty replacement")):
+            try:
+                splice_sections(sp_fix, bad)
+                fails.append("splice: %s did not refuse" % label)
+            except ValueError as e:
+                if needle not in str(e):
+                    fails.append("splice: %s refused with the wrong reason: %s" % (label, e))
+        dup_fix = sp_fix + "\n## Alpha\n\nduplicate heading.\n"
+        try:
+            splice_sections(dup_fix, {"Alpha": "## Alpha\n\nx\n"})
+            fails.append("splice: ambiguous title did not refuse")
+        except ValueError as e:
+            if "ambiguous" not in str(e):
+                fails.append("splice: ambiguous refusal wrong reason: %s" % e)
+    n_checks = 36
     if fails:
         for f in fails:
             print("FAIL: " + f)

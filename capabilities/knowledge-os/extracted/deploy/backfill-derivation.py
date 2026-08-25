@@ -155,6 +155,15 @@ def compute_origin_max(root, sources, origin_config_path=None):
     return origin.origin_max(per_event), {"total": cen["total"], "judgment": cen["judgment"]}
 
 
+def mint_view_id(self_relpath):
+    """The deterministic logical-identity mint (v3.0.52, one home -- render_region and
+    deploy/debt.py's legacy-view fallback both call this, so a legacy region without the
+    key resolves to the SAME id its next mint would write)."""
+    import hashlib
+    rel = self_relpath.replace("\\", "/")
+    return "v-" + hashlib.sha256(("view_id:" + rel).encode("utf-8")).hexdigest()[:16]
+
+
 def render_region(schema_version, kind, summary, origin_max_value, self_relpath,
                   minted_by):
     """The minted region: every DERIVATION_KEYS-required key, conservative values,
@@ -163,11 +172,19 @@ def render_region(schema_version, kind, summary, origin_max_value, self_relpath,
     recorded in the region at birth -- the single fact that decides whether a
     later confirmed verify may advance consumed_status (engine-born only;
     backfill keeps the F13 audit obligation). Both minters call THIS function,
-    so the two can never drift."""
+    so the two can never drift.
+    view_id (v3.0.52, ADR #11 Release 3, backlog v3.0-129): the view's stable LOGICAL
+    identity, minted deterministically from the BIRTH path (`v-` + sha256 prefix).
+    Rename/move carry it in the region, so cap debt follows lineage, not path
+    (deploy/debt.py). A later view born at the SAME path shares the id -- path-reuse
+    inheritance is the designed behavior (brief section 2.2 [R2-C2]); the collision with
+    a still-live renamed sibling over-attributes debt conservatively (the brake refuses
+    growth, never discharges), recorded as the documented edge."""
     return "\n".join([
         "# --- derivation (engine-managed; strip region) ---",
         "schema_version: %s" % schema_version,
         "view: %s" % kind,
+        "view_id: %s" % mint_view_id(self_relpath),
         "summary: %s" % json.dumps(summary or "(legacy view; summary pending)"),
         "entities: []",
         "status: active",

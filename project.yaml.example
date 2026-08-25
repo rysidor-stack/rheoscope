@@ -24,6 +24,10 @@ project_slug: "example-project"
 # YOU read shows it. If no attended sweep closes within this many days, the nightly standing
 # run writes a durable alarm that the next sweep shows. Default 7 when absent.
 # observation_window_days: 7
+# Production branch (v3.0.52, backlog v3.0-151): the branch the retirement machinery
+# publishes to. Absent = the checked-out branch (right for almost everyone, including a
+# non-main dogfood branch). Set only when the checkout routinely sits elsewhere.
+# production_branch: main
 project_description: "One sentence describing what this project is."
 
 # ---- Capabilities (Decision V2-4: inclusion is the toggle) ----

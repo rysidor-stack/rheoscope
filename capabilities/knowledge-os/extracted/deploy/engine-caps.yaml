@@ -27,3 +27,12 @@ caps:
 # and the block keeps one pointer row. Checked at every retirement.
 retirements_block_max_entries: 20
 retirements_block_max_bytes: 8192
+
+# ADR #11 Release 3 (v3.0.52, deploy/debt.py, brief section 2.2): the cap-episode grace
+# obligation -- ONE per episode, never renewed. The episode escalates (an enforcement
+# state: growth stays refused, the sweep surfaces it for the decision inbox) when EITHER
+# limit passes first: this many days since the crossing, or this many absorbs touching the
+# view since the crossing. Terminal states are discharged (debt retired) or an explicit
+# expiring operator exception (deploy/rulings/cap-exception-*.md).
+episode_grace_days: 30
+episode_grace_absorbs: 10

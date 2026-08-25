@@ -661,10 +661,21 @@ _split_mod = None
 
 def _split():
     """check-split.py, loaded lazily (v3.0-141): the citation grammar's single home --
-    the same CITE_FIND_RE/_parse_citation the manifest and the verb use."""
+    the same CITE_FIND_RE/_parse_citation the manifest and the verb use. v3.0.52
+    (v3.0-150): the sibling's interface version is pinned -- a two-lane MIGRATION copy
+    can transiently pair this file with an OLDER check-split.py, and that state must
+    refuse NAMED (the first fork's v3.0.51 adoption hit the bare-AttributeError version of
+    this in retire.py, mid-ceremony)."""
     global _split_mod
     if _split_mod is None:
         _split_mod = _load("check-split.py", "check_split_v2")
+    if getattr(_split_mod, "SPLIT_IFACE", 0) < 2:
+        raise ValidationError(
+            "deploy/check-split.py is OLDER than this engine (interface %s < 2: the "
+            "v3.0.51+ single-home citation symbols are missing) -- complete the "
+            "SESSION-lane copy first (retire-manifest.py, compile-v2.py, check-split.py, "
+            "assemble.py from the same tag), then re-run (v3.0-150)"
+            % getattr(_split_mod, "SPLIT_IFACE", "none"))
     return _split_mod
 
 
@@ -690,6 +701,51 @@ def _gen_hash(text):
     """The GENERATION identity of a view (retire.gen_hash parity, battery-pinned):
     sha256 of the LF text with the retirements block stripped."""
     return hashlib.sha256(strip_retirements_block(text).encode("utf-8")).hexdigest()
+
+
+_rm_mod = None
+
+
+def _rm():
+    """retire-manifest.py, loaded lazily (v3.0.52, ADR #11 Release 3): splice_sections'
+    one home -- the span grammar the retirement gate uses is the grammar the engine
+    splices with (the v3.0-132 parity discipline)."""
+    global _rm_mod
+    if _rm_mod is None:
+        _rm_mod = _load("retire-manifest.py", "retire_manifest_v2")
+    return _rm_mod
+
+
+_debt_mod = None
+
+
+def _debt():
+    """debt.py, loaded lazily (v3.0.52, ADR #11 Release 3): lineage-stable cap episodes
+    and the absorb brake, computed from git objects on every question."""
+    global _debt_mod
+    if _debt_mod is None:
+        _debt_mod = _load("debt.py", "debt_v2")
+    return _debt_mod
+
+
+def apply_section_scoped(old_text, out):
+    """v3.0.52 (ADR #11 Release 3): SECTION-SCOPED ABSORB -- an author may return
+    {"sections": {title: replacement}} instead of new_text and the ENGINE splices
+    (retire-manifest.splice_sections), so the model rewrites only what changed and the
+    untouched sections cannot drift. The spliced result then walks the exact validation
+    every full-text absorb walks (minting, floors, manifest-vs-diff, the brake). A
+    refusal from the splice contract is a ValidationError like any other pre-journal
+    refusal. Output carrying BOTH new_text and sections refuses (two authors of one
+    view state)."""
+    if not out.get("sections"):
+        return out
+    if out.get("new_text") is not None:
+        raise ValidationError("absorb output carries BOTH new_text and sections -- one "
+                              "authoring shape per view")
+    try:
+        return dict(out, new_text=_rm().splice_sections(old_text, out["sections"]))
+    except ValueError as e:
+        raise ValidationError("section-scoped absorb: %s" % e)
 
 
 # A bare colon-form view citation: `view.md:80` NOT already carrying a generation tag.
@@ -942,6 +998,32 @@ def validate_absorb_output(repo, view_rel, old_text, out, events,
     # never masks an existing refusal with a different one).
     check_pointer_class_ceiling(repo, view_rel, old_text, new_text, events,
                                 registrations_map or {})
+    # ADR #11 Release 3 (v3.0.52, condition 7): the cap-debt BRAKE -- during an open or
+    # escalated cap episode an ordinary absorb may not increase the view's LF-normalized
+    # bytes. deploy/debt.py recomputes episodes from git objects on every question
+    # (lineage-stable: rename, split, recreation all carry debt), and its refusal names
+    # the ADR's outs (net-zero, retire.py --splice pairing, a committed operator
+    # exception). Applied LAST, like the pointer ceiling: purely additive on top of
+    # every pre-existing check. Degrades stated: a deploy/ without debt.py is
+    # pre-Release-3; an unresolvable branch means no history and therefore no debt; an
+    # unreadable cap table degrades exactly as check-caps does (INCONCLUSIVE, the sweep's
+    # cap sensor reports it). Every OTHER failure inside the computation refuses --
+    # fail-closed, because an unanswerable brake question is not permission.
+    old_lf = len(old_text.replace("\r\n", "\n").encode("utf-8"))
+    new_lf = len(new_text.replace("\r\n", "\n").encode("utf-8"))
+    if new_lf > old_lf and os.path.isdir(os.path.join(repo, ".git")) \
+            and os.path.isfile(os.path.join(_HERE, "debt.py")):
+        try:
+            bv = _debt().brake(repo, view_rel, old_lf, new_lf)
+        except Exception as e:
+            if "does not resolve" in str(e) or "unresolvable" in str(e) \
+                    or "cap config" in str(e) or "PyYAML" in str(e):
+                bv = {"allowed": True}
+            else:
+                raise ValidationError("cap-debt brake could not answer for %s: %s "
+                                      "(fail-closed)" % (view_rel, e))
+        if not bv["allowed"]:
+            raise ValidationError("brake (ADR #11 condition 7): %s" % bv["reason"])
     return pre_blob, post_blob
 
 
@@ -1180,6 +1262,10 @@ def run(repo, plan, absorb_backend, run_type="compile", break_stale=False,
                     raise ValidationError("delta event missing: %s" % erel)
                 events[erel] = open(ep, encoding="utf-8").read()
             out = absorb_backend.absorb(view, old, events)
+            # ADR #11 Release 3 (v3.0.52): section-scoped output is spliced by the
+            # ENGINE before anything else sees it -- from here on it is a new_text
+            # absorb like any other.
+            out = apply_section_scoped(old, out)
             # v3.0.51 (v3.0-141): the engine MINTS generation tags on new colon-form view
             # citations before validation -- deterministic normalization, the same class
             # as the derivation-region minter below, but pre-validation because the
@@ -1251,8 +1337,25 @@ def run(repo, plan, absorb_backend, run_type="compile", break_stale=False,
             with open(vp, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(new_text)
         flags = reconcile_flags(absorbed, entity_index, repo=repo)
+        # ADR #11 Release 3 (v3.0.52, brief 2.3): the warn-with-obligation pre-gate.
+        # Every touched view's open cap episodes are journaled on the run record --
+        # episodes are COMPUTED (deploy/debt.py), so recording them is visibility, never
+        # state: the brake in validate_absorb_output is the enforcement; the census and
+        # the sweep surface the obligation until retirement discharges it.
+        cap_episodes = []
+        if touched_paths and os.path.isfile(os.path.join(_HERE, "debt.py")):
+            for tv in touched_paths:
+                try:
+                    for ep in _debt().episodes_for_view(repo, tv):
+                        cap_episodes.append({k: ep.get(k) for k in (
+                            "view", "view_id", "kind", "state", "remaining",
+                            "obligation_id", "deadline")})
+                except Exception:
+                    pass  # visibility only; the brake already ruled on every write
         rec = core.minimal_record(run_type,
                                   _git(repo, "rev-parse", "HEAD").strip())
+        if cap_episodes:
+            rec["cap_episodes"] = cap_episodes
         rec["absorbed"] = absorbed
         rec["noop_candidates"] = noop_candidates
         # v3.0-63: journal the validated claim routing on the compile record
@@ -5204,6 +5307,104 @@ def self_test():
                      "AMBIGUOUS" in str(e))
         finally:
             shutil.rmtree(mint_root, ignore_errors=True)
+
+        # ---- ADR #11 Release 3 (v3.0.52): section-scoped absorb + the cap-debt brake
+        out_s = apply_section_scoped("## A\n\nold body.\n\n## B\n\nkeep.\n",
+                                     {"sections": {"A": "## A\n\nnew body.\n"}})
+        case("Release 3: {'sections': ...} output is spliced by the ENGINE into new_text "
+             "(retire-manifest.splice_sections, the retirement gate's span grammar)",
+             out_s.get("sections") and "new body." in out_s["new_text"]
+             and "old body." not in out_s["new_text"] and "keep." in out_s["new_text"])
+        try:
+            apply_section_scoped("## A\n\nx.\n", {"sections": {"Ghost": "## Ghost\n\ny\n"}})
+            case("Release 3: unknown section refused", False)
+        except ValidationError as e:
+            case("Release 3: a splice naming an unknown section refuses pre-journal",
+                 "no span titled" in str(e))
+        try:
+            apply_section_scoped("## A\n\nx.\n", {"sections": {"A": "## A\n\ny\n"},
+                                                  "new_text": "z"})
+            case("Release 3: both shapes refused", False)
+        except ValidationError as e:
+            case("Release 3: output carrying BOTH new_text and sections refuses",
+                 "BOTH" in str(e))
+        r3root = tempfile.mkdtemp(prefix="cv2-release3-")
+        dbt = _debt()
+        try:
+            def g3(*a):
+                return subprocess.run(["git", "-C", r3root] + list(a), capture_output=True)
+            g3("init", "-q", "-b", "main")
+            g3("config", "user.email", "t@t")
+            g3("config", "user.name", "t")
+            g3("config", "commit.gpgsign", "false")
+            os.makedirs(os.path.join(r3root, "wiki", "topic"))
+            REG3 = ("# --- derivation (engine-managed; strip region) ---\n"
+                    "schema_version: 3.2\nview: topic\nview_id: v-brake\n"
+                    "# --- /derivation ---\n")
+            pad3 = "x" * 300
+            over_old = "---\ntitle: b\n---\n" + REG3 + "\n## Sec\n\n" + pad3 + "\n"
+            with open(os.path.join(r3root, "wiki", "topic", "over.md"), "w",
+                      encoding="utf-8", newline="\n") as fh:
+                fh.write(over_old)
+            with open(os.path.join(r3root, "project.yaml"), "w", encoding="utf-8",
+                      newline="\n") as fh:
+                fh.write("trust_surface_signing: visible\n")
+            g3("add", "-A")
+            g3("commit", "-q", "-m", "seed over-cap view")
+            dbt._CAPS_OVERRIDE = {"topic": 200, "default": 200}
+            grown = over_old.replace(pad3, pad3 + "yyyy")
+            out_g = {"new_text": grown, "manifest": [{"event": "raw/e.md",
+                                                      "section": "Sec"}]}
+            try:
+                validate_absorb_output(r3root, "wiki/topic/over.md", over_old, out_g,
+                                       {"raw/e.md": "e"})
+                case("Release 3: brake growth refusal missing", False)
+            except ValidationError as e:
+                case("Release 3: the BRAKE refuses an ordinary absorb that grows a view "
+                     "under an open cap episode, naming the outs (condition 7)",
+                     "condition 7" in str(e) and "--splice" in str(e))
+            shrunk = over_old.replace(pad3, pad3[:-8])
+            out_ok = {"new_text": shrunk, "manifest": [{"event": "raw/e.md",
+                                                        "section": "Sec"}]}
+            case("Release 3: the brake allows a net-shrinking absorb of the same view "
+                 "(the episode stays open; growth is what refuses)",
+                 validate_absorb_output(r3root, "wiki/topic/over.md", over_old, out_ok,
+                                        {"raw/e.md": "e"}) is not None)
+            # cross-vendor round-2 fold (c3): the degradation policy is fault-injected,
+            # both directions -- an unreadable CAP TABLE degrades exactly as check-caps
+            # does (the cap sensor owns that report); any OTHER computation error
+            # refuses (fail-closed: an unanswerable brake question is not permission)
+            saved_brake = dbt.brake
+
+            def _capcfg_err(*_a, **_k):
+                raise RuntimeError("cap config has no 'default' cap")
+
+            dbt.brake = _capcfg_err
+            try:
+                case("Release 3 (r2 fold): an unreadable cap table DEGRADES -- the "
+                     "growth absorb passes and the cap sensor owns the finding",
+                     validate_absorb_output(r3root, "wiki/topic/over.md", over_old,
+                                            out_g, {"raw/e.md": "e"}) is not None)
+            finally:
+                dbt.brake = saved_brake
+
+            def _boom(*_a, **_k):
+                raise RuntimeError("boom")
+
+            dbt.brake = _boom
+            try:
+                try:
+                    validate_absorb_output(r3root, "wiki/topic/over.md", over_old,
+                                           out_g, {"raw/e.md": "e"})
+                    case("Release 3 (r2 fold): brake error fail-closed", False)
+                except ValidationError as e:
+                    case("Release 3 (r2 fold): any OTHER brake computation error "
+                         "REFUSES the absorb (fail-closed)", "fail-closed" in str(e))
+            finally:
+                dbt.brake = saved_brake
+        finally:
+            dbt._CAPS_OVERRIDE = None
+            shutil.rmtree(r3root, ignore_errors=True)
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

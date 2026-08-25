@@ -591,6 +591,13 @@ block is present, all keys below are required:
 | `bundle` | retrieval closure (catalog-derived) | list of paths |
 | `verified` | verify record (null until VERIFY passes; resets on rebuild) | `status` / `at` / `verifier_vendor` / `verifier_model_id` / `absorb_vendor` / `absorb_model_id` / `packet_hash` / `artifact` |
 
+Two OPTIONAL keys ride the block (legacy regions lack them; the minter writes them at
+birth): `minted_by` (`engine` \| `backfill`, v3.0-71 — mint provenance) and `view_id`
+(v3.0.52, ADR #11 Release 3 — the view's stable **logical identity**, minted
+deterministically from the birth path, carried through rename/move by the region itself;
+`deploy/debt.py` keys lineage-stable cap debt on it, and a legacy region without the key
+resolves to the same value its next mint would write).
+
 The `subscribes.corpus` value is **ARTIFACT-scoped and instance-configured** — the
 corpus logical name resolves from the `project.yaml` corpus binding (`corpus_source` /
 `corpus_config`, or a `corpus_sources[]` entry's `id`) at

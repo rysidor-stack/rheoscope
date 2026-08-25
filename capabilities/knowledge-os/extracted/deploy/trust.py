@@ -313,6 +313,43 @@ def signing_mode(repo):
                         "-- failing closed to required" % m.group(1))
 
 
+def production_branch(repo):
+    """v3.0.52 (v3.0-151, fleet inbox #8): THE production branch, resolved once -- one
+    home for every Release-2/3 consumer (retire.py, promote.py, pending.py, doctor 16(f),
+    every echoed command). Resolution order: the project.yaml `production_branch:` key;
+    else the checked-out branch (`symbolic-ref HEAD`, the same rule branch_rewind uses);
+    else None. Callers REFUSE on None rather than assuming `main`: silently defaulting a
+    branch that does not resolve is how the first production fork froze a legacy citation
+    registry with null view hashes (inbox #8) and how doctor 16(f) false-FAILed on every
+    non-main instance. Returns (branch_or_None, note)."""
+    p = os.path.join(repo, "project.yaml")
+    try:
+        text = open(p, encoding="utf-8-sig").read()
+    except OSError:
+        text = ""
+    m = re.search(r'(?m)^\s*production_branch:\s*"?([A-Za-z0-9._/-]+)"?\s*(#.*)?$', text)
+    if m:
+        return m.group(1), "project.yaml production_branch: %s" % m.group(1)
+    rc, out = _git_text(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
+    if rc == 0 and out.strip():
+        return out.strip(), "checked-out branch (symbolic-ref HEAD)"
+    return None, ("no production_branch key in project.yaml and HEAD names no branch "
+                  "(detached or not a checkout) -- pass --branch, or set "
+                  "`production_branch:` in project.yaml")
+
+
+def resolve_branch(repo, branch=None):
+    """The one entry point consumers call: an explicit branch wins; else
+    production_branch(); an unresolvable branch raises TrustError with the note --
+    never a silent `main` (v3.0-151)."""
+    if branch:
+        return branch
+    b, note = production_branch(repo)
+    if not b:
+        raise TrustError("production branch unresolvable: %s" % note)
+    return b
+
+
 # ------------------------------------------------------------------ allowed_signers
 _KEYTYPE_RE = re.compile(r"^(sk-)?(ssh-|ecdsa-)[A-Za-z0-9@.\-]+$")
 
@@ -832,7 +869,8 @@ def check_publishable(repo, tag, branch="main"):
         reason = str(e)
         if signing_mode(repo)[0] == "visible":
             reason += (" (trust_surface_signing: visible -- nothing is promoted yet: run "
-                       "`py deploy/promote.py <proposal-digest>` from your own terminal)")
+                       "`py deploy/promote.py <proposal-digest> --branch %s` from your "
+                       "own terminal)" % branch)
         return {"ok": False, "reason": reason}
     c = t["object"]
     head = _rev(repo, "refs/heads/%s" % branch)
@@ -844,8 +882,9 @@ def check_publishable(repo, tag, branch="main"):
         reason = sig["reason"]
         if mode == "visible":
             reason += (" (trust_surface_signing: visible -- publication is the exact-digest "
-                       "operator promotion: `py deploy/promote.py <proposal-digest>` from your "
-                       "own terminal, or a verified operator tag)")
+                       "operator promotion: `py deploy/promote.py <proposal-digest> "
+                       "--branch %s` from your own terminal, or a verified operator tag)"
+                       % branch)
         return {"ok": False, "reason": reason, "commit": c, "head": head}
     parents = _parents(repo, c) or []
     if len(parents) != 1:
@@ -933,6 +972,222 @@ def publish_retirement(repo, tag, branch="main"):
     return dict(chk, published=True, reason="PUBLISHED: " + chk["reason"])
 
 
+_BATCH_TAG_RE = re.compile(r"^retire/batch/(\d+-\d+)$")
+
+
+def check_publishable_batch(repo, tag, branch="main"):
+    """v3.0.52 (ADR #11 Release 3; the amended condition 4's 'one promote per batch'):
+    the batch twin of check_publishable. `tag` = retire/batch/<first>-<last> names the
+    BINDER commit M, whose tree adds exactly the batch manifest; ONE operator act on M
+    (a visible-mode promotion record carrying the manifest digest, or a verified sk tag
+    under required -- the v3.0.46 brief's own 'one tag can name a batch commit') vouches
+    for PRECISELY the member chain the manifest names. Every single-retirement condition
+    re-runs per member against its own parent; substitution, reordering, insertion,
+    truncation, a consumed digest/seq, or a moved branch each refuse. Never writes."""
+    m = _BATCH_TAG_RE.match(tag)
+    if not m:
+        return {"ok": False, "reason": "tag %r is not of the form retire/batch/<first>-<last>" % tag}
+    bid = m.group(1)
+    if not mode_chosen(repo):
+        return {"ok": False, "reason": "retirement disabled: " + ABSENT_MODE_NOTE}
+    head = _rev(repo, "refs/heads/%s" % branch)
+    if head is None:
+        return {"ok": False, "reason": "production branch %s does not resolve" % branch}
+    try:
+        t = tag_object(repo, tag)
+    except TrustError as e:
+        reason = str(e)
+        if signing_mode(repo)[0] == "visible":
+            reason += (" (trust_surface_signing: visible -- nothing is promoted yet: run "
+                       "`py deploy/promote.py <batch-digest> --branch %s` from your own "
+                       "terminal)" % branch)
+        return {"ok": False, "reason": reason}
+    M = t["object"]
+    mpath = "deploy/rulings/retire-batch-%s/manifest.json" % bid
+    mb = _blob_at(repo, M, mpath)
+    if mb is None:
+        return {"ok": False, "reason": "tagged commit %s carries no batch manifest %s"
+                % ((M or "?")[:12], mpath), "commit": M, "head": head}
+    digest = hashlib.sha256(mb).hexdigest()
+    mode = signing_mode(repo)[0]
+    sig = publication_authority(repo, tag, M, mode)
+    if not sig["ok"]:
+        reason = sig["reason"]
+        if mode == "visible":
+            reason += (" (visible -- the exact-digest batch promotion: `py deploy/"
+                       "promote.py <batch-digest> --branch %s` from your own terminal)"
+                       % branch)
+        return {"ok": False, "reason": reason, "commit": M, "head": head}
+    if sig["kind"] == "promoted" and sig["digest"] != digest:
+        return {"ok": False, "reason": "promotion record %s names digest %s.. but the batch "
+                "manifest in M hashes to %s.. -- bound to a DIFFERENT batch"
+                % (tag, sig["digest"][:12], digest[:12]), "commit": M, "head": head}
+    try:
+        manifest = json.loads(mb.decode("utf-8-sig"))
+    except Exception:
+        return {"ok": False, "reason": "batch manifest unreadable", "commit": M, "head": head}
+    rows = manifest.get("members") or []
+    if not rows:
+        return {"ok": False, "reason": "batch manifest names no members", "commit": M, "head": head}
+    parents = _parents(repo, M) or []
+    if len(parents) != 1:
+        return {"ok": False, "reason": "M has %d parents" % len(parents), "commit": M, "head": head}
+    rc, ns = _git_text(repo, "diff-tree", "--no-commit-id", "--name-status", "-r",
+                       parents[0], M)
+    delta = [l.split("\t", 1) for l in ns.splitlines() if "\t" in l]
+    if delta != [["A", mpath]]:
+        return {"ok": False, "reason": "M's delta over its parent is not exactly the batch "
+                "manifest (got: %s)" % (", ".join("%s %s" % (s, q) for s, q in delta)
+                                        or "nothing"), "commit": M, "head": head}
+    seen_views = set()
+    for _row in rows:
+        v2 = str(_row.get("view", "")).replace("\\", "/")
+        if v2 in seen_views:
+            return {"ok": False, "reason": "batch manifest names view %s in TWO members -- "
+                    "a batch names each view at most once (atomic-per-view)" % v2,
+                    "commit": M, "head": head}
+        seen_views.add(v2)
+    chain, c = [], parents[0]
+    for _row in rows:
+        chain.append(c)
+        ps = _parents(repo, c) or []
+        if len(ps) != 1:
+            return {"ok": False, "reason": "member commit %s is not single-parent" % c[:12],
+                    "commit": M, "head": head}
+        c = ps[0]
+    chain.reverse()
+    if c != head or manifest.get("parent_head") != head:
+        return {"ok": False, "reason": "batch chain bottoms out at %s but %s is %s -- a "
+                "STALE or PARTIALLY PUBLISHED batch; the remainder is refused (run "
+                "`py deploy/retire.py --recover`, then re-propose)" % (
+                    c[:12], branch, head[:12]), "commit": M, "head": head}
+    hist = _retire_records_history(repo, head)
+    members = []
+    for row, ci in zip(rows, chain):
+        if row.get("commit") != ci:
+            return {"ok": False, "reason": "member seq %s: manifest names commit %s but the "
+                    "chain carries %s -- member SUBSTITUTION" % (
+                        row.get("seq"), str(row.get("commit"))[:12], ci[:12]),
+                    "commit": M, "head": head}
+        pi = (_parents(repo, ci) or [None])[0]
+        rc, ns = _git_text(repo, "diff-tree", "--no-commit-id", "--name-status", "-r",
+                           pi, ci, "--", JOURNAL_DIR)
+        d2 = [l.split("\t", 1) for l in ns.splitlines() if "\t" in l]
+        if len(d2) != 1 or d2[0][0] != "A":
+            return {"ok": False, "reason": "member %s's journal delta is not exactly one "
+                    "ADDED record" % ci[:12], "commit": M, "head": head}
+        rec_path = d2[0][1]
+        rb = _blob_at(repo, ci, rec_path)
+        try:
+            rec = json.loads(rb.decode("utf-8-sig")) if rb else None
+        except Exception:
+            rec = None
+        if not isinstance(rec, dict) or rec.get("run_type") != "retire":
+            return {"ok": False, "reason": "member %s adds %s which is not a retire record"
+                    % (ci[:12], rec_path), "commit": M, "head": head}
+        if (rec.get("batch") or {}).get("id") != bid or rec.get("seq") != row.get("seq"):
+            return {"ok": False, "reason": "member record %s does not name batch %s / seq %s"
+                    % (rec_path, bid, row.get("seq")), "commit": M, "head": head}
+        # cross-vendor round-2 fold (c1): the record's view is BOUND to the manifest
+        # row's -- a forged record claiming another member's view would otherwise make
+        # the allowed-path pin below vouch for the wrong view
+        if str(rec.get("view", "")).replace("\\", "/") != \
+                str(row.get("view", "")).replace("\\", "/"):
+            return {"ok": False, "reason": "member seq %s: record names view %r but the "
+                    "manifest row names %r -- view substitution" % (
+                        rec.get("seq"), rec.get("view"), row.get("view")),
+                    "commit": M, "head": head}
+        prop = rec.get("proposal")
+        pb = _blob_at(repo, ci, prop) if prop else None
+        if pb is None or "sha256:" + hashlib.sha256(pb).hexdigest() != row.get("proposal_digest")                 or _digest_hex(rec.get("proposal_digest")) != hashlib.sha256(pb).hexdigest():
+            return {"ok": False, "reason": "member seq %s: proposal digest does not bind the "
+                    "record, the blob and the manifest row together" % row.get("seq"),
+                    "commit": M, "head": head}
+        if _journal_path_used(repo, head, rec_path):
+            return {"ok": False, "reason": "journal path %s was already used on %s -- never "
+                    "reused" % (rec_path, branch), "commit": M, "head": head}
+        for p2, sha2, r2 in hist:
+            if _digest_hex(r2.get("proposal_digest")) == _digest_hex(rec.get("proposal_digest"))                     or r2.get("seq") == rec.get("seq"):
+                return {"ok": False, "reason": "member seq %s: digest or seq already CONSUMED "
+                        "on %s (%s at %s) -- a replayed member" % (
+                            rec.get("seq"), branch, p2, sha2[:12]), "commit": M, "head": head}
+        # v3.0.52 cross-vendor round-1 fold: THIS check, not its caller, pins per-view
+        # atomicity -- a member commit may touch ONLY its own retirement's paths (its
+        # view, record, proposal, cold objects, compaction index). Without it a member
+        # could smuggle a change to a LATER member's view and a halted batch would leave
+        # that view half-applied. verify_batch pins the same thing through
+        # verify_prepared; the publisher must not lean on its caller having run it.
+        rc, ns_all = _git_text(repo, "diff-tree", "--no-commit-id", "--name-only", "-r",
+                               pi, ci)
+        allowed = {rec.get("view"), rec.get("proposal"), rec_path}
+        for co in rec.get("cold_objects") or []:
+            allowed.add(co.get("path"))
+        if rec.get("compaction") and rec["compaction"].get("index"):
+            allowed.add(rec["compaction"]["index"])
+        extra = [q.strip() for q in ns_all.splitlines()
+                 if q.strip() and q.strip() not in allowed]
+        if extra:
+            return {"ok": False, "reason": "member seq %s touches paths outside its own "
+                    "retirement (%s) -- atomic-per-view means one member, one view"
+                    % (rec.get("seq"), ", ".join(extra[:5])), "commit": M, "head": head}
+        members.append({"seq": rec.get("seq"), "commit": ci, "record": rec_path,
+                        "view": rec.get("view"),
+                        "digest": _digest_hex(rec.get("proposal_digest"))})
+    who = ("verified by %s" % sig.get("principal")) if sig["kind"] == "signed" else (
+        "promoted (visible-mode batch record by %s)" % ((sig.get("tagger") or "?").split(">")[0] + ">"))
+    return {"ok": True, "reason": "publishable: batch %s %s, %d member(s) atop %s, manifest "
+            "digest-matched" % (bid, who, len(members), head[:12]),
+            "commit": M, "head": head, "members": members, "digest": digest, "bid": bid,
+            "kind": sig["kind"]}
+
+
+def publish_batch(repo, tag, branch="main", halt_after=None):
+    """Member-by-member fast-forward -- ATOMIC PER VIEW: each update-ref lands one whole
+    member commit (one view's complete retirement) or nothing; the binder M publishes
+    last, only on a full batch. halt_after=K is the BRAKE's slow-down: the first K
+    members publish, the remainder never does (the caller then discards the remainder's
+    refs -- refused, never half-applied). Returns {'ok','published',[...],'halted'}."""
+    chk = check_publishable_batch(repo, tag, branch)
+    if not chk["ok"]:
+        return chk
+    todo = chk["members"] if halt_after is None else chk["members"][:max(0, int(halt_after))]
+    published, cur = [], chk["head"]
+    for mrow in todo:
+        rc, out = _git_text(repo, "update-ref", "refs/heads/%s" % branch, mrow["commit"], cur)
+        if rc != 0:
+            return {"ok": False, "published": published, "halted": True,
+                    "reason": "update-ref refused mid-batch at member seq %s (%s) -- %d/%d "
+                              "published, each a complete view; the remainder is refused "
+                              "(run `py deploy/retire.py --recover`)" % (
+                                  mrow["seq"], (out or "").strip(), len(published),
+                                  len(chk["members"])), "commit": cur, "head": chk["head"]}
+        cur = mrow["commit"]
+        published.append(mrow)
+    halted = len(published) < len(chk["members"])
+    binder_note = ""
+    binder_published = False
+    if not halted:
+        rc, out = _git_text(repo, "update-ref", "refs/heads/%s" % branch, chk["commit"], cur)
+        if rc == 0:
+            cur = chk["commit"]
+            binder_published = True
+        else:
+            # round-2 fold (c1): every member landed but the binder could not fast-
+            # forward (a concurrent head move) -- REPORTED, never silently ok
+            binder_note = (" -- NOTE: the batch BINDER did not publish (%s); every member "
+                           "view is complete, but the manifest commit is not on the "
+                           "branch: inspect and fast-forward it yourself, or leave it "
+                           "(the pending list still reconstructs the members)"
+                           % (out or "update-ref refused").strip())
+    return dict(chk, ok=True, published=published, halted=halted, tip=cur,
+                binder_published=binder_published,
+                reason=("PUBLISHED %d/%d member(s)%s: %s%s" % (
+                    len(published), len(chk["members"]),
+                    " -- HALTED by the brake; the remainder is refused" if halted else
+                    (" + the batch binder" if binder_published else ""),
+                    chk["reason"], binder_note)))
+
+
 def retire_records_status(repo, rev="HEAD"):
     """Doctor (e) / sweep: each retire record at rev with its publication status.
 
@@ -956,6 +1211,72 @@ def retire_records_status(repo, rev="HEAD"):
         tag = rec.get("tag") or ("retire/%s" % rec.get("seq"))
         row = {"path": p, "seq": rec.get("seq"), "tag": tag, "commit": None, "published": False}
         rows[p] = row
+        # v3.0.52 batch members: no per-member tag exists -- authority is the ONE
+        # operator act on the binder M (tag retire/batch/<id>), which vouches for the
+        # member through the manifest in M's tree. Everything else re-runs per member.
+        b = rec.get("batch") or {}
+        if b.get("id"):
+            btag = b.get("tag") or ("retire/batch/%s" % b["id"])
+            row["tag"] = btag
+            try:
+                t = tag_object(repo, btag)
+            except TrustError as e:
+                row["reason"] = "batch member awaiting the batch promotion: %s" % e
+                continue
+            M = t["object"]
+            mb = _blob_at(repo, M, "deploy/rulings/retire-batch-%s/manifest.json" % b["id"])
+            if mb is None:
+                row["reason"] = "batch tag %s names %s which carries no manifest" % (btag, (M or "?")[:12])
+                continue
+            v = publication_authority(repo, btag, M, mode)
+            if not v["ok"]:
+                row["reason"] = v["reason"]
+                continue
+            if v["kind"] == "promoted" and v["digest"] != hashlib.sha256(mb).hexdigest():
+                row["reason"] = "batch promotion bound to a different manifest"
+                continue
+            try:
+                manifest = json.loads(mb.decode("utf-8-sig"))
+            except Exception:
+                row["reason"] = "batch manifest unreadable"
+                continue
+            mrow = next((r2 for r2 in manifest.get("members") or []
+                         if r2.get("seq") == rec.get("seq")), None)
+            if mrow is None or _digest_hex(mrow.get("proposal_digest")) !=                     _digest_hex(rec.get("proposal_digest")) or mrow.get("view") != rec.get("view"):
+                row["reason"] = "record does not match its batch manifest row"
+                continue
+            c = mrow.get("commit")
+            row["commit"] = c
+            row["kind"] = "batch-" + v["kind"]
+            if c not in fp_index:
+                row["reason"] = ("batch member not on the first-parent chain -- prepared "
+                                 "but never published (a halted batch's refused remainder "
+                                 "looks exactly like this)")
+                continue
+            # the BINDER is deliberately NOT required on the chain (v3.0.52 stranger-run
+            # catch): a brake-halted batch publishes members without it, and those
+            # members are REAL publications -- reading them UNPUBLISHED would false-alarm
+            # doctor 16(e) and the sweep on every halted batch. Authority is the verified
+            # batch tag + the manifest row binding this member's exact commit, both
+            # checked above; the fp-chain membership of the MEMBER is what publication
+            # means.
+            prop = rec.get("proposal") or ""
+            if (_blob_at(repo, rev, p) != _blob_at(repo, c, p)
+                    or _blob_at(repo, rev, prop) is None
+                    or _blob_at(repo, rev, prop) != _blob_at(repo, c, prop)):
+                row["reason"] = "record or proposal bytes at %s differ from the member commit" % rev
+                continue
+            rc, ns = _git_text(repo, "diff-tree", "--no-commit-id", "--name-status", "-r",
+                               c + "^", c, "--", JOURNAL_DIR)
+            if [l.split("\t", 1) for l in ns.splitlines() if "\t" in l] != [["A", p]]:
+                row["reason"] = "member's journal delta is not exactly this one record"
+                continue
+            if _journal_path_used(repo, c + "^", p):
+                row["reason"] = "journal path already used below the member commit"
+                continue
+            row["reason"] = "batch %s: %s" % (b["id"], v["reason"])
+            row["_ok"] = True
+            continue
         m = _RETIRE_TAG_RE.match(tag or "")
         if not m or int(m.group(1)) != rec.get("seq"):
             row["reason"] = "record's tag %r does not name its own seq %r" % (tag, rec.get("seq"))
@@ -2003,6 +2324,38 @@ def self_test():
              not s["ok"] and "not presence-requiring" in s["reason"], s["reason"])
         v = operator_tag(r2, "retire/1", c1)
         case("real policy: its software-key tag is REFUSED too", not v["ok"], v["reason"])
+        # ---- v3.0.52 (v3.0-151): production_branch -- one home, pinned both directions
+        r3 = os.path.join(base, "r3")
+        os.makedirs(r3)
+        subprocess.run(["git", "-C", r3, "init", "-q", "-b", "dogfood/fork-v3"],
+                       capture_output=True)
+        b3, note3 = production_branch(r3)
+        case("v3.0-151: no project.yaml key -> the checked-out branch (symbolic-ref), even "
+             "unborn", b3 == "dogfood/fork-v3" and "symbolic-ref" in note3, (b3, note3))
+        with open(os.path.join(r3, "project.yaml"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("project_slug: t3\nproduction_branch: release/prod\n")
+        b3, note3 = production_branch(r3)
+        case("v3.0-151: the project.yaml production_branch key WINS over the checkout",
+             b3 == "release/prod" and "project.yaml" in note3, (b3, note3))
+        case("v3.0-151: an explicit branch wins over both",
+             resolve_branch(r3, "explicit") == "explicit")
+        os.remove(os.path.join(r3, "project.yaml"))
+        subprocess.run(["git", "-C", r3, "config", "user.email", "t@t"], capture_output=True)
+        subprocess.run(["git", "-C", r3, "config", "user.name", "t"], capture_output=True)
+        subprocess.run(["git", "-C", r3, "config", "commit.gpgsign", "false"], capture_output=True)
+        with open(os.path.join(r3, "x"), "w") as fh:
+            fh.write("x")
+        subprocess.run(["git", "-C", r3, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", r3, "commit", "-q", "-m", "seed"], capture_output=True)
+        subprocess.run(["git", "-C", r3, "checkout", "-q", "--detach"], capture_output=True)
+        b3, _n3 = production_branch(r3)
+        try:
+            resolve_branch(r3)
+            det_refused = False
+        except TrustError as e3:
+            det_refused = "unresolvable" in str(e3)
+        case("v3.0-151: a DETACHED head with no key resolves to nothing and resolve_branch "
+             "REFUSES -- never a silent `main`", b3 is None and det_refused, b3)
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -2027,7 +2380,9 @@ def main(argv=None):
     ap.add_argument("--commit", metavar="SHA")
     ap.add_argument("--check-publish", metavar="TAG")
     ap.add_argument("--publish", metavar="TAG")
-    ap.add_argument("--branch", default="main")
+    ap.add_argument("--branch", default=None,
+                    help="production branch (default: project.yaml production_branch, "
+                         "else the checked-out branch -- v3.0-151)")
     ap.add_argument("--retire-records", action="store_true")
     a = ap.parse_args(argv)
     if a.self_test:
@@ -2070,6 +2425,11 @@ def main(argv=None):
         v = operator_tag(repo, a.verify_tag, a.commit)
         print(("OK: " if v["ok"] else "REFUSED: ") + v["reason"])
         return 0 if v["ok"] else 2
+    try:
+        a.branch = resolve_branch(repo, a.branch)
+    except TrustError as e:
+        print("REFUSED: %s" % e)
+        return 2
     if a.check_publish:
         v = check_publishable(repo, a.check_publish, a.branch)
         print(("OK: " if v["ok"] else "REFUSED: ") + v["reason"])

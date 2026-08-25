@@ -300,7 +300,11 @@ def check_jq(ctx):
 
 # v3.0.48 (backlog v3.0-138): the per-sensor --self-test budget. 60s false-FAILed the
 # v3.0.46 batteries on a slow-spawn Windows host; 180s was already the drill-bench exception.
-SENSOR_SELF_TEST_TIMEOUT = 180
+# 180 -> 300 at v3.0.52: the compile-v2 battery grew again (Release 3's brake and splice
+# fixtures each build a scratch git repo) and the v3.0.52 stranger run timed it out at
+# exactly 180s on the same host class -- the v3.0-138 pattern, same fix, same message
+# discipline (PASS reports elapsed; TIMEOUT names elapsed + limit).
+SENSOR_SELF_TEST_TIMEOUT = 300
 
 def check_python_sensors(ctx, sensor_timeout=None):
     deploy_dir = ctx["root"] / "deploy"

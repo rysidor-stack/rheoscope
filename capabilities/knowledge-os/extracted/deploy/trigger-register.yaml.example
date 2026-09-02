@@ -62,7 +62,9 @@ rows:
     status: active
 
   - id: standing-loop-arming-review
-    condition: { predicate: file_age, path: deploy/evidence/operator-standing-loop-authorization.md, days: 90 }
+    # path prefix consent- since v3.0.53 (v3.0-155: the arming artifact is session-minted;
+    # an instance armed pre-v3.0.53 re-points this at its existing operator-* artifact)
+    condition: { predicate: file_age, path: deploy/evidence/consent-standing-loop-arming.md, days: 90 }
     action: "Arm-or-retire decision for /standing-loop: it ships staged-unarmed (ready to run; armed only by a committed operator authorization artifact + rollback rehearsal receipt + a schedule). Either arm it (see .claude/skills/standing-loop/SKILL.md section Activation gate; if your authorization artifact uses a dated filename, re-point this row's path at it in the same commit) or record a dated not-running-it decision and retire this row citing it. Once armed, this row becomes a 90-day re-affirmation cadence: re-commit the artifact to reset the clock."
     rationale: "Staged-unarmed is a graduation state, not a resting state: file_age treats absence as MET, so this row stays lit until the instance decides. Unarmed-by-default remains the SHIPPING invariant (a fresh instance must never arrive armed); STAYING unarmed indefinitely is drift, not safety. Backlog v3.0-70."
     authorization: propose

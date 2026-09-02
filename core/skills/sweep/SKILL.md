@@ -122,27 +122,40 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     step refers to (`receipts/pending/sweeps.jsonl`; the term was undefined before
     v3.0.50). A sweep that opens and never closes is a FAILED cycle the observer alarms on.
 
-    (b) **Render:** `python deploy/pending.py --root . --render` and put its table in the
-    briefing verbatim: one row per pending item — **retirements** (the journal record's
-    seq, view, proposal digest, whether it was PUBLISHED — by your promote action or a
-    verified tag — or is an UNPUBLISHED PROPOSAL that some path journaled without you) and
-    **trust-surface changes** (the class in `core/security/hooks/trust-surfaces.txt`; the
-    hooks dir, `deploy/safe-allowlist.yaml`, `deploy/evidence/operator-*.md`,
-    `deploy/rulings/**`, `deploy/trust.py`, `retire.py`, `promote.py`, `pending.py`, the
-    three HUMAN-GATE consumers, `.claude/settings.json`), each with its commit, parent,
-    author, date and the paths touched — plus any **alarm** the nightly observer wrote
-    (missed observation window, failed cycle). The list is RECONSTRUCTED from git objects
-    on the production branch every run, never read from a file a session could edit: a
-    deleted journal record still appears, a removed acknowledgement reopens its item.
-    Then the deltas, as before: for each pending trust-surface item quote the added and
-    removed lines verbatim (`git diff <parent>..<commit> -- <path>`), and for each pending
-    retirement the span title(s), bytes moved, and the destination (the full preimage is
-    `python deploy/retire.py --show <digest>`). BATCH members render grouped (v3.0.52:
-    each row names its batch id and member position — one promote covered them all, so
-    the briefing shows them together; a `ROLLBACK of seq N` row is the brake's undo and
-    reads as its own retirement). Alongside, the class-wide table from
-    `python deploy/trust.py --root . --report` (HEAD-identity, signature status, the
-    recorded authority mode, the pin) as the per-surface state line.
+    (b) **Render — the table to a receipt file, the appendix to the briefing (v3.0.53,
+    backlog v3.0-159, fleet inbox #11: the old "put its table in the briefing verbatim"
+    was unsatisfiable — the table's author column carries script names and its rows are
+    not dashed, so the briefing format contract rejects it, while `--ack` refuses a
+    briefing that shows nothing; the first attended close on the first production
+    instance hit exactly that wall).** Two surfaces, one authority (the format contract):
+
+    - **The receipt file** — `python deploy/pending.py --root . --render` and save the
+    full table VERBATIM to `receipts/pending/render-<date>.txt`, committed with the
+    briefing: one row per pending item — **retirements** (the journal record's seq,
+    view, proposal digest, whether it was PUBLISHED — by your promote action or a
+    verified tag — or is an UNPUBLISHED PROPOSAL that some path journaled without you)
+    and **trust-surface changes** (the class in `core/security/hooks/trust-surfaces.txt`),
+    each with its commit, parent, author, date and the paths touched — plus any **alarm**
+    the nightly observer wrote. The list is RECONSTRUCTED from git objects on the
+    production branch every run, never read from a file a session could edit: a deleted
+    journal record still appears, a removed acknowledgement reopens its item. The deltas
+    go in the same receipt file: for each pending trust-surface item the added and
+    removed lines verbatim (`git diff <parent>..<commit> -- <path>`), and for each
+    pending retirement the span title(s), bytes moved, and the destination (the full
+    preimage is `python deploy/retire.py --show <digest>`). BATCH members render grouped
+    (v3.0.52: each row names its batch id and member position; a `ROLLBACK of seq N` row
+    is the brake's undo and reads as its own retirement). Alongside, the class-wide
+    table from `python deploy/trust.py --root . --report` (HEAD-identity, signature
+    status, the recorded authority mode, the pin) as the per-surface state line.
+
+    - **The briefing** carries (i) the Needs-you / Worth-knowing items translated per the
+    reporting contract, (ii) a Watching line citing the receipt file in a details tail,
+    and (iii) — as the LAST lines of the Watching section — the **dashed machine
+    appendix**: the output of `python deploy/pending.py --root . --appendix`, one
+    `- <item-id> (<date>)` line per pending item, pasted verbatim. Bare ids are what
+    `--ack` mechanically checks for (each carries the item's commit sha / timestamp) and
+    they pass every briefing-format row; the appendix is the ONE sanctioned shape for
+    the pending list inside a briefing — never the table.
 
     (b2) **Cap debt** (v3.0.52, ADR #11 Release 3, backlog v3.0-129/-130): if
     `deploy/debt.py` exists, `python deploy/debt.py --root . --report` and carry its
@@ -153,18 +166,29 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     `open` episodes are Worth-knowing. DECISIONS-PENDING projects the escalated ones from
     this briefing — that is the obligation's escalation channel, no separate inbox write.
 
-    (c) **Acknowledge, then close — attended sweeps only:** after the briefing has been
-    written, `python deploy/pending.py --root . --ack --run-id <id> --briefing
-    SWEEP-BRIEFING.md` (or whatever file the briefing landed in), then `--heartbeat ok
-    --run-id <id>` (or `failed` if any step above could not run). The ack rows record that
-    these items were SHOWN to the operator in this briefing — reading the sweep IS the
+    (c) **Acknowledge, CONFIRM, then close — attended sweeps only (order re-sequenced
+    v3.0.53, backlog v3.0-159: an ack refusal discovered after the ok row was written
+    left an ok-but-unacknowledged cycle on the first production close):** after the
+    briefing has been written, `python deploy/pending.py --root . --ack --run-id <id>
+    --briefing SWEEP-BRIEFING.md` (or whatever file the briefing landed in). **Read the
+    ack's outcome before touching the heartbeat:** success prints "acknowledged N
+    item(s)" and exits 0 — only then write `--heartbeat ok --run-id <id>`. A REFUSED ack
+    (an item not rendered) means the briefing's machine appendix is missing or stale:
+    regenerate it (`--appendix`), fix the briefing, re-ack, and only close `ok` once the
+    ack has succeeded. If the ack cannot succeed this run, close `--heartbeat failed` —
+    never `ok` over an unacknowledged pending list. This ordering is also enforced
+    mechanically: an attended `--heartbeat ok` REFUSES while items are pending
+    un-acknowledged (v3.0.53), so skipping this paragraph produces a named refusal, not a
+    bad ledger. The ack rows record that these items
+    were SHOWN to the operator in this briefing — reading the sweep IS the
     acknowledgement ("acknowledge in the sweep, nothing else"); nothing is asked. An
     UNATTENDED sweep (the scheduled wrapper sets `RHEOSCOPE_UNATTENDED=1`) runs (a) and (b)
     and the closing heartbeat but `--ack` REFUSES — the items persist until a sweep you
     actually read, which is what makes "unread item persists" true rather than claimed.
-    These receipt-class rows (`receipts/pending/*.jsonl`, append-only; commit them with the
-    briefing) are the ONE documented exception to this skill's read-only rule: the sweep
-    records that it ran and what it showed, nothing about the project's content.
+    These receipt-class artifacts (`receipts/pending/*.jsonl`, append-only, plus the
+    step-(b) `receipts/pending/render-<date>.txt` table; commit them with the briefing)
+    are the ONE documented exception to this skill's read-only rule: the sweep records
+    that it ran and what it showed, nothing about the project's content.
 
     **NEEDS-YOU items, phrased per the reporting contract:** an UNPUBLISHED retirement
     proposal on the branch ("a content retirement was journaled without your promote
@@ -301,9 +325,10 @@ separate concern, governed by the reversible-cutover runbook, and is explicitly 
 ## What this is NOT
 
 - **Not a fixer.** /sweep changes nothing in the project, ever — every check it runs is
-  read-only. The one documented exception (v3.0.50, step 17): it appends its own heartbeat
-  and acknowledgement rows to `receipts/pending/*.jsonl` — a receipt that it ran and what it
-  showed, never a change to content, config, or a trust surface.
+  read-only. The one documented exception (v3.0.50, step 17; widened v3.0.53 / v3.0-159):
+  it appends its own heartbeat and acknowledgement rows to `receipts/pending/*.jsonl` and
+  writes the attended close's `receipts/pending/render-<date>.txt` table — a receipt that
+  it ran and what it showed, never a change to content, config, or a trust surface.
 - **Not `/compile`.** It writes nothing to the wiki, no matter what it finds.
 - **Not the full conformance sweep.** Step 6 above is smoke tier only; full tier stays a
   deliberate, separately-invoked act at freezes and certification.

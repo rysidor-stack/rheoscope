@@ -59,17 +59,27 @@ reports "not armed" and exits without writing anything — not even a report art
    **fabrication** — its evidence comes from the run itself, and the arming review checks that
    it names this project's clone. (The dev fork's receipt and its millisecond timings are the
    fork's own; they prove nothing about your instance and must never be copied.)
-2. **A committed operator authorization artifact exists** — `deploy/evidence/operator-standing-
-   loop-*.md`, carrying the operator's verbatim activation quote (the HUMAN-GATE pattern: a
-   recorded, quoted "go ahead," never standing memory of one). It must be committed — predating
-   the run — so a same-run forgery can't satisfy it. No artifact, no run.
+2. **A committed operator consent artifact exists** — `deploy/evidence/consent-standing-
+   loop-arming-*.md`, carrying the operator's verbatim activation quote (the HUMAN-GATE
+   pattern: a recorded, quoted "go ahead," never standing memory of one). It must be
+   committed — predating the run — so a same-run forgery can't satisfy it. No artifact, no
+   run. (Class moved v3.0.53, backlog v3.0-155: the entry as first shipped named
+   `deploy/evidence/operator-standing-loop-*.md`, which sits inside the operator-edited-only
+   trust-surface glob — on any hook-active instance the ceremony below was mechanically
+   blocked mid-mint, and under `required` signing it could never satisfy the key pin. The
+   `consent-*.md` basename class is session-mintable by design; the AUTHORITY is the
+   operator's verbatim quote in a committed artifact predating the run, not file authorship.
+   An instance whose arming artifact already exists under the old operator-* name keeps it —
+   operator-minted artifacts in the operator class stay valid. Under `trust_surface_signing:
+   required` the consent class still demands the operator signature — there the ceremony is
+   operator-terminal: the session drafts the artifact text on the yes and the operator commits
+   it with `git commit -S`; `required` keeps its full key-gated floor.)
    **Minting it is a first-need, in-session ceremony — never operator homework** (same pattern
    as the compile skill's dispatch-grant question): at arming time, ask the operator ONE plain
    question naming what arming means — scheduled unattended write-side runs; compile on
    disposable branches; nothing merges itself; the supervised first run (item 3). On the yes,
-   YOU mint `deploy/evidence/operator-standing-loop-arming-<date>.md` (it matches the glob
-   above) carrying the verbatim quote, the date, and the item-3 first-run commitment; commit
-   it; proceed. Arming is a SEPARATE consent from the cross-vendor dispatch grant the loop's
+   YOU mint `deploy/evidence/consent-standing-loop-arming-<date>.md` carrying the verbatim
+   quote, the date, and the item-3 first-run commitment; commit it; proceed. Arming is a SEPARATE consent from the cross-vendor dispatch grant the loop's
    compile step rides — if the project has no dispatch grant yet, the compile skill's own
    first-contact question fires at the same moment: two consents, two artifacts, each in the
    operator's own words. Arming never silently inherits, and never fabricates, either one. A

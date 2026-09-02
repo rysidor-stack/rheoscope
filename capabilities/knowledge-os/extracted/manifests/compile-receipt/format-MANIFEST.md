@@ -4,10 +4,15 @@ surface: compile-receipt
 version: "1.0"
 status: EXTRACTED
 source_artifacts:
+  # docs/wiki-schema.md is init-SUBSTITUTED ({{project_name}}, personnel tags,
+  # domains table) -- its instance bytes can never match a shipped sha256 pin,
+  # so the pin held a permanent FAIL on every fresh instance (v3.0-161, caught
+  # by the v3.0.53 stranger run's live check-manifest). A git ref names the
+  # template release the rows were last verified against instead.
   - path: docs/wiki-schema.md
-    sha256: 5c27d6ce1ea66f92eda13ce792bb6305b1ccbbdd617af794ae990ac0d7777f38
+    ref: "git:v3.0.53"
   - path: deploy/check-frontmatter.py
-    sha256: 56367ffa90d0cb6b9384f30f891db0f4dac7f7aa76000e50b7588d4f60e8886b
+    sha256: 1739c814d6dc1e2042d5b019dd6bfd1726029e095dca288d9cfb127357823bff
 extracted: 2026-07-23
 toolchain: source-read
 confidence: source-crosschecked

@@ -394,7 +394,23 @@ def derive_dispatch_action(kind, repo, plan=None, packet_paths=None,
 # Case-sensitive throughout (the real artifacts on disk are lowercase
 # "operator-...", and this deliberately does not accept a case-insensitive
 # match of some other casing).
+#
+# TWO basename classes since v3.0.53 (v3.0-155, fleet inbox era 2026-08-24):
+#   operator-*.md  the OPERATOR-artifact class -- a trust surface (the hooks
+#                  deny session writes; under `required` its newest commit
+#                  must be operator-signed). Existing instances' grants live
+#                  here and keep validating unchanged.
+#   consent-*.md   the SESSION-MINTED consent class -- the ceremonies the
+#                  skills describe ("first-need, in-session -- never operator
+#                  homework": the compile dispatch grant, standing-loop
+#                  arming) mint HERE. The authority is the operator's
+#                  recorded verbatim quote in a COMMITTED artifact predating
+#                  the run, not file authorship or a signature -- the old
+#                  single-class rule had the skills minting into a path the
+#                  hooks mechanically block and the signature pin can never
+#                  accept, making both ceremonies un-armable as shipped.
 AUTHORIZATION_ARTIFACT_CLASS_GLOB = "deploy/evidence/operator-*.md"
+CONSENT_ARTIFACT_CLASS_GLOB = "deploy/evidence/consent-*.md"
 
 
 def _is_authorization_artifact_class(repo_relative_posix_path):
@@ -413,10 +429,15 @@ def _is_authorization_artifact_class(repo_relative_posix_path):
     deeper than the class allows) pass, since `*` in the pattern happily
     spans the extra `/`. Splitting first and comparing the directory
     exactly closes that gap structurally rather than relying on the glob
-    engine to enforce a no-nesting rule it does not actually enforce."""
+    engine to enforce a no-nesting rule it does not actually enforce.
+
+    v3.0-155: the basename may match EITHER class -- `operator-*.md` (the
+    operator-artifact trust surface) or `consent-*.md` (the session-minted
+    consent class); the directory rule is identical for both."""
     directory, basename = posixpath.split(repo_relative_posix_path)
     return (directory == "deploy/evidence"
-            and fnmatch.fnmatchcase(basename, "operator-*.md"))
+            and (fnmatch.fnmatchcase(basename, "operator-*.md")
+                 or fnmatch.fnmatchcase(basename, "consent-*.md")))
 
 
 def dispatch_guard(kind, repo, events_views=None, authorization=None):
@@ -490,8 +511,10 @@ def dispatch_guard(kind, repo, events_views=None, authorization=None):
         if not _is_authorization_artifact_class(repo_rel_posix):
             return {"disposition": disp,
                     "reason": reason + " -- authorization file not in the "
-                              "operator-artifact class %s: %s"
-                              % (AUTHORIZATION_ARTIFACT_CLASS_GLOB, auth_path),
+                              "operator-artifact class %s (nor the "
+                              "session-minted consent class %s): %s"
+                              % (AUTHORIZATION_ARTIFACT_CLASS_GLOB,
+                                 CONSENT_ARTIFACT_CLASS_GLOB, auth_path),
                     "permit": False, "authorization": None}
         if not os.path.isfile(abs_path):
             return {"disposition": disp,
@@ -2429,6 +2452,21 @@ def self_test():
         case("_is_authorization_artifact_class: wrong extension refused",
              not _is_authorization_artifact_class(
                  "deploy/evidence/operator-foo.txt"))
+        # v3.0-155: the session-minted consent class, both directions
+        case("_is_authorization_artifact_class: consent-class path matches "
+             "(v3.0-155 session-minted class)",
+             _is_authorization_artifact_class(
+                 "deploy/evidence/consent-standing-loop-arming-2026-08-28.md"))
+        case("_is_authorization_artifact_class: nested consent path refused",
+             not _is_authorization_artifact_class(
+                 "deploy/evidence/sub/consent-foo.md"))
+        case("_is_authorization_artifact_class: consent prefix is anchored "
+             "(reconsent- refused)",
+             not _is_authorization_artifact_class(
+                 "deploy/evidence/reconsent-foo.md"))
+        case("_is_authorization_artifact_class: consent class case-sensitive",
+             not _is_authorization_artifact_class(
+                 "deploy/evidence/Consent-foo.md"))
         case("_is_authorization_artifact_class: case-sensitive (capitalized "
             "Operator- refused)",
              not _is_authorization_artifact_class(

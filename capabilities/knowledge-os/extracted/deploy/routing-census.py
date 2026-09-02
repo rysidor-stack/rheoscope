@@ -141,6 +141,12 @@ def _walk_view_files(root):
                 if fn.endswith(".md"):
                     ap = os.path.join(dirpath, fn)
                     rel = os.path.relpath(ap, root).replace(os.sep, "/")
+                    # v3.0-157 (fleet inbox #9): wiki/cold/** is retire.py's
+                    # content-addressed store of verbatim retired spans -- a
+                    # quoted record, never a view; a cold object quoting a
+                    # sources: block must not join the citer census.
+                    if rel.startswith("wiki/cold/"):
+                        continue
                     yield rel, ap
 
 
@@ -266,6 +272,12 @@ def self_test():
              "---\nbody\n")
         write(os.path.join(base, "wiki", "systems", "vb.md"),
              "---\ntitle: B\nsources:\n  - raw/e2.md\n---\nbody\n")
+        # v3.0-157: a cold object quoting a sources: block must not join the
+        # citer census -- the SAME bytes as va.md, at a wiki/cold/ path.
+        os.makedirs(os.path.join(base, "wiki", "cold", "va"))
+        write(os.path.join(base, "wiki", "cold", "va", "s--" + "f" * 64 + ".md"),
+             "---\ntitle: A\nsources:\n  - raw/e1.md\n  - raw/e2.md\n"
+             "---\nbody\n")
         write(os.path.join(base, "deploy", "entities.yaml"),
              "entities:\n  foo:\n    views: []\n")
         subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
@@ -275,6 +287,10 @@ def self_test():
         events = ["raw/e1.md", "raw/e2.md", "raw/e3.md"]
         im1, ims1, out1, os1 = compute_census(base, events)
         case("e1 -> [va.md]", out1["raw/e1.md"] == ["wiki/systems/va.md"])
+        case("v3.0-157: cold object excluded from the citer census (both "
+             "directions: its byte-identical sibling va.md IS in it)",
+             not any(v.startswith("wiki/cold/") for v in build_citer_index(base))
+             and "wiki/systems/va.md" in build_citer_index(base))
         case("e2 -> [va.md, vb.md] sorted",
             out1["raw/e2.md"] == ["wiki/systems/va.md", "wiki/systems/vb.md"])
         case("e3 (uncited) present with empty list, not omitted",

@@ -26,6 +26,23 @@ import sys
 TAG_RE = re.compile(r"^v(\d+)\.(\d+)(?:\.(\d+))?$")
 
 
+def _scalar(raw):
+    """Tolerant YAML-ish scalar: a quoted value keeps everything inside the
+    quotes (a trailing ` # comment` after the close quote is dropped); an
+    unquoted value is cut at the first `#` (a comment) and stripped. v3.0-158
+    (fleet inbox #10): the old anchored regex read a quoted value with a
+    trailing inline comment as EMPTY -- the v3.0.51 adoption stamp's exact
+    shape -- and told the operator to backfill a record that was present."""
+    raw = raw.strip()
+    for q in ('"', "'"):
+        if raw.startswith(q):
+            end = raw.find(q, 1)
+            if end != -1:
+                return raw[1:end].strip()
+            return raw[1:].strip()  # unterminated quote: take the rest
+    return raw.split("#", 1)[0].strip()
+
+
 def read_config(root):
     """Minimal line-level read of project.yaml -- no YAML dependency."""
     path = os.path.join(root, "project.yaml")
@@ -34,12 +51,12 @@ def read_config(root):
     src = rel = ""
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
-            m = re.match(r'^template_source:\s*"?([^"\n]*)"?\s*$', line)
+            m = re.match(r'^template_source:\s*(.*)$', line)
             if m:
-                src = m.group(1).strip()
-            m = re.match(r'^template_release:\s*"?([^"\n]*)"?\s*$', line)
+                src = _scalar(m.group(1))
+            m = re.match(r'^template_release:\s*(.*)$', line)
             if m:
-                rel = m.group(1).strip()
+                rel = _scalar(m.group(1))
     return src, rel, None
 
 
@@ -129,6 +146,25 @@ def self_test():
         assert code == 0 and "not configured" in lines[0], (code, lines)
         n += 1
         write_yaml('template_source: "https://example.invalid/x"\ntemplate_release: ""\n')
+        code, lines = run_check(td, lsremote_text=fake_remote)
+        assert code == 1 and "backfill" in lines[0].lower(), (code, lines)
+        n += 1
+        # v3.0-158 (fleet inbox #10) pinned both directions: the adoption-stamp
+        # shapes (quoted + trailing comment; unquoted + trailing comment) parse
+        # to the tag, while a genuinely empty value still reads empty (the
+        # backfill advice stays correct where it IS correct).
+        write_yaml('template_source: "https://example.invalid/x"  # init-stamped\n'
+                   'template_release: "v3.0.10"  # adopted 2026-08-24 (session lane)\n')
+        code, lines = run_check(td, lsremote_text=fake_remote)
+        assert code == 1 and "v3.0.10" in lines[0] and "v3.0.12" in lines[0], (code, lines)
+        n += 1
+        write_yaml('template_source: https://example.invalid/x\n'
+                   'template_release: v3.0.12 # adopted, unquoted\n')
+        code, lines = run_check(td, lsremote_text=fake_remote)
+        assert code == 0 and "up to date" in lines[0], (code, lines)
+        n += 1
+        write_yaml('template_source: "https://example.invalid/x"\n'
+                   'template_release: ""  # not yet adopted\n')
         code, lines = run_check(td, lsremote_text=fake_remote)
         assert code == 1 and "backfill" in lines[0].lower(), (code, lines)
         n += 1

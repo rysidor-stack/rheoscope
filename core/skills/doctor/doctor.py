@@ -956,10 +956,34 @@ def check_derivation_gate(ctx):
     if rc == 0:
         return Result("PASS", "derivation-gate", "no audit-pending T1 views")
     if rc == 2:
-        return Result("FAIL", "derivation-gate",
-                       "audit-pending T1 view(s) present. "
-                       "FIX: run the adversarial verify loop before building on those views. "
-                       "%s" % _tail(out))
+        # v3.0-157 (fleet inbox #9): the sensor's exit 2 covers FOUR distinct
+        # finding classes; the old rendering blamed audit-pending for all of
+        # them (and pointed cold-store findings at an adversarial-verify FIX).
+        # Read the sensor's own headlines and surface the class(es) it found,
+        # each with its own FIX; an exit 2 whose output matches no known
+        # headline degrades to the generic line rather than inventing a class.
+        classes = []
+        if "audit-pending T1 view(s)" in out:
+            classes.append("audit-pending T1 view(s) present -- "
+                           "FIX: run the adversarial verify loop before "
+                           "building on those views")
+        if "carry NO derivation region" in out:
+            classes.append("view(s) with NO derivation region (verifications "
+                           "cannot be recorded) -- FIX: the sensor's own FIX "
+                           "line names the backfill step for the listed views")
+        if "STALE-VERIFIED" in out:
+            classes.append("stale-verified view(s) (body changed after the "
+                           "verify stamp) -- FIX: re-verify or reset "
+                           "verified: on the listed views")
+        if "UNPARSEABLE derivation region" in out:
+            classes.append("view(s) with an UNPARSEABLE derivation region "
+                           "(fail-closed) -- FIX: repair the region markers "
+                           "on the listed views")
+        detail = ("; ".join(classes) if classes else
+                  "derivation gate FAILed. FIX: run `python "
+                  "deploy/check-derivation.py --gate` directly to see the "
+                  "finding")
+        return Result("FAIL", "derivation-gate", "%s. %s" % (detail, _tail(out)))
     if rc == 3:
         # The sensor's fail-honest tree-not-located code (silence-sweep S2): no wiki/
         # under its resolved root. Neither a pass (nothing was verified) nor the
@@ -1919,6 +1943,37 @@ def self_test():
         check("derivation-gate: tree-not-located exit 3 -> WARN 'could not locate' with FIX",
               r.status == "WARN" and "could not locate the wiki tree" in r.detail
               and "FIX:" in r.detail)
+
+        # v3.0-157: exit 2 renders the sensor's REAL finding class. A regionless
+        # finding must NOT be blamed on audit-pending (the old rendering), and an
+        # audit-pending finding must still surface as itself.
+        (deploy_dir / "check-derivation.py").write_text(
+            "import sys\n"
+            "print('check-derivation: 2 wiki view(s) carry NO derivation "
+            "region -- ...')\nsys.exit(2)\n", encoding="utf-8")
+        r = note(check_derivation_gate(ctx))
+        check("derivation-gate: regionless exit 2 -> FAIL naming the no-region "
+              "class, not audit-pending",
+              r.status == "FAIL" and "NO derivation region" in r.detail
+              and "audit-pending" not in r.detail)
+        (deploy_dir / "check-derivation.py").write_text(
+            "import sys\n"
+            "print('check-derivation: 1 audit-pending T1 view(s) -- "
+            "dispatch/build must REFUSE these:')\nsys.exit(2)\n",
+            encoding="utf-8")
+        r = note(check_derivation_gate(ctx))
+        check("derivation-gate: audit-pending exit 2 -> FAIL naming the "
+              "audit-pending class with the verify FIX",
+              r.status == "FAIL" and "audit-pending" in r.detail
+              and "adversarial verify" in r.detail)
+        (deploy_dir / "check-derivation.py").write_text(
+            "import sys\nprint('unrecognized output shape')\nsys.exit(2)\n",
+            encoding="utf-8")
+        r = note(check_derivation_gate(ctx))
+        check("derivation-gate: exit 2 with unrecognized headlines -> generic "
+              "FAIL with a hand-run FIX, no invented class",
+              r.status == "FAIL" and "run `python" in r.detail
+              and "audit-pending" not in r.detail)
 
     # Check 12: sensor-reachability -- the three states (skip / orphan-WARN with the
     # transitive chain honored / all-reachable PASS). Register cases retired 2026-08-08

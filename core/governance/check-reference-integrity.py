@@ -71,7 +71,7 @@ tracked .py (module docstring + lines carrying `FIX:`), then classifies each aga
   * Append-only history (HARNESS-CHANGELOG.md, MIGRATION.md, changelog.md) is excluded as a
     SOURCE (same v2.0 #10c rationale as phase 1): old entries legitimately rot. Dev-only
     history dirs (audits/, harness-v*/, verifier-reviews/, design-history/) likewise.
-  * QUOTED-RECORD sources (v3.0.52, backlog v3.0-152, fleet inbox #7): cross-vendor
+  * QUOTED-RECORD sources (v3.0.52, backlog v3.0-148, fleet inbox #7): cross-vendor
     evidence packets under deploy/evidence/ quote wiki prose VERBATIM, relative links
     included — a link correct relative to wiki/systems/ necessarily dangles from
     deploy/evidence/, and no edit can repair it without falsifying the quote. On the
@@ -315,7 +315,7 @@ SWEEP_EXCLUDE_SRC_PREFIXES = (
 # deferred capability designs cite files their build would create
 SWEEP_EXCLUDE_SRC_FRAGMENTS = ('/deferred/', '/examples/', '/test-fixtures/')
 
-# Quoted-record SOURCES (v3.0.52, backlog v3.0-152, fleet inbox #7): directories
+# Quoted-record SOURCES (v3.0.52, backlog v3.0-148, fleet inbox #7): directories
 # whose files quote OTHER records verbatim, relative links included -- the links
 # are correct in the quoted original and necessarily dangle from the quoting
 # file, so no edit can repair them without falsifying the quote. Dangling
@@ -695,22 +695,22 @@ def run_sweep_self_test():
                       '`missing-dir/ghost-hook.sh` must still be caught.\n',
             'hook.sh': '#!/bin/sh\n',
         }, 1, {'missing-dir/ghost-hook.sh'}),
-        # v3.0.52 (backlog v3.0-152): the quoted-record exclusion, pinned BOTH
+        # v3.0.52 (backlog v3.0-148): the quoted-record exclusion, pinned BOTH
         # directions — the same dangling link FAILs from a shipped doc but only
         # COUNTS from a quoted-record source, and the sweep exits 0 when the
         # quoted class is all that dangles.
         ('quoted-record source: dangling quote excluded from the result but '
-         'counted (v3.0-152)', {
+         'counted (v3.0-148)', {
             'deploy/evidence/packet-a.md': 'Quoted wiki prose: see '
                       '[pricing](sections/pricing-model.md) for the derivation.\n',
         }, 0, set(), (1, 1)),
         ('same dangling link: shipped doc FAILs, quoted-record twins only count '
-         '(v3.0-152)', {
+         '(v3.0-148)', {
             'doc.md': 'Canon is [pricing](sections/pricing-model.md).\n',
             'deploy/evidence/packet-a.md': 'Quoted: [pricing](sections/pricing-model.md).\n',
             'deploy/evidence/packet-b.md': 'Also quoted: `sections/pricing-model.md`.\n',
         }, 1, {'sections/pricing-model.md'}, (2, 2)),
-        ('project.yaml quoted_record_dirs extends the excluded set (v3.0-152)', {
+        ('project.yaml quoted_record_dirs extends the excluded set (v3.0-148)', {
             'project.yaml': 'name: t\nquoted_record_dirs:\n  - attic/evidence/\n',
             'attic/evidence/quote.md': 'Verbatim: [x](sections/missing-doc.md).\n',
         }, 0, set(), (1, 1)),
@@ -741,7 +741,7 @@ def run_sweep_self_test():
             REPO_ROOT = saved_root
             shutil.rmtree(d, ignore_errors=True)
 
-    # per-doc gate mode is UNAFFECTED by the quoted-record exclusion (v3.0-152):
+    # per-doc gate mode is UNAFFECTED by the quoted-record exclusion (v3.0-148):
     # an evidence file named explicitly as an argument is still fully checked and
     # still FAILs on a dangling link — the exclusion lives in the sweep only.
     total = len(cases) + 1

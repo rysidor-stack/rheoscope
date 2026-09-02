@@ -124,8 +124,11 @@ function argvModel(argv) {
   const i = argv.indexOf('-m');
   return (i !== -1 && argv[i + 1] !== undefined) ? argv[i + 1] : null;
 }
-function parseTokens(stdout) {
-  const m = stdout.match(/tokens used\s*[\r\n]+\s*([\d,]+)/i);
+// v3.0-154 (lockstep with codex-verify-server.js): the `tokens used` footer
+// lands on STDERR, the same stream as the model self-report; absent footer
+// degrades to an honest null, never fabricated.
+function parseTokens(stderrText) {
+  const m = (stderrText || '').match(/tokens used\s*[\r\n]+\s*([\d,]+)/i);
   return m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
 }
 
@@ -316,7 +319,7 @@ function main() {
     }
 
     const rm = parseRuntimeModel(err);
-    const tokens = parseTokens(out);
+    const tokens = parseTokens(err);   // v3.0-154: footer is on stderr, like the model line
     const attestation = {
       channel: 'subprocess-runtime',
       role: args.role,
@@ -352,6 +355,32 @@ function main() {
   child.stdin.on('error', () => {});
   child.stdin.write(prompt);
   child.stdin.end();
+}
+
+// ---------------- hermetic self-test (v3.0-154; lockstep fixtures with ----------------
+// codex-verify-server.js -- change both files or neither, per the LOCKSTEP NOTE)
+if (process.argv.includes('--self-test')) {
+  const F17_STDERR = '[2026-07-05T18:22:01] OpenAI Codex v0.142.3 (research preview)\n'
+    + '--------\nworkdir: C:\\tmp\\codex-verify\nmodel: gpt-5\nprovider: openai\n--------\n'
+    + 'thinking...\ntokens used\n  12,345\n';
+  const F17_STDOUT = '{"verdict":"supported","confidence":"high","reasoning":"..."}\n';
+  const cases = [
+    ['footer parsed from the stderr stream', parseTokens(F17_STDERR) === 12345],
+    ['stdout stream (final JSON only) yields honest null -- the v3.0-154 misread',
+     parseTokens(F17_STDOUT) === null],
+    ['absent footer degrades to null, never fabricated',
+     parseTokens('model: gpt-5\nno footer here\n') === null],
+    ['runtime model still parsed from the same stream',
+     parseRuntimeModel(F17_STDERR).runtime_model === 'gpt-5'],
+  ];
+  let fails = 0;
+  for (const [name, ok] of cases) {
+    if (!ok) fails++;
+    process.stdout.write('  ' + (ok ? 'ok ' : 'XX ') + name + '\n');
+  }
+  process.stdout.write('handoff-leg self-test: '
+    + (fails ? 'FAIL' : 'PASS') + ' (' + (cases.length - fails) + '/' + cases.length + ')\n');
+  process.exit(fails ? 1 : 0);
 }
 
 main();

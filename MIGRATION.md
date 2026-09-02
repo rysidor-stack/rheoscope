@@ -260,6 +260,61 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.52 → v3.0.53 (the sensor-honesty batch: cold objects stop flagging, the attended-sweep close becomes satisfiable, half-migrated trees refuse in sentences)
+
+Two lanes, same load-bearing ORDER as v3.0.51→52: **session lane FIRST, trust lane second.**
+This release's own half-migration guard (debt.py's named refusal, below) covers the window in
+the session→trust direction; the SPLIT_IFACE pin still covers trust→session.
+
+**Step 1 — SESSION lane (any session copies these; commit together):**
+`deploy/check-derivation.py`, `deploy/backfill-derivation.py`, `deploy/check-frontmatter.py`,
+`deploy/staleness.py`, `deploy/routing-census.py` — the cold-store exclusion (v3.0-157, fleet
+inbox #9): `wiki/cold/**` leaves every view census (a cold object is a content-addressed
+quoted record; its integrity is the retirement journal's sha256, and backfilling a region
+into one corrupts the trust chain — the sensors now say so instead of advising it);
+`deploy/check-briefing-format.py` (documents + pins the machine-appendix briefing shape,
+v3.0-159, fleet inbox #11); `deploy/debt.py` (the v3.0-160 named refusal when trust.py
+predates `resolve_branch` — a half-migrated tree now gets a sentence citing the operator-lane
+step, never an AttributeError; run its `--self-test` AFTER step 2, per the v3.0.52 erratum
+above); `deploy/trigger-register.yaml.example` (the arming-review row's path moves to the
+consent class); `.claude/skills/doctor/doctor.py` (derivation-gate FAIL now names the
+sensor's REAL finding class — regionless / stale-verified / unparseable / audit-pending —
+instead of blaming audit-pending for all four); `.claude/skills/sweep/SKILL.md` (step 17(b)
+render table → committed receipt file + dashed machine appendix in the briefing; step 17(c)
+re-sequenced: ack success CONFIRMED before the ok heartbeat); `.claude/skills/standing-loop/SKILL.md`
+and your compile + handoff skills from `capabilities/knowledge-os/extracted/compile/SKILL.md.template`
+and `core/skills/handoff/SKILL.md.template` (the three mint ceremonies move to the
+session-mintable `deploy/evidence/consent-*.md` class, v3.0-155 — existing operator-minted
+grants under `operator-*` names stay valid); `docs/engine/OPERATIONS.md` (HUMAN-GATE section:
+both artifact classes); `core/skills/bridge/codex-verify-server.js` and
+`core/skills/bridge/handoff-leg.js` (v3.0-154: the codex `tokens used` footer parses from
+STDERR — verifier cost telemetry stops arriving null; both gain `--self-test`);
+`core/governance/check-template-updates.py` (v3.0-158, fleet inbox #10: tolerant
+`template_release` parsing — quoted values and trailing comments now read correctly);
+`manifests/compile-receipt/format-MANIFEST.md` and
+`manifests/sweep-briefing/format-MANIFEST.md` (v3.0-161, caught by this release's own
+stranger run: the wiki-schema sha256 pin could never match an instance's init-substituted
+bytes — a permanent check-manifest FAIL on every fresh instance — and moves to a `git:` ref;
+the check-frontmatter and sweep-skill pins re-hashed to this release's bytes).
+
+**Step 2 — OPERATOR-COPY lane (trust surfaces; you copy and commit these yourself — under
+`required`, `git commit -S`):** `deploy/pending.py` (the `--appendix` machine-appendix
+emitter; `rendered_in`'s mechanical contract documented; the ack refusal names the recipe),
+`deploy/compile-driver.py` and `deploy/compile-backends.py` (the consent-artifact class:
+`deploy/evidence/consent-*.md` accepted beside `operator-*.md`; a consent grant must be
+committed-identical always, and operator-signed only under `trust_surface_signing: required`
+— the default modes get armable in-session ceremonies, while `required` keeps its full
+key-gated floor and treats the mint as an operator-terminal step). Run the batteries after:
+`py deploy/pending.py --self-test`, `py deploy/compile-driver.py --self-test`,
+`py deploy/debt.py --self-test` (now safe — both lanes landed).
+
+**Step 3 — nothing else migrates.** No data changes, no re-freeze, no new project.yaml keys.
+Your next attended sweep close uses the new step-17 shape: table to
+`receipts/pending/render-<date>.txt`, `--appendix` lines into the briefing's Watching tail,
+ack CONFIRMED before the ok heartbeat. An instance already using the fleet-pioneered
+appendix workaround (the inbox-#11 filer's shape) is already conformant. Finish with `/doctor` — a wiki with retirement cold
+objects goes green on the derivation gate for the first time since its first retirement.
+
 ## v3.0.51 → v3.0.52 (ADR #11 Release 3: the batch — one promote for N views — the brake, lineage-stable cap debt, and correction pairing)
 
 Two lanes, and **the lane ORDER is load-bearing (v3.0-150):** the session lane lands FIRST.
@@ -268,12 +323,30 @@ so a half-migrated instance now refuses with a named message instead of dying in
 AttributeError mid-ceremony (the first fork's v3.0.51 adoption window, 166b772→5738b1c) — but
 the right move is not to open the window at all.
 
+> **ERRATUM (2026-08-28, v3.0-160, fleet inbox #12 — the tag's original text stands in
+> `git show v3.0.52:MIGRATION.md`; this living copy is corrected):** (a) the entry as
+> tagged told step 1 to run `py deploy/debt.py --self-test` + `--report` in the SESSION
+> lane, but debt.py resolves the production branch through the STEP-2 trust.py
+> (`resolve_branch`) — on a correctly lane-ordered adoption that instruction dies in a raw
+> AttributeError. Run debt.py's self-test and first `--report` AFTER step 2 (step 4
+> already says the first report IS the migration; nothing is lost). From v3.0.53 debt.py
+> refuses this skew with a named sentence instead of crashing. (b) The tag also changed
+> `core/skills/doctor/doctor.py` (sensor self-test budget 180→300s — without it the
+> entry's own closing `/doctor` false-TIMEOUTs the grown compile-v2 battery on slow-spawn
+> hosts, the v3.0-138 class) and `project.yaml.schema.json` (the `production_branch:`
+> key), naming neither; both are now in the step-1 list below. From v3.0.53
+> `make-release.py` invariant (i) refuses an export whose release diff changes a shipped
+> surface file the MIGRATION section never names.
+
 **Step 1 — SESSION lane (any session copies these; commit together):**
 `deploy/check-split.py` (the `SPLIT_IFACE` pin), `deploy/retire-manifest.py`
 (`splice_sections`), `deploy/compile-v2.py` (the cap-debt brake, section-scoped absorb, the
 `cap_episodes` pre-gate, the v3.0-150 skew guard), `deploy/debt.py` (**NEW** — lineage-stable
-cap episodes; run `py deploy/debt.py --self-test`, then `--report` for your first corpus
-debt reading), `deploy/assemble.py`, `deploy/check-frontmatter.py` (the optional `view_id`
+cap episodes; defer its `--self-test` and first `--report` until AFTER step 2 — it reads the
+step-2 trust.py's branch resolution, per the erratum above), `.claude/skills/doctor/doctor.py`
+(sensor self-test budget 180→300s, the v3.0-138 slow-host fix — erratum (b)),
+`project.yaml.schema.json` (documents the `production_branch:` key — erratum (b)),
+`deploy/assemble.py`, `deploy/check-frontmatter.py` (the optional `view_id`
 region key), `deploy/backfill-derivation.py` (`mint_view_id` — the one identity mint),
 `deploy/engine-caps.yaml` (append the `episode_grace_days` / `episode_grace_absorbs` keys;
 defaults 30/10 apply when absent), `docs/engine/OPERATIONS.md` § 9a,
@@ -283,9 +356,9 @@ defaults 30/10 apply when absent), `docs/engine/OPERATIONS.md` § 9a,
 the brake note; substitute your `{{...}}` values as usual),
 `.claude/skills/sweep/SKILL.md` (step 17 batch rendering + step (b2) cap debt),
 `.claude/skills/orient/SKILL.md` (browser-pane row), `core/governance/CLAUDE.md` — append
-the new "### Browser-pane automation" subsection under § Session discipline (v3.0-153,
+the new "### Browser-pane automation" subsection under § Session discipline (v3.0-149,
 fleet inbox #2), `core/governance/check-reference-integrity.py` (the quoted-record sweep
-exclusion, v3.0-152, fleet inbox #7 — declare extra dirs via `quoted_record_dirs:` in
+exclusion, v3.0-148, fleet inbox #7 — declare extra dirs via `quoted_record_dirs:` in
 `project.yaml` if your evidence lives elsewhere than `deploy/evidence/`).
 
 **Step 2 — OPERATOR-COPY lane (trust surfaces; you copy and commit these yourself — under

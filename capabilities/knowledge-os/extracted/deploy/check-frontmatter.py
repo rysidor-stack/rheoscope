@@ -484,6 +484,14 @@ def _check_enums(found, path, out):
 def check_text(text, path):
     """Validate one file's text. Returns a list of Finding."""
     out = []
+    # v3.0-157 (fleet inbox #9): wiki/cold/** is retire.py's content-addressed
+    # store -- verbatim retired span bytes, a QUOTED RECORD. Judging its content
+    # (which may verbatim-contain frontmatter, derivation regions, or anything
+    # else) judges the quote, not a document; and the record is immutable by
+    # design, so every finding here would be unrepairable. Out of scope.
+    p_norm = path.replace("\\", "/").lower()
+    if "/wiki/cold/" in p_norm or p_norm.startswith("wiki/cold/"):
+        return out
     cls = _classify(path)
 
     fm = _extract_frontmatter(text)
@@ -676,6 +684,14 @@ def self_test():
         ("deriv minted_by bogus value (v3.0-71, enum warns)",
          _DERIV_MINTED_BOGUS, "wiki/systems/x.md", 1, 0),
         ("unterminated fm",  _UNTERMINATED_FM,  "raw/x.md",          1, 0),
+        # v3.0-157 (fleet inbox #9): a cold object is a quoted record -- the
+        # SAME defective bytes that draw findings at a real wiki path draw
+        # exactly none under wiki/cold/ (both directions pinned by the
+        # sibling "deriv skew" case above, which must stay 1/1).
+        ("cold path exempt (deriv skew bytes, zero findings)",
+         _DERIV_SKEW, "wiki/cold/some-view/section-a--" + "d" * 64 + ".md", 0, 0),
+        ("cold path exempt (unterminated fm bytes, zero findings)",
+         _UNTERMINATED_FM, "wiki/cold/v/s--" + "e" * 64 + ".md", 0, 0),
     ]
     failed = 0
     for name, text, path, exp_findings, exp_refusals in cases:

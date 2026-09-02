@@ -106,6 +106,29 @@ def _trust():
     return _trust_mod
 
 
+def _trust_skew():
+    """None when the loaded trust.py is new enough; else the named refusal
+    (v3.0-160, fleet inbox #12 -- the SPLIT_IFACE pattern of v3.0-150, with the
+    dependency pointing the other way: session lane -> trust lane). This module
+    is session-lane; trust.py is operator-lane. On a lane-ordered v3.0.52
+    adoption the old trust.py lacks resolve_branch and the first corpus reading
+    died in a raw AttributeError mid-run. Checked at every public entry point,
+    not at import, so the refusal is a sentence, never a traceback."""
+    if hasattr(_trust(), "resolve_branch"):
+        return None
+    return ("deploy/trust.py is OLDER than this module (resolve_branch missing: "
+            "the v3.0.52 branch-resolution home is absent) -- finish the "
+            "OPERATOR-lane trust-surface copy first (MIGRATION v3.0.51->52 "
+            "step 2: trust.py, retire.py, promote.py, pending.py from the same "
+            "tag as this file), then re-run (v3.0-160)")
+
+
+def _refuse_on_trust_skew():
+    skew = _trust_skew()
+    if skew:
+        raise Refuse(skew)
+
+
 def _backfill():
     global _backfill_mod
     if _backfill_mod is None:
@@ -604,6 +627,7 @@ def episodes_for_view(root, view_rel, branch=None, now=None, findings=None):
     episodes are not emitted (debt gone is debt gone; the journal holds the history)."""
     now = now or _now()
     repo = root
+    _refuse_on_trust_skew()  # v3.0-160: a named sentence, never an AttributeError
     try:
         branch = _trust().resolve_branch(repo, branch)
     except _trust().TrustError as e:
@@ -734,6 +758,40 @@ def self_test():
     if shutil.which("git") is None:
         print("debt.py self-test: INCONCLUSIVE -- git required")
         return 2
+
+    # v3.0-160: on a half-migrated tree the self-test cannot pass -- but it must
+    # say WHY in the named sentence, never die in a raw AttributeError (the
+    # fleet-inbox-#12 symptom was exactly `--self-test` crashing).
+    skew = _trust_skew()
+    if skew:
+        print("debt.py self-test: REFUSED -- %s" % skew)
+        return 1
+
+    # v3.0-160 pinned both directions: the current sibling is silent; a trust.py
+    # that predates resolve_branch draws the NAMED refusal (operator-lane step
+    # cited) from every public entry, self-test reporting included.
+    case("v3.0-160: current trust.py sibling -> skew guard silent",
+         _trust_skew() is None)
+    _saved_rb = _trust().resolve_branch
+    try:
+        delattr(_trust(), "resolve_branch")
+        skew_msg = _trust_skew()
+        case("v3.0-160: trust.py without resolve_branch -> named refusal citing "
+             "the OPERATOR-lane migration step",
+             skew_msg is not None and "OPERATOR-lane" in skew_msg
+             and "v3.0-160" in skew_msg)
+        try:
+            episodes_for_view(".", "wiki/x.md")
+            case("v3.0-160: episodes_for_view refuses under skew (never an "
+                 "AttributeError)", False, "no exception raised")
+        except Refuse as e:
+            case("v3.0-160: episodes_for_view refuses under skew (never an "
+                 "AttributeError)", "OPERATOR-lane" in str(e))
+        except AttributeError as e:
+            case("v3.0-160: episodes_for_view refuses under skew (never an "
+                 "AttributeError)", False, e)
+    finally:
+        _trust().resolve_branch = _saved_rb
     base = tempfile.mkdtemp(prefix="debt-selftest-")
     _CAPS_OVERRIDE = {"topic": 200, "default": 200}
     _GRACE_OVERRIDE = (30, 10)

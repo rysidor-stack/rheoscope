@@ -800,6 +800,12 @@ def load_matches(root, ledger):
     if os.path.isdir(wiki_root):
         for fp in _iter_md(wiki_root):
             rel = _rel(fp, root)
+            # v3.0-157 (fleet inbox #9): wiki/cold/** holds verbatim retired
+            # span bytes (quoted records) -- a cold object that happens to
+            # quote a subscribes block must never join the routing census as
+            # a live view.
+            if rel.startswith("wiki/cold/"):
+                continue
             try:
                 subs = _derivation_subscribes(_read(fp))
             except (OSError, UnicodeDecodeError):

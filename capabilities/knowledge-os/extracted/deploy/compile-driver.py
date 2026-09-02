@@ -118,10 +118,18 @@ substring/marker check is acceptable -- document what you check"). The shipped
 grant is deploy/evidence/operator-standing-verify-authorization-2026-07-28.md.
   (a) the path resolves inside the repo (compile-backends' path-containment);
   (b) its repo-relative POSIX form is in the AUTHORIZATION-ARTIFACT CLASS --
-      directory exactly `deploy/evidence`, basename `operator-*.md`, case-
-      sensitive. This reuses compile-backends._is_authorization_artifact_class
+      directory exactly `deploy/evidence`, basename `operator-*.md` OR (since
+      v3.0.53, v3.0-155) the session-minted consent class `consent-*.md`,
+      case-sensitive. This reuses compile-backends._is_authorization_artifact_class
       so the driver's pre-write check and dispatch_guard's own check can never
-      diverge;
+      diverge. The two classes differ at check (g): an operator-*.md grant is a
+      trust surface (signature per `trust_surface_signing`); a consent-*.md
+      grant is session-minted by design -- COMMITTED-IDENTICAL (predating the
+      run) always, operator-signed never under the default modes (the
+      authority is the recorded verbatim quote, not the key), but under
+      `trust_surface_signing: required` the signature stays demanded for BOTH
+      classes (round-2 fold: `required` keeps its v3.0.52 floor; there the
+      mint is an operator-terminal step);
   (c) the file exists and is non-empty;
   (d) NON-REVOCATION: no line of the file, ignoring markdown emphasis/list
       markers, starts with "REVOKED" (the revocation shape this artifact class
@@ -221,6 +229,7 @@ directory (see _load below). Loading is LAZY so `--self-test` can inject fakes
 and never touch the real bridge.
 """
 
+import fnmatch
 import json
 import os
 import posixpath
@@ -534,8 +543,10 @@ def validate_authorization(repo, auth_path, class_check=None, trust_gate=None):
     if not class_check(rel_posix):
         raise AuthorizationError(
             "authorization file is not in the operator-artifact class "
-            "deploy/evidence/operator-*.md (directory must be exactly "
-            "deploy/evidence, basename operator-*.md): %s" % rel_posix)
+            "deploy/evidence/operator-*.md nor the session-minted consent "
+            "class deploy/evidence/consent-*.md (directory must be exactly "
+            "deploy/evidence, basename operator-*.md or consent-*.md): %s"
+            % rel_posix)
     # (c) exists, non-empty -- and (g) FIRST (v3.0-120, cross-vendor round 12): the
     # trust gate runs before any content check and hands back the exact HEAD blob it
     # verified; every check below parses THAT, never the file on disk, so there is no
@@ -543,8 +554,32 @@ def validate_authorization(repo, auth_path, class_check=None, trust_gate=None):
     abs_path = os.path.join(repo, rel_posix.replace("/", os.sep))
     if not os.path.isfile(abs_path):
         raise AuthorizationError("authorization file not found: %s" % rel_posix)
+    # v3.0-155: a consent-class artifact (deploy/evidence/consent-*.md) is
+    # session-minted by design -- committed-identical is ALWAYS enforced (the
+    # gate below refuses an uncommitted or drifted artifact), and under the
+    # default signing modes (`warn`, the adoption default, and `visible`) its
+    # gate never demands an operator signature: there the authority is the
+    # committed verbatim quote, and demanding the key made both ceremonies
+    # un-armable. Under `trust_surface_signing: required` the signature stays
+    # DEMANDED for the consent class too (cross-vendor round-2 refutation,
+    # 2026-08-28, folded: a signature-free session-mintable class would LOWER
+    # the required-mode floor -- a session could fabricate a committed quote
+    # and self-authorize; `required` means the operator chose key-gating for
+    # every trust decision, so there the mint is an operator-terminal step and
+    # the v3.0.52 floor is preserved exactly where it existed). Decided from
+    # the basename shape, never from the injected class_check seam.
+    _dir, _base = posixpath.split(rel_posix)
+    is_consent = (_dir == "deploy/evidence"
+                  and fnmatch.fnmatchcase(_base, "consent-*.md"))
     if trust_gate is None:
-        trust_gate = _trust().gate_artifact
+        if is_consent:
+            def trust_gate(r, p):
+                t = _trust()
+                mode, _why = t.signing_mode(r)
+                return t.gate_artifact(
+                    r, p, mode=("required" if mode == "required" else "visible"))
+        else:
+            trust_gate = _trust().gate_artifact
     gate = trust_gate(repo, rel_posix)
     if not gate.get("ok"):
         raise AuthorizationError(gate.get("refuse") or "trust gate refused")
@@ -3055,6 +3090,58 @@ def self_test():                                            # noqa: C901
         except AuthorizationError as e:
             case("non-covering authorization refused (missing markers)",
                  "does not cover" in str(e), str(e))
+        # ---- v3.0-155: the session-minted consent class, both directions ----
+        def class_check_both(rel):
+            d, b = posixpath.split(rel)
+            return d == "deploy/evidence" and (
+                fnmatch.fnmatchcase(b, "operator-*.md")
+                or fnmatch.fnmatchcase(b, "consent-*.md"))
+        consent = make_grant(
+            repo_b, "consent-2026-08-28-wired-compile-dispatch-grant.md")
+        auth_c = validate_authorization(repo_b, consent,
+                                        class_check=class_check_both)
+        case("v3.0-155: committed consent-class grant accepted (real trust "
+             "gate, no signature demanded)",
+             auth_c["quote"] == "yes to all 3" and auth_c["path"] == consent,
+             auth_c)
+        uncommitted = make_grant(repo_b, "consent-uncommitted-2026-08-28.md",
+                                 commit=False)
+        try:
+            validate_authorization(repo_b, uncommitted,
+                                   class_check=class_check_both)
+            case("v3.0-155: an UNCOMMITTED consent grant still refuses "
+                 "(committed-identical is not waived)", False)
+        except AuthorizationError as e:
+            case("v3.0-155: an UNCOMMITTED consent grant still refuses "
+                 "(committed-identical is not waived)",
+                 "committed-identical" in str(e), str(e))
+        # under `required`, an unsigned operator-class grant refuses while the
+        # unsigned consent-class grant keeps validating -- the class split is
+        # exactly the signature rule
+        write(os.path.join(repo_b, "project.yaml"),
+              "project_name: t\ntrust_surface_signing: required\n")
+        _git(repo_b, "add", "-A")
+        _git(repo_b, "commit", "-qm", "signing required")
+        try:
+            validate_authorization(repo_b, good, class_check=class_check_both)
+            case("v3.0-155: under required, an unsigned OPERATOR-class grant "
+                 "refuses (signature rule intact)", False)
+        except AuthorizationError as e:
+            case("v3.0-155: under required, an unsigned OPERATOR-class grant "
+                 "refuses (signature rule intact)",
+                 "not operator-signed" in str(e), str(e))
+        try:
+            validate_authorization(repo_b, consent, class_check=class_check_both)
+            case("v3.0-155 round-2 fold: under required, an unsigned CONSENT "
+                 "grant refuses too (the required-mode floor is preserved)",
+                 False)
+        except AuthorizationError as e:
+            case("v3.0-155 round-2 fold: under required, an unsigned CONSENT "
+                 "grant refuses too (the required-mode floor is preserved)",
+                 "not operator-signed" in str(e), str(e))
+        write(os.path.join(repo_b, "project.yaml"), "project_name: t\n")
+        _git(repo_b, "add", "-A")
+        _git(repo_b, "commit", "-qm", "signing back to default")
         revoked = make_grant(repo_b, "operator-revoked-2026-07-28.md",
                              GRANT + "\nREVOKED 2026-07-29 by operator.\n")
         try:

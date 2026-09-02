@@ -102,7 +102,12 @@ English: *"First cross-vendor handoff on this project: the packet's content trav
 other vendor's API under your own account. Your yes covers this and every future `/handoff`
 bridge leg here — answer, escalation-round, close, and unattended retries. Say yes once and
 this project never asks again — I'll record your words and continue."* On the yes, mint
-`deploy/evidence/operator-<date>-wired-handoff-dispatch-grant.md` carrying the verbatim quote,
+`deploy/evidence/consent-<date>-wired-handoff-dispatch-grant.md` (the session-mintable
+consent class, v3.0.53 / backlog v3.0-155 — the old `operator-*` name sat inside the
+operator-edited-only trust-surface glob, mechanically blocking this very mint on a
+hook-active instance; a pre-existing operator-minted grant stays valid; under
+`trust_surface_signing: required` the signature stays demanded and the mint is
+operator-terminal — the session drafts, the operator commits with `git commit -S`) carrying the verbatim quote,
 the date, and an express-scope sentence — "this grant authorizes every `/handoff` bridge-leg
 dispatch on this project (answer, round-N, close), interactive and unattended" (the express
 sentence is load-bearing: a grant naming only mechanics fails consent review) — commit it,

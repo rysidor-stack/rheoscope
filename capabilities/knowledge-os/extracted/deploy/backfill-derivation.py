@@ -207,13 +207,22 @@ def backfill(root, check_only=False, origin_config_path=None):
         return 2, {"error": "check-frontmatter.py unloadable"}
     wiki = os.path.join(root, "wiki")
     report = {"minted": [], "skipped_regioned": 0, "skipped_projection": 0,
-              "unparseable": [], "violations": [], "candidates": []}
+              "skipped_cold": 0, "unparseable": [], "violations": [],
+              "candidates": []}
     for dirpath, _dirs, files in os.walk(wiki):
         for name in sorted(files):
             if not name.endswith(".md"):
                 continue
             fp = os.path.join(dirpath, name)
             rel = os.path.relpath(fp, root).replace("\\", "/")
+            # v3.0-157 (fleet inbox #9): wiki/cold/** is retire.py's
+            # content-addressed store -- the journal sha256 and the filename
+            # bind the exact bytes, so minting a region into a cold object
+            # would break digest verification for every published retirement.
+            # This tool must never touch (or even list) a cold path.
+            if rel == "wiki/cold" or rel.startswith("wiki/cold/"):
+                report["skipped_cold"] += 1
+                continue
             with open(fp, "r", encoding="utf-8", newline="") as fh:
                 text = fh.read()
             if DERIV_START in text:
@@ -306,6 +315,15 @@ def self_test():
         with open(os.path.join(wiki, "missing-src.md"), "w", encoding="utf-8",
                   newline="") as fh:
             fh.write(missing_src)
+        # v3.0-157: a cold object (no frontmatter, no region -- retire.py's
+        # shape) must be skipped entirely: never a candidate, never
+        # "unparseable", never minted into.
+        cold_dir = os.path.join(td, "wiki", "cold", "some-view")
+        os.makedirs(cold_dir)
+        cold_fp = os.path.join(cold_dir, "section-a--" + "c" * 64 + ".md")
+        cold_bytes = "Retired span bytes, verbatim.\n"
+        with open(cold_fp, "w", encoding="utf-8", newline="") as fh:
+            fh.write(cold_bytes)
 
         rc, rep = backfill(td, check_only=True)
         case("--check lists candidates without writing",
@@ -315,6 +333,10 @@ def self_test():
                                          encoding="utf-8").read())
         case("--check still reports the unparseable view (exit 1)",
              rc == 1 and rep["unparseable"] == ["wiki/systems/broken.md"])
+        case("v3.0-157: cold object skipped -- not a candidate, not unparseable",
+             rep["skipped_cold"] == 1
+             and not any("cold" in p for p in rep["candidates"])
+             and not any("cold" in p for p in rep["unparseable"]))
 
         rc, rep = backfill(td)
         case("live run exits 1 ONLY for the unparseable view; mints the rest",
@@ -348,6 +370,9 @@ def self_test():
         case("projection INDEX.md untouched",
              DERIV_START not in open(os.path.join(wiki, "INDEX.md"),
                                      encoding="utf-8").read())
+
+        case("v3.0-157: live run left the cold object byte-identical",
+             open(cold_fp, encoding="utf-8", newline="").read() == cold_bytes)
 
         rc2, rep2 = backfill(td)
         case("idempotent: second run mints nothing",

@@ -11,6 +11,13 @@ so a flight-plan sweep can hard-stop).
 Companion to check-frontmatter.py (which validates the block's structure +
 schema_version). This one reads the block's *state*. Stdlib-only.
 
+Census scope (v3.0-157, fleet inbox #9): `wiki/cold/**` -- retire.py's
+content-addressed cold store -- is excluded from the ENTIRE census (audit-pending,
+region-presence, stale-verified alike) and reported as a count on its own line.
+A cold object is a quoted record whose integrity is the retirement journal's
+sha256; it is not a compiled view, and minting a region into one (the FIX this
+sensor prints for real region-less views) would corrupt its content address.
+
 CONTENT-3 CANONICAL (stale-verified) check
 -------------------------------------------
 This module also carries the CANONICAL (frontmatter-side) half of CONTENT-3 ·
@@ -131,6 +138,26 @@ PROJECTION_BASENAMES = {"INDEX.md", "HEALTH.md", "REVIEW.md"}
 # check whose only remedy is a tool that declines the file is a loop, and a
 # permanent one on every sweep.
 NON_COMPILED_DIRS = ("flight-plans",)
+
+# Retirement cold objects (wiki/cold/**, retire.py's content-addressed store) are
+# NOT compiled views and are excluded from this sensor's ENTIRE census -- not just
+# the region-presence check (v3.0-157, fleet inbox #9). A cold object is the raw
+# span bytes of retired content: its integrity story is the retirement journal's
+# sha256 (the filename embeds the content address), never a compile derivation,
+# and its bytes are a QUOTED RECORD that may verbatim-contain anything -- a
+# derivation region included -- without that meaning anything about the file
+# itself. Flagging one trains operators to ignore red; and this sensor's FIX
+# line (backfill-derivation.py) would mint a region into content-addressed
+# bytes, breaking digest verification for every published retirement. Cold
+# paths are filtered at _iter_files (explicit args included -- a cold object
+# must NEVER fail this gate, however it was named) and counted on their own
+# always-printed line so the class stays visible without gating RESULT (the
+# v3.0-148 quoted-record pattern).
+_COLD_RE = re.compile(r"(^|[/\\])wiki[/\\]cold([/\\]|$)")
+
+
+def _is_cold_path(fp):
+    return bool(_COLD_RE.search(os.path.normpath(fp)))
 
 # Family root standard (silence-sweep 2026-08-04; same pattern as check-loop-state.py):
 # the default scan root is the parent of the deploy/ dir holding this script -- never
@@ -310,14 +337,31 @@ def _git_show_head(repo, rel_path):
 def _iter_files(paths):
     for p in paths:
         if os.path.isfile(p):
-            yield p
+            if not _is_cold_path(p):
+                yield p
         elif os.path.isdir(p):
             for root, _dirs, files in os.walk(p):
                 if os.sep + ".git" in root:
                     continue
                 for f in files:
-                    if f.endswith(".md"):
-                        yield os.path.join(root, f)
+                    fp = os.path.join(root, f)
+                    if f.endswith(".md") and not _is_cold_path(fp):
+                        yield fp
+
+
+def _count_cold(paths):
+    """How many cold objects the census excluded -- reported, never gated."""
+    n = 0
+    for p in paths:
+        if os.path.isfile(p):
+            n += 1 if _is_cold_path(p) else 0
+        elif os.path.isdir(p):
+            for root, _dirs, files in os.walk(p):
+                if os.sep + ".git" in root:
+                    continue
+                n += sum(1 for f in files
+                         if f.endswith(".md") and _is_cold_path(os.path.join(root, f)))
+    return n
 
 
 def scan_stale(paths, repo=None):
@@ -372,6 +416,16 @@ def scan(paths, gate=False, stale_only=False, repo=None):
     stale, inconclusive = scan_stale(paths, repo=repo)
 
     rc = 0
+
+    # v3.0-157: the excluded class stays visible without gating RESULT. This
+    # line is the ONLY place a cold object may appear in this sensor's output;
+    # in particular the backfill FIX advice below can never name a cold path.
+    n_cold = _count_cold(paths)
+    if n_cold:
+        print("check-derivation: %d cold object(s) under wiki/cold/ excluded "
+              "from the view census (content-addressed retirement records; "
+              "integrity = the retirement journal's sha256, not a derivation "
+              "region -- never backfill these)." % n_cold)
 
     if not stale_only:
         if pending:
@@ -587,8 +641,64 @@ def self_test():
     finally:
         shutil.rmtree(d2, ignore_errors=True)
 
+    # ---- v3.0-157 cold-object cases (fleet inbox #9) ------------------------
+    # A cold object under wiki/cold/ is a content-addressed retirement record:
+    # it must NEVER fail this gate (not for a missing region, not for quoted
+    # audit-pending bytes it verbatim-contains), while a region-less REAL view
+    # beside it still does -- and the FIX line never names the cold path.
+    cold_cases = []
+    d3 = tempfile.mkdtemp(prefix="cdv-cold-")
+    try:
+        wiki3 = os.path.join(d3, "wiki")
+        cold3 = os.path.join(wiki3, "cold", "some-view")
+        os.makedirs(cold3)
+        # bare span bytes, no region -- the shape retire.py writes
+        with open(os.path.join(cold3, "section-a--" + "a" * 64 + ".md"), "w",
+                  encoding="utf-8", newline="\n") as fh:
+            fh.write("Retired span bytes, verbatim.\n")
+        # quoted-record hazard: cold bytes that verbatim-contain an
+        # audit-pending T1 derivation region (retired content can quote
+        # anything) -- must not be read as a view's own state
+        with open(os.path.join(cold3, "section-b--" + "b" * 64 + ".md"), "w",
+                  encoding="utf-8", newline="\n") as fh:
+            fh.write("Quoted record follows:\n" + _AUDIT_PENDING)
+        cold_cases = [
+            ("cold objects never FAIL the gate (regionless + quoted region)",
+             ["check-derivation.py", "--gate", "--root", d3], 0),
+        ]
+        for name, argv, exp in cold_cases:
+            got = main(argv)
+            ok = (got == exp)
+            if not ok:
+                failed += 1
+            print("  %s %-52s exit=%-4s exp=%s"
+                  % ("ok " if ok else "XX ", name, got, exp))
+        # a region-less REAL view beside the cold store still FAILs, and the
+        # sensor's listing/FIX must name only the real view, never a cold path
+        with open(os.path.join(wiki3, "real-regionless.md"), "w",
+                  encoding="utf-8", newline="\n") as fh:
+            fh.write(_NO_DERIV)
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            got = main(["check-derivation.py", "--gate", "--root", d3])
+        out_text = buf.getvalue()
+        mixed_ok = (got == 2 and "real-regionless.md" in out_text
+                    and ("cold" + os.sep + "some-view") not in
+                    out_text.replace("wiki/cold/ excluded", "")
+                    and "excluded from the view census" in out_text)
+        if not mixed_ok:
+            failed += 1
+        print("  %s %-52s exit=%-4s exp=2 (real view named, cold path not)"
+              % ("ok " if mixed_ok else "XX ",
+                 "region-less REAL view beside cold still FAILs", got))
+        cold_cases.append(("mixed", None, 2))
+    finally:
+        shutil.rmtree(d3, ignore_errors=True)
+
     total = (len(cases) + len(sv_cases) + len(root_cases) + len(empty_cases)
-             + len(region_cases))
+             + len(region_cases) + len(cold_cases))
     if failed:
         print("check-derivation self-test: FAIL (%d/%d)" % (total - failed, total))
         return 1

@@ -51,6 +51,15 @@ and the working tree's extension of the newest one.
 
 Usage:
   pending.py --root R --render [--json] [--branch main]     the table (sweep step 17)
+  pending.py --root R --appendix                            the briefing's dashed machine
+                                  appendix: one `- <item-id> (<date>)` line per pending
+                                  item -- the exact lines that satisfy BOTH --ack's
+                                  rendered-check and the briefing format contract
+                                  (v3.0-159, fleet inbox #11: the render TABLE fails the
+                                  format battery -- script names in the author column,
+                                  non-dashed rows after Watching -- so the table lives in
+                                  a committed receipt file the briefing cites, and THESE
+                                  lines are what the briefing itself carries)
   pending.py --root R --heartbeat open|ok|failed --run-id ID
   pending.py --root R --ack --run-id ID --briefing PATH     attended sweeps only
   pending.py --root R --observe [--observer NAME]           the independent observer tick
@@ -442,6 +451,42 @@ def heartbeat(repo, kind, run_id, outcome=None, now=None):
         if not any(r.get("kind") == "open" and r.get("run_id") == run_id for r in _rows(repo, SWEEPS)):
             raise Refuse("run %s has no `open` heartbeat -- a close without its open is not a sweep "
                          "cycle (nothing written)" % run_id)
+    # v3.0-159, MECHANICAL half (cross-vendor round-1 fold: the ordering lived
+    # only in the sweep skill's prose, so `--heartbeat ok` before a successful
+    # ack was still writable): a run OPENED attended may close `ok` only when
+    # nothing is left pending -- i.e. its ack succeeded (a successful ack
+    # empties the pending list) or there was nothing to acknowledge. A run
+    # opened unattended closes ok with items persisting BY DESIGN (it renders,
+    # never acks -- and CANNOT ack, so gating its ok would deadlock it), and
+    # `failed` is always writable -- that is the close a refused ack takes.
+    # Attendance is derived from the run's OPEN heartbeat rows, the same
+    # source ack() and the stored-ack re-validation read -- NEVER from the
+    # close-time environment (cross-vendor round-3 fold: `attended()` at close
+    # time let an attended-open run be closed `ok` from an unattended context,
+    # skipping the guard).
+    if kind == "ok":
+        opens_for_run = [r for r in _rows(repo, SWEEPS)
+                         if r.get("kind") == "open" and r.get("run_id") == run_id]
+        # ANY attended open row arms the guard for this run id, permanently
+        # (cross-vendor round-4 fold: with all(), appending one unattended open
+        # row to an attended run id disarmed the guard; any() matches status()'s
+        # own attended_opens classification, and a mixed-row run -- which ack()
+        # refuses outright -- honestly closes `failed`, never `ok`).
+        if any(r.get("attended") for r in opens_for_run):
+            # Round-5 boundary, stated: the pending read and the row append are
+            # not one transaction. An item that lands BETWEEN them is the
+            # ordinary "arrived after the sweep" state, not a bypass -- this
+            # ledger's doctrine computes everything at READ time (an ok row
+            # never hides an item; the observer judges items, not rows), and
+            # the module holds no locks anywhere (honest-observer threat
+            # model, module docstring).
+            st_pending = status(repo, None, now)["pending"]
+            if st_pending:
+                raise Refuse("run %s was opened ATTENDED and cannot close `ok` with %d item(s) "
+                             "still pending un-acknowledged -- ack first (`--ack --run-id %s "
+                             "--briefing <file>`; append the `--appendix` lines to the briefing "
+                             "if items are not rendered), or close `failed` (v3.0-159)"
+                             % (run_id, len(st_pending), run_id))
     _append(repo, SWEEPS, row)
     return row
 
@@ -478,7 +523,11 @@ def ack(repo, run_id, briefing, branch=None, now=None):
         rows.append(row)
     if not_shown:
         raise Refuse("%d pending item(s) are NOT rendered in %s and stay pending: %s -- an "
-                     "acknowledgement covers only what the briefing shows%s" % (
+                     "acknowledgement covers only what the briefing shows%s. Rendered = the "
+                     "item's commit-first-12 (or an alarm's timestamp) appears as a substring; "
+                     "append the `--appendix` output (one dashed bare-id line per item) to the "
+                     "briefing's Watching section and re-ack -- that shape passes the briefing "
+                     "format battery too (v3.0-159)" % (
                          len(not_shown), briefing, ", ".join(not_shown)[:300],
                          " (%d item(s) that were shown are acknowledged)" % len(rows) if rows else ""))
     return rows
@@ -506,8 +555,16 @@ def _briefing_text(repo, rel, want_sha):
 
 
 def rendered_in(briefing_text, item):
-    """The briefing SHOWS the item: its commit (first 12 hex) for retirements and
-    trust-surface changes, its timestamp for alarms."""
+    """The briefing SHOWS the item. What "rendered" means, MECHANICALLY
+    (v3.0-159 -- this was undocumented and the first attended close on the
+    first production instance had to reverse-engineer it): a plain substring
+    match against the briefing's decoded bytes -- the item's commit sha's
+    first 12 hex characters for commit-backed items (retirements and
+    trust-surface changes; the item id `kind:<full-sha>` contains them, so a
+    bare-id line suffices), the item's full `date` timestamp for alarms.
+    No table, no layout, no particular section is required -- the dashed
+    machine appendix `--appendix` emits satisfies this for every item kind,
+    and is the standardized shape (sweep step 17(b))."""
     if item.get("kind") == "alarm":
         return bool(item.get("date")) and item["date"] in briefing_text
     c = item.get("commit") or ""
@@ -546,6 +603,24 @@ def observe(repo, observer="standing-loop", branch=None, now=None):
 
 
 # ------------------------------------------------------------------ render
+def render_appendix(st):
+    """The briefing's dashed MACHINE APPENDIX (v3.0-159, fleet inbox #11): one
+    `- <item-id> (<date>)` line per pending item, nothing else. Bare item ids
+    carry the full commit sha (so rendered_in's first-12 substring match is
+    satisfied), alarm lines carry the full timestamp both in the id and the
+    parenthetical; no script names, no table rows, no fences -- every line is
+    dash-prefixed, so the block passes the briefing format contract's
+    watching-dashed-list and prose rows verbatim. The human-readable table
+    (render() below) belongs in a committed receipt file the briefing cites
+    from a details tail, never in the briefing itself."""
+    lines = []
+    for it in st["pending"]:
+        lines.append("- %s (%s)" % (it["id"], it.get("date") or "undated"))
+    if not st["pending"]:
+        lines.append("- nothing pending")
+    return "\n".join(lines)
+
+
 def render(st):
     out = []
     obs = st["observation"]
@@ -767,7 +842,51 @@ def self_test():
         open(ap2, "w", encoding="utf-8", newline="\n").write("\n".join(_kept) + "\n")
         t30 = t6 + datetime.timedelta(days=30)
         heartbeat(r, "open", "fake-1", now=t30)
-        heartbeat(r, "ok", "fake-1", now=t30)  # a paired attended ok with NO acks for the old item
+        # v3.0-159 round-1 fold, both directions: the TOOL refuses to write an
+        # attended `ok` over a pending un-acked item...
+        try:
+            heartbeat(r, "ok", "fake-1", now=t30)
+            case("v3.0-159: attended `ok` with items pending un-acked REFUSES "
+                 "naming the ack recipe", False)
+        except Refuse as e:
+            case("v3.0-159: attended `ok` with items pending un-acked REFUSES "
+                 "naming the ack recipe",
+                 "ack first" in str(e) and "--appendix" in str(e), e)
+        case("v3.0-159: the refused `ok` wrote no close row",
+             not any(r2.get("run_id") == "fake-1" and r2.get("kind") == "close"
+                     for r2 in _rows(r, SWEEPS)))
+        # round-3 fold: attendance is judged from the OPEN row, so flipping the
+        # env at close time cannot skip the guard
+        os.environ[UNATTENDED_ENV] = "1"
+        try:
+            heartbeat(r, "ok", "fake-1", now=t30)
+            case("v3.0-159 round-3 fold: an attended-OPEN run cannot be closed "
+                 "`ok` from an unattended context while items are pending", False)
+        except Refuse as e:
+            case("v3.0-159 round-3 fold: an attended-OPEN run cannot be closed "
+                 "`ok` from an unattended context while items are pending",
+                 "opened ATTENDED" in str(e), e)
+        # round-4 fold: appending a second, UNATTENDED open row to the same run
+        # id does not disarm the guard (any(), not all())
+        try:
+            heartbeat(r, "open", "fake-1", now=t30)  # unattended env still set
+            heartbeat(r, "ok", "fake-1", now=t30)
+            case("v3.0-159 round-4 fold: a mixed-open-rows run id still cannot "
+                 "close `ok` over pending items", False)
+        except Refuse as e:
+            case("v3.0-159 round-4 fold: a mixed-open-rows run id still cannot "
+                 "close `ok` over pending items", "opened ATTENDED" in str(e), e)
+        finally:
+            os.environ.pop(UNATTENDED_ENV, None)
+        # ...`failed` stays writable (the close a refused ack takes)...
+        heartbeat(r, "failed", "fake-1", now=t30)
+        # ...and a forged row APPENDED DIRECTLY (the adversary the ledger
+        # doctrine contemplates -- it bypasses the tool) still cannot hide the
+        # missed item, which is what the original round-1 case pinned:
+        _append(r, SWEEPS, {"ts": _iso(t30), "run_id": "fake-1b", "attended": True,
+                            "host": "forge", "kind": "open"})
+        _append(r, SWEEPS, {"ts": _iso(t30), "run_id": "fake-1b", "attended": True,
+                            "host": "forge", "kind": "close", "outcome": "ok"})
         st = status(r, now=t30)
         case("round-1 fold: an item outstanding longer than the window is MISSED even when a paired "
              "attended `ok` cycle was just recorded (missed is judged on the items)",
@@ -883,6 +1002,19 @@ def self_test():
         wd, note = window_days(r)
         case("observation_window_days absent -> default %d, note says so" % DEFAULT_WINDOW_DAYS,
              wd == DEFAULT_WINDOW_DAYS and "default" in note)
+        # ---- v3.0-159: the machine appendix satisfies BOTH contracts ----
+        st_apx = status(r, now=t6)
+        apx = render_appendix(st_apx)
+        case("appendix: one dashed line per pending item, every line dash-prefixed",
+             apx and all(l.startswith("- ") for l in apx.splitlines())
+             and len([l for l in apx.splitlines() if l != "- nothing pending"])
+             == len(st_apx["pending"]), apx)
+        case("appendix: every pending item is rendered_in the appendix text "
+             "(commit-backed AND alarm kinds)",
+             all(rendered_in(apx, it) for it in st_apx["pending"]), apx)
+        case("appendix: no script filename ever appears (the render table's "
+             "author column is exactly what it must not carry)",
+             ".py" not in apx, apx)
         rall = render(status(r, now=t6))
         case("render: names the window line and the table header",
              "observation window" in rall and "kind" in rall and "commit" in rall)
@@ -931,6 +1063,9 @@ def main(argv=None):
                     help="production branch (default: project.yaml production_branch, "
                          "else the checked-out branch -- v3.0-151)")
     ap.add_argument("--render", action="store_true")
+    ap.add_argument("--appendix", action="store_true",
+                    help="print the briefing's dashed machine appendix (one bare-id "
+                         "line per pending item; v3.0-159)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--heartbeat", choices=["open", "ok", "failed"])
     ap.add_argument("--run-id")
@@ -967,6 +1102,9 @@ def main(argv=None):
             print(render(st))
             return 2 if (new or st["findings"]) else 0
         st = status(repo, a.branch)
+        if a.appendix:
+            print(render_appendix(st))
+            return 2 if st["findings"] else 0
         if a.json:
             print(json.dumps(st, indent=1, default=str))
         else:

@@ -21,6 +21,16 @@ file (SESSION-BRIEFING.md, DECISIONS-PENDING.md), independent of the three-secti
 shape. /sweep wires it so raw sensor codes in operator files are a mechanical finding, not a
 style hope.
 
+THE MACHINE APPENDIX (v3.0-159, fleet inbox #11) -- the ONE sanctioned shape for the
+pending list inside a briefing: the Watching section ENDS with the dashed bare-id lines
+`pending.py --appendix` emits (`- <item-id> (<date>)`, one per pending item). Those lines
+are dash-prefixed (watching-dashed-list passes), carry no script names or raw-output
+tokens (the prose rows pass), and contain each item's commit sha / timestamp (pending.py's
+--ack rendered-check passes). The human-readable render TABLE never goes in the briefing
+-- its author column carries script names and its rows are not dashed, so it fails this
+contract BY DESIGN; it lives in a committed receipt file (receipts/pending/render-<date>.txt)
+cited from a details tail. Both directions are pinned in the self-test below.
+
 Checks map 1:1 to `format-MANIFEST.md` VALIDATOR row IDs (the ROW_CHECKS table below is the
 authoritative list); each row's mechanical assertion is implemented as one function. RUBRIC
 rows ("plain English / business terms", "All-clear names what was checked", "attention
@@ -539,6 +549,39 @@ def self_test():
     by_id = {r["id"]: r["pass"] for r in rows}
     case("prose-scan: script name in VISIBLE prose still caught beside a comment",
          by_id.get("no-script-names-in-prose") is False, "row results: %s" % by_id)
+
+    # v3.0-159 (fleet inbox #11), hermetic, both directions: a briefing whose
+    # Watching section ends with the dashed machine appendix (bare item ids,
+    # the `pending.py --appendix` shape) passes EVERY row; the same briefing
+    # with the render TABLE embedded instead fails the rows the appendix
+    # exists to avoid (script names in the author column; non-dashed rows
+    # after the Watching heading).
+    appendix_briefing = (
+        "**All clear:** 6 checks ran clean and the environment is healthy.\n\n"
+        "**Needs your attention:**\n(none)\n\n"
+        "**Watching:**\n"
+        "- Two spec checks are red because a feature change is in progress.\n"
+        "- The full pending-item record is committed for review. "
+        "(details: receipts/pending/render-2026-08-24.txt)\n"
+        "- retire:" + "a" * 40 + " (2026-08-24T10:00:00+00:00)\n"
+        "- trust:" + "b" * 40 + " (2026-08-24T11:00:00+00:00)\n"
+        "- alarm:2026-08-25T02:53:42+00:00:missed-cycle "
+        "(2026-08-25T02:53:42+00:00)\n")
+    report_rows, n_pass = run_rows_on_text(appendix_briefing, list(ROW_CHECKS))
+    case("machine appendix in Watching passes all %d rows" % len(report_rows),
+         n_pass == len(report_rows),
+         "failing rows: %s" % [r["id"] for r in report_rows if not r["pass"]])
+    table_briefing = appendix_briefing.replace(
+        "- retire:" + "a" * 40 + " (2026-08-24T10:00:00+00:00)\n",
+        "kind      commit       author                   date\n"
+        "retire    " + "a" * 12 + " retire.py <retire@engine> 2026-08-24\n")
+    report_rows, _ = run_rows_on_text(table_briefing, list(ROW_CHECKS))
+    by_id = {r["id"]: r["pass"] for r in report_rows}
+    case("embedded render table still fails (dashed-list + script-name rows) "
+         "-- the table belongs in a receipt file, by design",
+         (by_id.get("watching-dashed-list") is False
+          and by_id.get("no-script-names-in-prose") is False),
+         "row results: %s" % by_id)
 
     print("check-briefing-format self-test: %s (%d/%d)"
           % ("PASS" if not failed else "FAIL", total - failed, total))

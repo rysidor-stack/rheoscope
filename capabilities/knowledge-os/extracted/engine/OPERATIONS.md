@@ -80,9 +80,15 @@ post-registration compile).
 Before compile writes anything, `dispatch_guard()` decides the run's disposition. **Compile
 (ABSORB) is AUTONOMOUS** — no gate. **VERIFY is a HUMAN-GATE**: satisfiable ONLY by a recorded
 authorization artifact, never by standing memory of a prior "go ahead." The artifact must live at
-`deploy/evidence/operator-*.md` (a structural class check — exact directory, no nested paths, no
-traversal), and the code checks for a **verbatim quote** from that file actually being present
-(e.g. `{"path": "deploy/evidence/operator-2026-0X-XX-....md", "quote": "go on everything"}`).
+`deploy/evidence/operator-*.md` or — since v3.0.53 (backlog v3.0-155) — the session-mintable
+consent class `deploy/evidence/consent-*.md` (a structural class check either way — exact
+directory, no nested paths, no traversal; new session-minted grants use `consent-*`, which the
+trust-surface hooks do not block and whose gate demands no operator signature under the default
+signing modes — the authority is the committed verbatim quote predating the run. Under
+`trust_surface_signing: required` the signature stays demanded for BOTH classes: `required`
+keeps its full key-gated floor, and there the mint is an operator-terminal step), and the code checks for a
+**verbatim quote** from that file actually being present
+(e.g. `{"path": "deploy/evidence/consent-2026-0X-XX-....md", "quote": "go on everything"}`).
 Anything else — a design-status note, a paraphrase, an unrecorded verbal grant — is refused
 (`DispatchRefused`): on the fork, an agent once tried the wrong document class and was bounced.
 
@@ -407,7 +413,7 @@ single entry point:
 
 ```
 py deploy/compile-driver.py --run --root . --staging <dir> \
-   --authorization deploy/evidence/operator-<...>.md [--sections]
+   --authorization deploy/evidence/consent-<...>.md [--sections]
 py deploy/compile-driver.py --reverify --root . --seq N --staging <dir> \
    --authorization <path>                               # transport failed; absorption stands
 py deploy/compile-driver.py --revert --root . --seq N [--reason TEXT]
@@ -461,7 +467,7 @@ except cb.DispatchRefused as e:
 
 # verify_event.py -- a separate invocation, over the seq run_event.py just produced
 backend = cb.BridgeVerifyBackend(repo, dispatch_manifest_path=manifest_path)
-authorization = {"path": "deploy/evidence/operator-<date>-<slug>.md", "quote": "<verbatim>"}
+authorization = {"path": "deploy/evidence/consent-<date>-<slug>.md", "quote": "<verbatim>"}
 result = cb.verify_run_guarded(repo, seq, backend, authorization=authorization)  # HUMAN-GATE
 ```
 

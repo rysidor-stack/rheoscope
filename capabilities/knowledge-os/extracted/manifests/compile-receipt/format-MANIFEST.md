@@ -4,8 +4,10 @@ surface: compile-receipt
 version: "1.0"
 status: EXTRACTED
 source_artifacts:
-  # docs/wiki-schema.md is init-SUBSTITUTED ({{project_name}}, personnel tags,
-  # domains table) -- its instance bytes can never match a shipped sha256 pin,
+  # docs/wiki-schema.md is init-SUBSTITUTED (the project-name marker, personnel tags,
+  # domains table -- the marker is spelled in words here on purpose: init-validate's
+  # placeholder scan reads a literal double-brace as an unresolved substitution, and
+  # the v3.0.53 comment carried one, failing both validators on every fresh instance) -- its instance bytes can never match a shipped sha256 pin,
   # so the pin held a permanent FAIL on every fresh instance (v3.0-161, caught
   # by the v3.0.53 stranger run's live check-manifest). A git ref names the
   # template release the rows were last verified against instead.

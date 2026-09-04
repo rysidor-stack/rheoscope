@@ -260,6 +260,74 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.53 → v3.0.54 (the attention-cost batch: the attended close anchors to a committed briefing, the model-identity question asks once per model, the birth commit scans in seconds)
+
+Two lanes, the same load-bearing ORDER as v3.0.52→53: **session lane FIRST, operator lane
+second.** Nothing here asks you a question. After this adoption your next attended sweep
+close acknowledges from a COMMITTED briefing (four moves, below), an instance whose close
+has been stuck on a void acknowledgement block clears it on that next close, compile stops
+asking which model you are once it has heard the answer for that model, and a large commit
+(an adoption, a bulk import) scans in seconds with a progress line instead of minutes of
+silence.
+
+**Step 1 — SESSION lane (any session copies these; commit together):**
+`.claude/skills/sweep/SKILL.md` (step 17(c) is now four moves in a fixed order: **commit
+the briefing and its render table FIRST**, then `--ack`, then `--heartbeat ok`, then commit
+the ledgers as a second commit — v3.0-163, fleet inbox #14; the NEEDS-YOU phrasing for a
+ledger finding no longer says "delete the row"); `.claude/skills/doctor/doctor.py` (the
+`trust-surfaces:ack` FIX line advises re-acknowledging from a committed briefing and says
+plainly that a row is never deleted); your compile skill from
+`capabilities/knowledge-os/extracted/compile/SKILL.md.template` (the model-identity
+attestation becomes a ROSTER — v3.0-165: a self-belief the operator has already ruled on
+stamps silently from its row, a new one asks once and appends its row; substitute your
+`{{...}}` values as usual — and your existing model-identity attestation file under `deploy/evidence/`
+needs no edit: a pre-v3.0.54 single-identity file reads as a one-row roster, the next
+confirmation appends below it); `.claude/skills/orient/SKILL.md` (the effort-floor line,
+v3.0-162); your handoff skill from `core/skills/handoff/SKILL.md.template` (one sentence in
+Step 4: bridge legs run backgrounded); `core/governance/CLAUDE.md` — append the new
+"### Targeted edits, never whole-file rewrites" subsection under § Session discipline and the
+"Remove all mannered prose" bullet to § Reporting to the operator (both from
+`core/governance/CLAUDE.md.template`, v3.0-162); `manifests/sweep-briefing/format-MANIFEST.md`
+(the sweep-skill pin re-hashed to this release's bytes — the first pin the new export gate
+verified; v3.0-161's class half); `manifests/compile-receipt/format-MANIFEST.md` (comment
+only: the v3.0.53 comment carried a literal project-name double-brace marker, which
+init-validate reads as an unresolved substitution — both validators FAIL on every fresh
+v3.0.53 instance; caught by this release's stranger run, v3.0-168 — copy it and your
+validator goes green). Dev-only release tooling also changed (`make-release.py`
+invariant (j): a stale format-MANIFEST pin now refuses the export; `--rehash-pins` is the
+remedy) — no instance action.
+
+**Step 2 — OPERATOR-COPY lane (trust surfaces; you copy and commit these yourself — under
+`required`, `git commit -S`):** `deploy/pending.py` (v3.0-163: `--ack` REFUSES when the
+briefing's working-tree bytes are not what HEAD holds — "commit the briefing first, then
+ack"; the ledger keeps the latest VALID acknowledgement per item, so a re-ack from a committed
+briefing clears a void block and the old rows become history, never deleted; the recorded
+briefing hash is a content hash, recoverable under either line-ending convention; battery
+77/77). One consequence for an instance whose sweeps ran under the old order (ack, THEN commit): a legacy acknowledgement whose briefing was committed after the row was written re-validates as void and is re-acknowledged by the next attended close — one-time, nothing lost, no manual step, then `core/security/hooks/scan-staged-secrets.sh` with
+`core/security/hooks/README.md` (v3.0-164, fleet inbox #13: the staged set scans in ONE
+pass — one diff, one awk, twelve greps whatever the file count — with a progress line on
+stderr from 20 staged files; detection identical or stricter — never a pass where the old scanner blocked; the three stricter classes are git-quoted names, credential paths under git-quoted directories, and a secret on an added line that itself begins `++`, battery 51/51 — the summary used to over-count six end-to-end cases, so the "47" of earlier releases was 41 printed results; the README row's battery
+count follows). **Reinstall the scanner BEFORE committing it** (the v3.0-112 ordering, still
+load-bearing): `cp core/security/hooks/scan-staged-secrets.sh .git/hooks/pre-commit` first,
+then `git add` + commit — with the new bytes already installed as the hook, the commit of the
+same bytes passes the known-own-lines rule; committed through the OLD hook, every new line
+is scanned normally (they contain no secret shapes, so it still passes — the ordering is a
+guarantee, not a workaround). Run the batteries after: `py deploy/pending.py --self-test`
+(77 cases, about two and a half minutes — the void-block fixture is 82 commits) and
+`bash core/security/hooks/scan-staged-secrets.sh --self-test` (51).
+
+**Step 3 — nothing else migrates.** No data changes, no re-freeze, no new project.yaml keys.
+If your instance is sitting on a void acknowledgement block (the fleet inbox #14 shape:
+`pending --render` lists every item pending with "cannot be recovered" findings, the doctor's
+acknowledgement line red, every attended close forced to `failed`), the next attended sweep
+you read clears it by itself: write the briefing with its appendix, COMMIT it (the briefing
+and its render table alone — your step-2 copy of `deploy/pending.py` is its own earlier
+commit, and that commit is itself a pending item the briefing must show), `--ack`,
+`--heartbeat ok`, commit the ledgers. Nothing is deleted; the old rows stay in the file as
+history. Proven on a copy of the inbox-#14 instance's real ledger during this release's
+build: 82 void rows retained, 119 items acknowledged over two closes, zero findings, the
+observation window back within bounds. Finish with `/doctor`.
+
 ## v3.0.52 → v3.0.53 (the sensor-honesty batch: cold objects stop flagging, the attended-sweep close becomes satisfiable, half-migrated trees refuse in sentences)
 
 Two lanes, same load-bearing ORDER as v3.0.51→52: **session lane FIRST, trust lane second.**

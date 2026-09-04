@@ -876,10 +876,14 @@ def check_trust_surfaces(ctx):
             if ack_finds:
                 out.append(Result("FAIL", fam + ":ack",
                                   "acknowledgement ledger inconsistent: %s. An ack that names no "
-                                  "item in history, or predates its item, was not written by a sweep "
-                                  "that showed it. FIX: delete the row (receipts/pending/acks.jsonl) "
-                                  "-- the item reopens, which is the safe direction; treat the "
-                                  "session as the finding." % "; ".join(ack_finds[:4])))
+                                  "item in history, predates its item, or names briefing bytes no "
+                                  "commit holds was not written by a sweep that showed it. FIX: "
+                                  "run /sweep yourself and read it -- the attended close "
+                                  "re-acknowledges every item from a COMMITTED briefing and the "
+                                  "stale rows become history (v3.0-163); never delete a row "
+                                  "(receipts/pending/acks.jsonl is append-only and a deletion is "
+                                  "itself a finding); treat the session that wrote the row as the "
+                                  "finding." % "; ".join(ack_finds[:4])))
             else:
                 out.append(Result("PASS", fam + ":ack",
                                   "%d item(s) acknowledged by attended sweeps; every ack names an "

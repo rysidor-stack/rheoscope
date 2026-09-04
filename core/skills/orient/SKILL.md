@@ -7,6 +7,10 @@ description: Grounded Q&A about THIS project's harness — answers come from rea
 
 *verified-against: 3.0 (2026-07-24)*
 
+**Effort floor: never run /orient at low reasoning effort** (v3.0.54, backlog v3.0-162). Its
+contract is answer-from-the-installed-artifacts, and low effort is exactly where the retrieval
+step gets skipped in favor of a plausible recollection.
+
 /orient answers questions about the harness by reading the artifacts this project actually has
 installed and citing what it read — `file:line` where the claim lives. It never answers from
 training data about "how templates like this usually work." If no installed artifact settles a

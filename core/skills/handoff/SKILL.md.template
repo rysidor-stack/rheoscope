@@ -121,7 +121,10 @@ asks the one question.
 
 The leg is contained (read-only, tool-less, no network) and lands the deliverable atomically;
 exit non-zero = `LEG FAILED` = nothing landed. On failure: leave status `open`, report loudly,
-done — Step 0 retries it next invocation or nightly tick. Never hand-courier instead.
+done — Step 0 retries it next invocation or nightly tick. Never hand-courier instead. Run the
+leg backgrounded (a background shell or the harness's background task) so this session keeps
+working while the other vendor answers — the deliverable lands atomically, so nothing here
+waits on it (v3.0.54, backlog v3.0-162).
 
 On success, validate the deliverable (verdict tag; brief questions addressed; substrate
 signature present) — if malformed, delete the output file and re-dispatch once; twice

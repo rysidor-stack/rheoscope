@@ -166,29 +166,51 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     `open` episodes are Worth-knowing. DECISIONS-PENDING projects the escalated ones from
     this briefing — that is the obligation's escalation channel, no separate inbox write.
 
-    (c) **Acknowledge, CONFIRM, then close — attended sweeps only (order re-sequenced
-    v3.0.53, backlog v3.0-159: an ack refusal discovered after the ok row was written
-    left an ok-but-unacknowledged cycle on the first production close):** after the
-    briefing has been written, `python deploy/pending.py --root . --ack --run-id <id>
-    --briefing SWEEP-BRIEFING.md` (or whatever file the briefing landed in). **Read the
-    ack's outcome before touching the heartbeat:** success prints "acknowledged N
-    item(s)" and exits 0 — only then write `--heartbeat ok --run-id <id>`. A REFUSED ack
-    (an item not rendered) means the briefing's machine appendix is missing or stale:
-    regenerate it (`--appendix`), fix the briefing, re-ack, and only close `ok` once the
-    ack has succeeded. If the ack cannot succeed this run, close `--heartbeat failed` —
-    never `ok` over an unacknowledged pending list. This ordering is also enforced
-    mechanically: an attended `--heartbeat ok` REFUSES while items are pending
-    un-acknowledged (v3.0.53), so skipping this paragraph produces a named refusal, not a
-    bad ledger. The ack rows record that these items
-    were SHOWN to the operator in this briefing — reading the sweep IS the
-    acknowledgement ("acknowledge in the sweep, nothing else"); nothing is asked. An
-    UNATTENDED sweep (the scheduled wrapper sets `RHEOSCOPE_UNATTENDED=1`) runs (a) and (b)
-    and the closing heartbeat but `--ack` REFUSES — the items persist until a sweep you
-    actually read, which is what makes "unread item persists" true rather than claimed.
-    These receipt-class artifacts (`receipts/pending/*.jsonl`, append-only, plus the
-    step-(b) `receipts/pending/render-<date>.txt` table; commit them with the briefing)
-    are the ONE documented exception to this skill's read-only rule: the sweep records
-    that it ran and what it showed, nothing about the project's content.
+    (c) **Commit the briefing, acknowledge, CONFIRM, close, commit the ledgers — attended
+    sweeps only. Four moves in this exact order (re-sequenced v3.0.53, backlog v3.0-159:
+    an ack refusal discovered after the ok row was written left an ok-but-unacknowledged
+    cycle; re-sequenced again v3.0.54, backlog v3.0-163, fleet inbox #14: the first
+    production instance's first close acknowledged a briefing that was then edited and
+    committed three minutes later — 82 acknowledgement rows naming bytes no commit ever
+    held, every one void, the pending count unable to reach zero, every later honest
+    close forced to `failed`):**
+
+    1. **Commit the briefing first, and nothing else with it.** Once the briefing is final —
+       machine appendix in place, the render table in its receipt file — commit exactly
+       those two files (`git add SWEEP-BRIEFING.md receipts/pending/render-<date>.txt`, one
+       commit). A trust-surface change riding in the same commit becomes a NEW pending item
+       the briefing does not show, and move 2 refuses it (seen live on the first production
+       instance's ledger copy during the v3.0.54 build). Nothing else in this step happens
+       before that commit exists.
+    2. **Acknowledge:** `python deploy/pending.py --root . --ack --run-id <id>
+       --briefing SWEEP-BRIEFING.md` (or whatever file the briefing landed in). The ack
+       REFUSES when the briefing's working-tree bytes are not what HEAD holds ("commit
+       the briefing first, then ack") — an acknowledgement is anchored to committed bytes
+       or it is not written at all. **Read the ack's outcome before touching the
+       heartbeat:** success prints "acknowledged N item(s)" and exits 0. A REFUSED ack for
+       an item not rendered means the machine appendix is missing or stale: regenerate it
+       (`--appendix`), fix the briefing, COMMIT it again (move 1), re-ack.
+    3. **Close `ok` only after the ack succeeded:** `--heartbeat ok --run-id <id>`. If the
+       ack cannot succeed this run, close `--heartbeat failed` — never `ok` over an
+       unacknowledged pending list. Enforced mechanically: an attended `--heartbeat ok`
+       REFUSES while items are pending un-acknowledged (v3.0.53).
+    4. **Commit the ledgers** (`receipts/pending/*.jsonl`) as the sweep's second commit.
+       Never edit the briefing between moves 1 and 4; if it must change, that is a new
+       move 1 and a re-ack.
+
+    The ack rows record that these items were SHOWN to the operator in this briefing —
+    reading the sweep IS the acknowledgement ("acknowledge in the sweep, nothing else");
+    nothing is asked. A briefing acknowledged by an OLDER sweep and later voided (the
+    pre-v3.0.54 shape) clears itself on the next attended close: the ledger keeps the
+    latest VALID acknowledgement per item, so the re-ack takes effect and the old rows
+    become history — nothing is ever deleted from the ledger. An UNATTENDED sweep (the
+    scheduled wrapper sets `RHEOSCOPE_UNATTENDED=1`) runs (a) and (b) and the closing
+    heartbeat but `--ack` REFUSES — the items persist until a sweep you actually read,
+    which is what makes "unread item persists" true rather than claimed. These
+    receipt-class artifacts (`receipts/pending/*.jsonl`, append-only, plus the step-(b)
+    `receipts/pending/render-<date>.txt` table) are the ONE documented exception to this
+    skill's read-only rule: the sweep records that it ran and what it showed, nothing
+    about the project's content.
 
     **NEEDS-YOU items, phrased per the reporting contract:** an UNPUBLISHED retirement
     proposal on the branch ("a content retirement was journaled without your promote
@@ -203,10 +225,16 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     `project.yaml`"); a non-presence key in `allowed_signers`; a **missed observation
     window or failed cycle** ("no sweep you read has closed in N days (window W) — changes
     may be sitting unread; this one clears it"); and any ledger FINDING from
-    `pending.py` (an acknowledgement naming no item in history, or dated before its item:
-    "an acknowledgement exists that no sweep wrote — delete the row; the item reopens,
-    which is the safe direction"). Every other pending row is a Worth-knowing item: the
-    operator reads it, and that is the whole ceremony.
+    `pending.py` (an acknowledgement naming no item in history, dated before its item, or
+    naming briefing bytes no commit holds: "an acknowledgement exists that no committed
+    briefing backs — this sweep's close re-acknowledges the item from a committed
+    briefing and the finding clears; the row itself stays, the ledger is append-only and
+    deleting from it is the tampering the doctor flags" — v3.0.54, never "delete the
+    row"). **Put the finding's item id in the item's details tail** (`(details:
+    trust:<sha>)` — the tail, never the sentence): a row naming a change that is not in
+    history retires only when a later attended close's committed briefing SHOWS it, and
+    the ledger checks for exactly that id. Every other pending row is a Worth-knowing
+    item: the operator reads it, and that is the whole ceremony.
 
     Fallbacks: no `deploy/pending.py` but `deploy/trust.py` present → the v3.0.49 table
     (`trust.py --report`, quote deltas since the last heartbeat row or all) and a

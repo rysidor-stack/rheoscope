@@ -89,7 +89,26 @@ EXEMPT_RE='(^|/)core/security/hooks/test-inputs/'
 # the tracked-file lane is what this closes.
 OWN_PATH_RE='(^|/)core/security/hooks/scan-staged-secrets\.sh$'
 
+# v3.0.54 (backlog v3.0-164, fleet inbox #13): the scan is ONE pass, not one subprocess
+# tree per staged file. The original loop spawned `git diff` plus ~15 greps PER FILE, and
+# on an msys host (fork is expensive there) the fleet's newest instance met its birth
+# commit with an eight-minute silence it read as a hang. Now: one name-only listing plus
+# one `git diff --cached` over the whole index, one awk to split it into <path><TAB><added
+# line> rows (git QUOTES a path with a tab, control or non-ASCII byte in the header --
+# `+++ "b/..."` -- and the awk reads that form too, so such a file is scanned; the old
+# per-path loop could not even address it and silently skipped it), two greps
+# per pattern over every added line at once (the match, then the placeholder filter --
+# twenty-four greps total, whatever the file count), and a progress line on stderr once the staged set is large enough to take noticeable
+# time. Detection is the same battery: same patterns, same placeholder rule judged per
+# matched region, same path classes, same exempt dir, same known-own-lines rule for the
+# scanner's own file. Binary members carry no added text lines, so they cost nothing.
+PROGRESS_FROM=20   # staged-file count at which the progress line prints
+_SCAN_TMP=()
+
+_cleanup() { rm -f -- ${_SCAN_TMP[@]+"${_SCAN_TMP[@]}"}; }
+
 _fail() {
+  _cleanup
   echo "COMMIT BLOCKED by scan-staged-secrets.sh: $1" >&2
   echo "  Secrets never enter git history: once pushed, a leaked value is public even if deleted later (core/security/CREDENTIALS.md -- values live in the OS vault, never the repo)." >&2
   echo "  If this is a FALSE POSITIVE: the operator (never an agent -- mechanically barred) may bypass ONCE with 'git commit --no-verify', and should report the pattern so it learns." >&2
@@ -99,7 +118,7 @@ _fail() {
 scan_repo() {
   # $1 = repo dir. Returns 0 clean, 1 blocked (message on stderr).
   local repo="$1"
-  local paths added line label pat region
+  local paths n_paths t0 hit diff rows_f lines_f paths_f own p label pat ln
 
   # v3.0-110: ACMR, not ACR -- the original perimeter enumerated Added/Copied/
   # Renamed only, so a secret pasted into an already-tracked file was NEVER
@@ -109,56 +128,83 @@ scan_repo() {
   # tracked file RENAMED onto a credential name arrives as R, but content
   # landing in an existing .env-class path must block too.
   paths=$(git -C "$repo" diff --cached --name-only --diff-filter=ACMR 2>/dev/null) || return 0
+  [ -z "$paths" ] && return 0
+  n_paths=$(printf '%s\n' "$paths" | grep -c .)
+  t0=$(date +%s)
+  if [ "$n_paths" -ge "$PROGRESS_FROM" ]; then
+    echo "scan-staged-secrets: scanning $n_paths staged file(s) in one pass (a large commit takes seconds; this is not a hang -- v3.0-164)" >&2
+  fi
 
-  # ---- class 4: credential files by path --------------------------------------
-  while IFS= read -r p; do
-    [ -z "$p" ] && continue
-    echo "$p" | grep -Eq "$EXEMPT_RE" && continue
-    echo "$p" | grep -Eq "$PATH_ALLOW_RE" && continue
-    if echo "$p" | grep -Eq "$PATH_BLOCK_RE" || echo "$p" | grep -Eq "$PATH_KEY_RE"; then
-      _fail "staged file '$p' is a credential-file class (.env*/key material/credentials.json). Unstage it (git restore --staged '$p'); .env.example/.env.sample are exempt."
-    fi
-  done <<EOF
-$paths
-EOF
+  # ---- class 4: credential files by path -- ONE grep over the path list -------
+  # (git quotes a name with a non-ASCII or control byte -- `"caf\303\251/.env"` -- and the
+  # trailing quote defeated the $-anchored class patterns in the old loop too; strip the
+  # quotes first, cross-vendor round-3 fold)
+  hit=$(printf '%s\n' "$paths" | sed -e 's/^"//' -e 's/"$//' | grep -Ev -e "$EXEMPT_RE" | grep -Ev -e "$PATH_ALLOW_RE" \
+        | grep -E -e "$PATH_BLOCK_RE" -e "$PATH_KEY_RE" | head -n 1 || true)
+  if [ -n "$hit" ]; then
+    _fail "staged file '$hit' is a credential-file class (.env*/key material/credentials.json). Unstage it (git restore --staged '$hit'); .env.example/.env.sample are exempt."
+  fi
 
-  # ---- classes 1-3: added lines, per staged file (exempt dir skipped) ---------
-  while IFS= read -r p; do
-    [ -z "$p" ] && continue
-    echo "$p" | grep -Eq "$EXEMPT_RE" && continue
-    added=$(git -C "$repo" diff --cached -U0 -- "$p" 2>/dev/null | grep -E '^\+' | grep -Ev '^\+\+\+' | cut -c2-)
-    [ -z "$added" ] && continue
-    if echo "$p" | grep -Eq "$OWN_PATH_RE"; then
-      # KNOWN-OWN-LINES (v3.0-109): keep only added lines NOT present verbatim
-      # in the running script; those residual lines are scanned normally.
-      added=$(echo "$added" | grep -Fxv -f "$0" || true)
-      [ -z "$added" ] && continue
-    fi
-    for entry in "${CONTENT_PATTERNS[@]}"; do
-      label="${entry%%|*}"
-      pat="${entry#*|}"
-      # -e guards patterns that BEGIN with '-' (the PEM block rule) from being
-      # parsed as grep options -- caught by this battery's own first run.
-      # EVERY match is judged, not just the first: a placeholder-shaped match
-      # must never shadow a later REAL value of the same class in the same file
-      # (cross-vendor review catch, 2026-08-11 -- the first draft checked only
-      # the first match and a doc's redacted example would have masked a live
-      # key below it).
-      regions=$(echo "$added" | grep -Eo -e "$pat" || true)
-      [ -z "$regions" ] && continue
-      while IFS= read -r region; do
-        [ -z "$region" ] && continue
-        if echo "$region" | grep -Eq -e "$PLACEHOLDER_RE"; then
-          continue  # named placeholder shape -- a redacted example, not a value
-        fi
-        _fail "staged change in '$p' matches secret pattern '$label'. Remove the value (repo-committed config points at the vault by NAME, never by value), re-stage, and commit again."
-      done <<INNEREOF
-$regions
-INNEREOF
-    done
-  done <<EOF
-$paths
+  # ---- classes 1-3: added lines, ONE diff over the whole index -----------------
+  # --no-renames: a renamed file arrives as delete + add, so its full content is
+  # scanned exactly as the per-path loop saw it (a rename-paired diff would show
+  # only the delta and let moved content ride through unscanned).
+  diff=$(git -C "$repo" diff --cached -U0 --no-color --no-ext-diff --no-renames \
+         --diff-filter=ACMR 2>/dev/null) || diff=""
+  [ -z "$diff" ] && return 0
+  # scratch files: a failed mktemp FAILS CLOSED (cross-vendor round-1 fold: an
+  # unwritable TMPDIR left the line file empty and the scan returned clean)
+  rows_f=$(mktemp) && lines_f=$(mktemp) && paths_f=$(mktemp) \
+    || _fail "cannot create scratch files (mktemp failed -- TMPDIR unwritable?); the scan did not run, so the commit is refused rather than passed unscanned. Fix the environment and retry; the operator may bypass ONCE with --no-verify."
+  _SCAN_TMP=("$rows_f" "$lines_f" "$paths_f" "$rows_f.own" "$rows_f.rest")
+  # <path><TAB><added line> rows; the exempt dir dropped here, per path
+  # A `+++` line is a file header ONLY before the file's first `@@` hunk (git prints every
+  # header before the first hunk); inside a hunk it is an added line that begins `++`
+  # (cross-vendor round-5 catch: an added content line `++ /dev/null` used to be mistaken
+  # for a header, blanking the path so the secret on the next line went unscanned).
+  printf '%s\n' "$diff" | awk -v exempt="$EXEMPT_RE" '
+    /^diff --git /        { path = ""; inhunk = 0; next }
+    /^@@ /                { inhunk = 1; next }
+    /^\+\+\+ / && !inhunk { p = $0; sub(/^\+\+\+ "?b\//, "", p); sub(/"$/, "", p); path = (p == "/dev/null") ? "" : p; next }
+    /^\+/                 { if (!inhunk || path == "" || path ~ exempt) next; print path "\t" substr($0, 2) }
+  ' > "$rows_f"
+  # KNOWN-OWN-LINES (v3.0-109) for the scanner at its canonical path: keep only
+  # added lines NOT present verbatim in the running script; the residual lines
+  # are scanned normally with everything else.
+  own=$(cut -f1 "$rows_f" | sort -u | grep -E -e "$OWN_PATH_RE" || true)
+  if [ -n "$own" ]; then
+    while IFS= read -r p; do
+      [ -z "$p" ] && continue
+      awk -F'\t' -v P="$p" '$1 == P' "$rows_f" | cut -f2- | grep -Fxv -f "$0" \
+        | awk -v P="$p" '{ print P "\t" $0 }' > "$rows_f.own" || true
+      awk -F'\t' -v P="$p" '$1 != P' "$rows_f" > "$rows_f.rest"
+      cat "$rows_f.rest" "$rows_f.own" > "$rows_f"
+    done <<EOF
+$own
 EOF
+  fi
+  cut -f1 "$rows_f" > "$paths_f"
+  cut -f2- "$rows_f" > "$lines_f"
+  if [ ! -s "$lines_f" ]; then _cleanup; return 0; fi
+  for entry in "${CONTENT_PATTERNS[@]}"; do
+    label="${entry%%|*}"
+    pat="${entry#*|}"
+    # -e guards patterns that BEGIN with '-' (the PEM block rule) from being
+    # parsed as grep options -- caught by this battery's own first run.
+    # EVERY match is judged, not just the first: `-o` emits one line per match
+    # (`<line-no>:<region>`), and a placeholder-shaped region is dropped by the
+    # second grep -- so a doc's redacted example can never shadow a later REAL
+    # value of the same class (cross-vendor review catch, 2026-08-11).
+    hit=$(grep -Eon -e "$pat" "$lines_f" | grep -Ev -e "^[0-9]+:.*($PLACEHOLDER_RE)" | head -n 1 || true)
+    [ -z "$hit" ] && continue
+    ln="${hit%%:*}"
+    p=$(sed -n "${ln}p" "$paths_f")
+    _fail "staged change in '$p' matches secret pattern '$label'. Remove the value (repo-committed config points at the vault by NAME, never by value), re-stage, and commit again."
+  done
+  _cleanup
+  if [ "$n_paths" -ge "$PROGRESS_FROM" ]; then
+    echo "scan-staged-secrets: clean -- $n_paths file(s) in $(( $(date +%s) - t0 ))s" >&2
+  fi
   return 0
 }
 
@@ -249,6 +295,9 @@ self_test() {
   printf 'more ordinary prose\n' >> "$repo/doc.md"
   git -C "$repo" add doc.md;                                                              expect "an ordinary modification to a tracked file passes" 0
 
+  # (Counting note, v3.0.54: these END-TO-END blocks used to bump `total` themselves
+  # and then call case_, which bumps it again -- the summary over-counted by six
+  # from v3.0.41 to v3.0.53; caught by the v3.0.54 cross-vendor review.)
   # v3.0-109 round-2 operational evidence (cross-vendor demand, 2026-08-17):
   # END-TO-END through a real `git commit` with THIS scanner installed as the
   # repo's .git/hooks/pre-commit -- not a direct scan_repo call. Covers the
@@ -262,7 +311,6 @@ self_test() {
   cp "$0" "$e2e_repo/core/security/hooks/scan-staged-secrets.sh"
   cp "$0" "$e2e_repo/.git/hooks/pre-commit"; chmod +x "$e2e_repo/.git/hooks/pre-commit"
   git -C "$e2e_repo" add core/security/hooks/scan-staged-secrets.sh
-  total=$((total+1))
   if git -C "$e2e_repo" commit -q -m adoption >/dev/null 2>&1; then
     case_ "E2E: real hook-mediated ADOPTION commit of own file succeeds" ok
   else
@@ -270,7 +318,6 @@ self_test() {
   fi
   printf 'k=sk-ant-%s\n' "$(printf 'q%.0s' $(seq 1 24))" >> "$e2e_repo/core/security/hooks/scan-staged-secrets.sh"
   git -C "$e2e_repo" add core/security/hooks/scan-staged-secrets.sh
-  total=$((total+1))
   if git -C "$e2e_repo" commit -q -m tamper >/dev/null 2>&1; then
     case_ "E2E: real hook-mediated APPEND-TAMPER commit is refused" XX "commit succeeded"
   else
@@ -282,7 +329,6 @@ self_test() {
   # removal commit REALLY lands, assert the re-add is REALLY an A-shape.)
   git -C "$e2e_repo" checkout -q HEAD -- core/security/hooks/scan-staged-secrets.sh
   git -C "$e2e_repo" rm -q core/security/hooks/scan-staged-secrets.sh
-  total=$((total+1))
   if git -C "$e2e_repo" commit -q -m "remove scanner" >/dev/null 2>&1 \
      && [ "$(git -C "$e2e_repo" rev-list --count HEAD)" = "2" ] \
      && [ -z "$(git -C "$e2e_repo" ls-files core/security/hooks/scan-staged-secrets.sh)" ]; then
@@ -293,7 +339,6 @@ self_test() {
   mkdir -p "$e2e_repo/core/security/hooks"
   { cat "$0"; printf 'k=sk-ant-%s\n' "$(printf 'r%.0s' $(seq 1 24))"; } > "$e2e_repo/core/security/hooks/scan-staged-secrets.sh"
   git -C "$e2e_repo" add core/security/hooks/scan-staged-secrets.sh
-  total=$((total+1))
   readd_shape=$(git -C "$e2e_repo" diff --cached --name-status --diff-filter=A | grep -c "scan-staged-secrets.sh")
   [ "$readd_shape" = "1" ] && readd_shape="A"
   if [ "$readd_shape" = "A" ] && ! git -C "$e2e_repo" commit -q -m readd >/dev/null 2>&1; then
@@ -316,7 +361,6 @@ self_test() {
   mkdir -p "$e2e_repo/core/security/hooks"
   cp "$e2e_repo/.git/hooks/pre-commit" "$e2e_repo/core/security/hooks/scan-staged-secrets.sh"
   git -C "$e2e_repo" add core/security/hooks/scan-staged-secrets.sh
-  total=$((total+1))
   if git -C "$e2e_repo" commit -q -m update >/dev/null 2>&1; then
     case_ "E2E: UPDATE with reinstall-first passes (recipe ordering is load-bearing and pinned)" ok
   else
@@ -332,13 +376,76 @@ self_test() {
   git -C "$e2e_repo" commit -q -m notes >/dev/null 2>&1
   printf 'tok: ghp_%s\n' "$(printf 's%.0s' $(seq 1 36))" >> "$e2e_repo/notes.md"
   git -C "$e2e_repo" add notes.md
-  total=$((total+1))
   if git -C "$e2e_repo" commit -q -m paste >/dev/null 2>&1; then
     case_ "E2E: secret pasted into an ordinary tracked file refused at a REAL commit (v3.0-110)" XX "commit succeeded"
   else
     case_ "E2E: secret pasted into an ordinary tracked file refused at a REAL commit (v3.0-110)" ok
   fi
   rm -rf "$e2e_repo" 2>/dev/null || true
+
+  # v3.0-164 (fleet inbox #13): a large staged set completes in ONE pass with a
+  # progress line -- the birth-commit shape, both directions (a clean set passes
+  # and says so; a secret buried in the large set still blocks, naming its file).
+  mkrepo; for i in $(seq 1 60); do stage "many/f$i.txt" "ordinary line $i"; done
+  out=$( (scan_repo "$repo") 2>&1 ); rc=$?
+  if [ "$rc" -eq 0 ] && echo "$out" | grep -q "scanning 60 staged file(s)"; then
+    case_ "v3.0-164: 60 clean staged files pass in one pass WITH the progress line" ok
+  else
+    case_ "v3.0-164: 60 clean staged files pass in one pass WITH the progress line" XX "rc=$rc :: $out"
+  fi
+  rm -rf "$repo"
+  mkrepo; for i in $(seq 1 60); do stage "many/f$i.txt" "ordinary line $i"; done
+  stage "many/f37.txt" "tok: ghp_$(printf 'a%.0s' $(seq 1 36))"
+  out=$( (scan_repo "$repo") 2>&1 ); rc=$?
+  if [ "$rc" -eq 1 ] && echo "$out" | grep -q "many/f37.txt"; then
+    case_ "v3.0-164: one secret among 60 staged files still blocks, naming its file" ok
+  else
+    case_ "v3.0-164: one secret among 60 staged files still blocks, naming its file" XX "rc=$rc :: $out"
+  fi
+  rm -rf "$repo"
+
+  # v3.0-164 cross-vendor round-2 fold: paths git QUOTES in the diff header (a tab, a
+  # non-ASCII byte under the default core.quotePath) are scanned and attributed; the old
+  # per-path loop could not address them by their quoted name and skipped them silently.
+  # (A tab- or control-character-named fixture cannot exist on NTFS -- git add refuses
+  # the pathspec -- so the quoted-header path is exercised through a non-ASCII name,
+  # which git quotes by the same mechanism under the default core.quotePath.)
+  mkrepo; stage "caf$(printf '\303\251').txt" "k=sk-ant-$(printf 'd%.0s' $(seq 1 24))"
+  out=$( (scan_repo "$repo") 2>&1 ); rc=$?
+  if [ "$rc" -eq 1 ] && echo "$out" | grep -q "caf"; then
+    case_ "v3.0-164: a secret in a git-QUOTED (non-ASCII) file name blocks and is attributed to that file" ok
+  else
+    case_ "v3.0-164: a secret in a git-QUOTED (non-ASCII) file name blocks and is attributed to that file" XX "rc=$rc :: $out"
+  fi
+  rm -rf "$repo"
+  mkrepo; stage "caf$(printf '\303\251')-clean.txt" "nothing secret here";                expect "a clean git-QUOTED file name passes (no false refusal from the quoted header)" 0
+  mkrepo; stage "caf$(printf '\303\251')/.env" "SECRET=1";                                expect "a credential-class path under a git-QUOTED directory blocks (the quote no longer defeats the class anchor)" 1
+  mkrepo; stage "caf$(printf '\303\251')/deploy.pem" "not even a key";                     expect "a *.pem under a git-QUOTED directory blocks" 1
+
+  # v3.0-164 cross-vendor round-5 catch: a header-SHAPED added content line must not
+  # blank the path for the secret that follows it
+  mkrepo; stage "notes.md" "++ /dev/null
+k=sk-ant-$(printf 'e%.0s' $(seq 1 24))";                                                  expect "an added line shaped like a diff header (+++ /dev/null) followed by a secret still blocks" 1
+  mkrepo; stage "notes.md" "++ b/other.txt
+k=sk-ant-$(printf 'f%.0s' $(seq 1 24))";                                                  expect "an added line shaped like a +++ b/ header followed by a secret still blocks (attributed to the real file)" 1
+
+  # v3.0-164 cross-vendor round-1 fold: scratch-file creation failure FAILS CLOSED
+  mkrepo; stage "a.txt" "k=sk-ant-$(printf 'b%.0s' $(seq 1 24))"
+  out=$( (TMPDIR=/nonexistent/no-such-dir scan_repo "$repo") 2>&1 ); rc=$?
+  if [ "$rc" -eq 1 ] && echo "$out" | grep -q "mktemp failed"; then
+    case_ "v3.0-164: an unwritable TMPDIR refuses the commit (fail closed), naming the cause" ok
+  else
+    case_ "v3.0-164: an unwritable TMPDIR refuses the commit (fail closed), naming the cause" XX "rc=$rc :: $out"
+  fi
+  rm -rf "$repo"
+  mkrepo; stage "a.txt" "ordinary"
+  out=$( (TMPDIR=/nonexistent/no-such-dir scan_repo "$repo") 2>&1 ); rc=$?
+  if [ "$rc" -eq 1 ] && echo "$out" | grep -q "mktemp failed"; then
+    case_ "v3.0-164: ...and a clean stage is refused the same way (never passed unscanned)" ok
+  else
+    case_ "v3.0-164: ...and a clean stage is refused the same way (never passed unscanned)" XX "rc=$rc :: $out"
+  fi
+  rm -rf "$repo"
 
   # Cross-vendor review regressions (2026-08-11): a placeholder match must never
   # shadow a later REAL value of the same class in the same file

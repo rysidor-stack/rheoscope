@@ -5,7 +5,7 @@ version: "1.2"
 status: EXTRACTED
 source_artifacts:
   - path: deploy/decision-inbox.py
-    sha256: 3c3882247d408006d4cef05736026b464c7264fafac08ba0808a17564e9555fd
+    sha256: 547495cb150de2684dbe2bdf361d446e728d2f73b0c9828a02c21efbc1936cf5
 extracted: 2026-07-23
 amended: 2026-08-09 (A3)
 toolchain: source-read

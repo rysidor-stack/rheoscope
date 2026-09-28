@@ -85,6 +85,9 @@ Checks (harness-v3.0/specs/template-self-truth-and-onboarding-brief-2026-07-10.m
                       corpus: a declared-but-unreachable corpus FAILs (partial observation
                       is never silent); both binding forms declared at once FAILs as a
                       config error; no binding declared -> SKIP.
+  17. sweep-schedule-log   (v3.0.55, backlog v3.0-180) .claude/sweep-schedule.log, if present,
+                          is under 16 MB with no line over 1 MB -- the transcript-append shape
+                          that stalled the first production wrapper for a week
 
 Usage: doctor.py [--root PATH] | doctor.py --self-test (embedded fixtures; no live
 node/codex/jq required).
@@ -609,6 +612,51 @@ def _project_authority_mode(root):
     return m.group(1).lower() if m else None
 
 
+SWEEP_LOG_MAX_BYTES = 16 * 1024 * 1024
+SWEEP_LOG_MAX_LINE = 1024 * 1024
+
+
+def check_sweep_schedule_log(ctx):
+    """v3.0-180 (fleet, 2026-09-18): the scheduled sweep's log. The recipe used to
+    append the whole session transcript per run; the first production wrapper's
+    log reached 178 MB with one 27 MB line, its line-count trim spun for hours
+    every morning, and the sweep silently stopped for a week. Size and longest
+    line are the two symptoms; both are cheap to read."""
+    log = Path(ctx["root"]) / ".claude" / "sweep-schedule.log"
+    if not log.is_file():
+        return Result("SKIP", "sweep-schedule-log",
+                      "no .claude/sweep-schedule.log (no scheduled sweep has run here)")
+    size = log.stat().st_size
+    longest = run = 0
+    with open(log, "rb") as fh:
+        while True:
+            chunk = fh.read(1 << 20)
+            if not chunk:
+                break
+            parts = chunk.split(b"\n")
+            run += len(parts[0])
+            if len(parts) > 1:
+                longest = max([longest, run] + [len(p) for p in parts[1:-1]])
+                run = len(parts[-1])
+    longest = max(longest, run)
+    problems = []
+    if size > SWEEP_LOG_MAX_BYTES:
+        problems.append("%d MB" % (size // (1024 * 1024)))
+    if longest > SWEEP_LOG_MAX_LINE:
+        problems.append("a %d KB line" % (longest // 1024))
+    if problems:
+        return Result("WARN", "sweep-schedule-log",
+                      ".claude/sweep-schedule.log carries %s -- the wrapper is appending the "
+                      "whole transcript, and any line-count trim will spin on it (v3.0-180: "
+                      "the first production wrapper stopped for a week this way). FIX: trim "
+                      "by BYTES before each run (keep the last 1 MB once it passes 4 MB) and "
+                      "write the dated header before any pre-step -- "
+                      ".claude/skills/sweep/SKILL.md § Scheduling, Wrapper hygiene."
+                      % " and ".join(problems))
+    return Result("PASS", "sweep-schedule-log",
+                  "%d KB, longest line %d KB" % (size // 1024, longest // 1024))
+
+
 def check_trust_surfaces(ctx):
     """Check 16 (v3.0-120, brief section 6): the trust-surface class is what it was
     committed and signed to be. Five sub-checks, one Result each:
@@ -895,8 +943,11 @@ def check_trust_surfaces(ctx):
                                 "sweep that closed ok: %s; %s pending)" % (
                                     obs.get("window_days"), obs.get("last_attended_ok") or "never",
                                     len(pend)))
-            if obs.get("failed_cycles"):
-                problems.append("%d failed sweep cycle(s) since the last attended ok" % len(obs["failed_cycles"]))
+            # v3.0-171: count what the operator has not yet acknowledged; a pre-v3.0.55
+            # pending.py has no such field, so its every-failure list still surfaces
+            _unacked = obs.get("unacknowledged_failed_cycles", obs.get("failed_cycles"))
+            if _unacked:
+                problems.append("%d failed sweep cycle(s) not yet acknowledged" % len(_unacked))
             if obs.get("alarms_outstanding"):
                 problems.append("%d alarm(s) outstanding" % len(obs["alarms_outstanding"]))
             if problems:
@@ -1445,6 +1496,7 @@ def run_all(root, fast_selftests=False):
     add(_safe(check_sensor_reachability, "sensor-reachability", ctx))
     add(_safe(check_skill_adapters, "skill-adapters", ctx))
     add(_safe(check_corpus_reachability, "corpus-reachability", ctx))
+    add(_safe(check_sweep_schedule_log, "sweep-schedule-log", ctx))
     return results
 
 def _exit_code(results):
@@ -1604,6 +1656,26 @@ def self_test():
         r = note(check_hooks_wired(ctx))
         check("hooks-wired: the same wrapper WITH the marker -> PASS", r.status == "PASS")
         (claude_dir / "nightly-sweep.cmd").unlink()
+
+        # v3.0-180: the scheduled sweep's log
+        r = note(check_sweep_schedule_log(ctx))
+        check("sweep-schedule-log: absent -> SKIP", r.status == "SKIP")
+        (claude_dir / "sweep-schedule.log").write_bytes(b"===== sweep run\nshort line\n")
+        r = note(check_sweep_schedule_log(ctx))
+        check("sweep-schedule-log: a small log with short lines -> PASS", r.status == "PASS")
+        (claude_dir / "sweep-schedule.log").write_bytes(
+            b"===== sweep run\n" + b"x" * (SWEEP_LOG_MAX_LINE + 10) + b"\n")
+        r = note(check_sweep_schedule_log(ctx))
+        check("sweep-schedule-log: one line over 1 MB -> WARN naming the cause with a FIX",
+              r.status == "WARN" and "line" in r.detail and "FIX:" in r.detail)
+        with open(claude_dir / "sweep-schedule.log", "wb") as fh:   # verifier fold: the size branch
+            for _ in range(17):
+                fh.write(b"x" * 1023 + b"\n")
+                fh.write((b"y" * 1023 + b"\n") * 1023)
+        r = note(check_sweep_schedule_log(ctx))
+        check("sweep-schedule-log: a log over 16 MB of SHORT lines -> WARN on size",
+              r.status == "WARN" and "MB" in r.detail and "FIX:" in r.detail)
+        (claude_dir / "sweep-schedule.log").unlink()
 
         (claude_dir / "settings.local.json").write_text(
             json.dumps({"hooks": {"PreToolUse": [

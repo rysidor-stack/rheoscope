@@ -155,11 +155,18 @@ def _git(repo, *args):
 
 
 def _blob_of_text(repo, text):
-    """Write text into the object db (so blob-vs-blob diffs work pre-commit)."""
+    """Write text into the object db (so blob-vs-blob diffs work pre-commit).
+
+    BYTES on the pipe (v3.0-169, fleet inbox #16): with text=True, Python's
+    universal-newline translation turned every CRLF into CR CR LF on Windows
+    before git ever saw it, so a CRLF view hashed to a blob holding twice its
+    line count and the section attribution built on that blob named phantom
+    manifest defects ("manifest claims unchanged section(s)") -- forty
+    minutes of misdiagnosis per occurrence. The blob must hold exactly the
+    text's own bytes; newline policy is the write path's business."""
     p = subprocess.run(["git", "-C", repo, "hash-object", "-w", "--stdin"],
-                       input=text, capture_output=True, text=True,
-                       encoding="utf-8")
-    return p.stdout.strip()
+                       input=text.encode("utf-8"), capture_output=True)
+    return p.stdout.decode("ascii", "replace").strip()
 
 
 def changed_sections(repo, pre_blob, post_blob):
@@ -5412,6 +5419,34 @@ def self_test():
         print("\n----- RENDERED UNION VERIFY PACKET (fixture a) -----")
         print(_RENDERED["union_packet"])
         print("----- END RENDERED UNION VERIFY PACKET -----\n")
+
+    # ---- v3.0-169 (fleet inbox #16): _blob_of_text pipes BYTES. A CRLF text must
+    # hash to a blob holding exactly its own bytes; text=True doubled the CR and
+    # the attribution built on that blob named phantom manifest defects.
+    _crlf_base = tempfile.mkdtemp(prefix="cv2-crlf-")
+    try:
+        for args in (["init", "-q"], ["config", "user.email", "t@t"],
+                     ["config", "user.name", "t"]):
+            subprocess.run(["git", "-C", _crlf_base] + args, capture_output=True)
+        _crlf_text = "## Heading\r\nA line\r\nAnother line\r\n"
+        _crlf_blob = _blob_of_text(_crlf_base, _crlf_text)
+        _crlf_back = subprocess.run(["git", "-C", _crlf_base, "cat-file", "blob",
+                                     _crlf_blob], capture_output=True).stdout
+        case("v3.0-169: _blob_of_text round-trips a CRLF text byte-exact (3 lines "
+             "in, 3 lines out, no CR doubling)",
+             _crlf_back == _crlf_text.encode("utf-8") and b"\r\r\n" not in _crlf_back
+             and len(_crlf_back.decode("utf-8").splitlines()) == 3)
+        _lf_text = "## Heading\nA line\nAnother line\n"
+        _lf_blob = _blob_of_text(_crlf_base, _lf_text)
+        _lf_back = subprocess.run(["git", "-C", _crlf_base, "cat-file", "blob",
+                                   _lf_blob], capture_output=True).stdout
+        case("v3.0-169: an LF text hashes to exactly its own bytes (on Windows the "
+             "text-mode pipe used to CRLF-translate even LF, so journaled blobs from "
+             "before this release differ from the committed blob -- harmless, every "
+             "reader normalizes -- verifier note 2026-09-26)",
+             _lf_back == _lf_text.encode("utf-8"))
+    finally:
+        shutil.rmtree(_crlf_base, ignore_errors=True)
 
     if failed:
         print("compile-v2 orchestration: FAIL (%d/%d)" % (total - failed, total))

@@ -1704,7 +1704,26 @@ REASON_TAINT_EXCLUDED_REQUIRED = "excluded by taint-quarantine but required/only
 REASON_ORIGIN_LESS_CREDENTIALED = "no parseable derivation block -- refused in a credentialed-profile packet"
 
 
-def assemble_packet(descriptor, root, budget_bytes=DEFAULT_BUDGET_BYTES, full_paths=None,
+def assemble_packet(*args, **kwargs):
+    """v3.0-34: every exit-1 refusal carries a top-level `reason` (the itemized
+    `refused[]` lines always did; a caller reading only the top field saw a
+    bare refusal for four of the six classes). Derived from the itemized
+    lines when the refusal did not set one itself -- one finding: its reason
+    verbatim; several: the count and the distinct reasons. Signature: see
+    _assemble_packet_inner (descriptor, root, budget_bytes=DEFAULT_BUDGET_BYTES, full_paths=None,
+                    allowlist_path=None)."""
+    code, result = _assemble_packet_inner(*args, **kwargs)
+    if code == 1 and isinstance(result, dict) and not result.get("reason"):
+        refused = [r for r in (result.get("refused") or []) if isinstance(r, dict)]
+        if len(refused) == 1:
+            result["reason"] = refused[0].get("reason") or "refused"
+        elif refused:
+            kinds = sorted({str(r.get("reason") or "refused") for r in refused})
+            result["reason"] = "refused (%d finding(s)): %s" % (len(refused), "; ".join(kinds)[:300])
+    return code, result
+
+
+def _assemble_packet_inner(descriptor, root, budget_bytes=DEFAULT_BUDGET_BYTES, full_paths=None,
                     allowlist_path=None):
     """The full P4 packet machinery. Returns (exit_code, result_dict).
 
@@ -2461,6 +2480,8 @@ def _self_test_packet_machinery():
         check("T1 build/fix budget overflow -> exit 1 naming the member", code == 1)
         check("overflow refusal names the overflowing view",
               any(r.get("path") == "wiki/big.md" for r in res.get("refused", [])))
+        check("v3.0-34: the budget refusal carries a top-level reason (not only the itemized line)",
+              "byte-budget overflow" in (res.get("reason") or ""))
 
         desc_r = build_descriptor(text="bigent topic", task_type="recon")
         code_r, res_r = assemble_packet(desc_r, tmp, budget_bytes=10)

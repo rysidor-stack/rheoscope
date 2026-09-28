@@ -81,7 +81,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(_HERE)
 
 H_RE = re.compile(r"^(#{2,3})\s+(.*?)\s*#*\s*$")
-FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+# v3.0-132: CommonMark -- a fence marker may be indented at most THREE spaces; four or
+# more is an indented code block line, not a fence. retire-manifest imports THIS regex
+# (parity by construction), so the two tools moved together in one release.
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _NUM_RE = re.compile(r"\d+")
 
 # content2-amendment A2 -- conjunction/range-aware citation grammar. The pre-amendment
@@ -714,6 +717,13 @@ def self_test():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
+    # v3.0-132: CommonMark fence indentation
+    _cm4 = "---\nt: x\n---\n## H\n    ```\n## after-indented-marker\n    ```\n"
+    case("v3.0-132: a 4-space-indented ``` is NOT a fence -- the heading after it is seen",
+         "after-indented-marker" in set(heading_slugs(_cm4)))
+    _cm3 = "---\nt: x\n---\n## H\n   ```\n## inside-real-fence\n   ```\n"
+    case("v3.0-132: a 3-space-indented ``` IS a fence -- the heading inside it is hidden",
+         "inside-real-fence" not in set(heading_slugs(_cm3)))
     if failed:
         print("check-split self-test: FAIL (%d/%d)" % (failed, total))
         return 1

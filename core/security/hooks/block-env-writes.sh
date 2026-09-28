@@ -130,6 +130,28 @@ if [ "${1:-}" = "--self-test" ]; then
   run_case DENY  '/home/u/proj/.claude/settings.local.json'            'posix-absolute'
   run_case DENY  'capabilities/knowledge-os/extracted/deploy/trust.py' 'dev-repo-source-path'
   run_case DENY  './core/security/hooks/block-env-writes.sh'           'dot-slash'
+  # -- v3.0-166 (v3.0.55): anchoring to the project root, both directions
+  CLAUDE_PROJECT_DIR='C:\proj' run_case DENY 'C:\proj\core\security\hooks\scan-staged-secrets.sh' '166-abs-inside-root-DENY'
+  CLAUDE_PROJECT_DIR='C:/proj'  run_case DENY 'C:/proj/core/security/hooks/allowed_signers'           '166-abs-inside-root-fwd-DENY'
+  CLAUDE_PROJECT_DIR='C:/proj'  run_case allow 'C:/other-repo/core/security/hooks/scan-staged-secrets.sh' '166-abs-OTHER-repo-allow'
+  CLAUDE_PROJECT_DIR='C:/proj'  run_case allow 'D:/dev/harness/core/security/hooks/block-env-writes.sh' '166-abs-other-drive-allow'
+  CLAUDE_PROJECT_DIR='C:/proj'  run_case DENY 'C:/other-repo/.env'                                      '166-abs-other-repo-dotenv-still-DENY'
+  CLAUDE_PROJECT_DIR='C:/proj'  run_case DENY 'core/security/hooks/trust-surfaces.txt'                '166-relative-still-DENY'
+  CLAUDE_PROJECT_DIR='C:/proj'  run_case allow 'C:/proj-two/core/security/hooks/x.sh'                  '166-prefix-collision-proj-two-is-outside'
+  CLAUDE_PROJECT_DIR=           run_case DENY 'C:/other-repo/core/security/hooks/scan-staged-secrets.sh' '166-no-env-legacy-fail-closed'
+  # -- firewall round 1 (2026-09-27): traversal is canonicalized before the compare
+  CLAUDE_PROJECT_DIR='C:/proj'  run_case DENY 'C:/other/../proj/core/security/hooks/x.sh'              '166-traversal-INTO-root-DENY'
+  CLAUDE_PROJECT_DIR='C:/proj'  run_case DENY 'C:/proj/x/../core/security/hooks/x.sh'                 '166-traversal-inside-root-DENY'
+  CLAUDE_PROJECT_DIR='C:/proj'  run_case allow 'C:/proj/../other/core/security/hooks/x.sh'              '166-traversal-OUT-of-root-allow'
+  CLAUDE_PROJECT_DIR='C:/proj'  run_case DENY 'C:/proj/./core/security/hooks/./trust-surfaces.txt'     '166-dot-segments-inside-DENY'
+  # -- firewall round 3 (2026-09-27): the LEXICAL fallback, forced, incl. drive-letter root climbs
+  #    (MSYS_NO_PATHCONV: Git for Windows would rewrite a POSIX-looking argument before jq sees it)
+  RHEOSCOPE_TEST_NO_REALPATH=1 CLAUDE_PROJECT_DIR='C:/proj' run_case DENY 'C:/other/../proj/core/security/hooks/x.sh'   '166-lexical-traversal-INTO-root-DENY'
+  RHEOSCOPE_TEST_NO_REALPATH=1 CLAUDE_PROJECT_DIR='C:/proj' run_case allow 'C:/proj/../other/core/security/hooks/x.sh'  '166-lexical-traversal-OUT-allow'
+  RHEOSCOPE_TEST_NO_REALPATH=1 CLAUDE_PROJECT_DIR='C:/proj' run_case DENY 'C:/../other/core/security/hooks/x.sh'        '166-lexical-drive-root-climb-fail-closed-DENY'
+  MSYS_NO_PATHCONV=1 RHEOSCOPE_TEST_NO_REALPATH=1 CLAUDE_PROJECT_DIR='/proj'   run_case DENY '/../other/core/security/hooks/x.sh'           '166-lexical-posix-root-climb-fail-closed-DENY'
+  MSYS_NO_PATHCONV=1 RHEOSCOPE_TEST_NO_REALPATH=1 CLAUDE_PROJECT_DIR='/proj'   run_case DENY '/other/../proj/core/security/hooks/x.sh'      '166-lexical-posix-traversal-INTO-root-DENY'
+  MSYS_NO_PATHCONV=1 RHEOSCOPE_TEST_NO_REALPATH=1 CLAUDE_PROJECT_DIR='/proj'   run_case allow '/proj/../other/core/security/hooks/x.sh'     '166-lexical-posix-traversal-OUT-allow'
   run_case allow 'wiki/deploy/trust.py.md'                             'lookalike-not-class'
   # -- the .env rules stay
   run_case DENY  '.env'                                                'env'
@@ -173,8 +195,65 @@ BASENAME=$(basename "$FILE_PATH")
 
 # ---- trust-surface class write-guard (v3.0-98(a) generalized by v3.0-120)
 NORM_PATH=$(printf '%s' "$FILE_PATH" | tr '\\' '/' | sed -E 's#^\./##')
+# v3.0-166 (v3.0.55): an ABSOLUTE path that lies OUTSIDE this project is another
+# repository's file, not this perimeter. When the host names the project root
+# (CLAUDE_PROJECT_DIR, set on every hook call), the class is matched against the
+# path RELATIVE to that root, and an absolute path under a DIFFERENT root passes
+# this guard (the .env rules below still apply by basename). Without the env var
+# the legacy whole-path match stands -- fail-closed, never wider. The Bash lane
+# anchored its trust DENY to write TARGETS in v3.0.51 (v3.0-144); this is the
+# Edit/Write lane's counterpart.
+OUTSIDE_PROJECT=0
+PROJECT_ROOT_NORM=$(printf '%s' "${CLAUDE_PROJECT_DIR:-}" | tr '\\' '/' | sed -E 's#/+#/#g; s#/+$##')
+# CANONICALIZE both sides before the compare (cross-vendor firewall round 1,
+# 2026-09-27, REJECTED: a lexical prefix test read `/other/../proj/core/security/
+# hooks/x.sh` as outside the project). Resolution order, stated exactly (round 2):
+# `realpath -m` when it succeeds (follows symlinks, resolves the parent of a
+# not-yet-existing file); otherwise a LEXICAL collapse of `.` and `..` segments,
+# which classifies the path without symlink knowledge; only a `..` that climbs past
+# the root is FAIL-CLOSED to the legacy whole-path match. Documented residual: on a
+# host without `realpath`, a symlink alias into the perimeter is judged by its
+# spelled path.
+_canon() {
+  local p="$1" c
+  # RHEOSCOPE_TEST_NO_REALPATH=1 exercises the lexical fallback on a host that has
+  # realpath (board only; the lexical path is the stricter one, never a loosening)
+  if [ -z "${RHEOSCOPE_TEST_NO_REALPATH:-}" ] && c=$(realpath -m -- "$p" 2>/dev/null) && [ -n "$c" ]; then printf '%s' "$c"; return 0; fi
+  # firewall round 3 (2026-09-27): a drive letter (`C:`) is a ROOT exactly like the
+  # empty first segment of `/...`; `..` above either is unresolved -> fail closed
+  printf '%s' "$p" | awk -F'/' '{
+    n = 0
+    for (i = 1; i <= NF; i++) {
+      s = $i
+      if (s == "." || (s == "" && i > 1)) continue
+      if (s == "..") {
+        if (n >= 1 && (a[n] == "" || a[n] ~ /^[A-Za-z]:$/)) { print "__UNRESOLVED__"; exit }
+        if (n >= 1) n--; else { print "__UNRESOLVED__"; exit }
+        continue
+      }
+      a[++n] = s
+    }
+    out = ""; for (i = 1; i <= n; i++) out = out (i > 1 ? "/" : "") a[i]; print out }'
+}
+case "$NORM_PATH" in
+  /*|[A-Za-z]:/*)
+    if [ -n "$PROJECT_ROOT_NORM" ]; then
+      cp=$(_canon "$NORM_PATH"); cr=$(_canon "$PROJECT_ROOT_NORM")
+      case "$cp$cr" in
+        *__UNRESOLVED__*) : ;;                       # fail closed: legacy match below
+        *)
+          lp=$(printf '%s' "$cp" | tr 'A-Z' 'a-z')
+          lr=$(printf '%s' "$cr" | tr 'A-Z' 'a-z')
+          case "$lp" in
+            "$lr"/*) NORM_PATH=${cp:$(( ${#cr} + 1 ))} ;;
+            *) OUTSIDE_PROJECT=1 ;;
+          esac ;;
+      esac
+    fi
+    ;;
+esac
 load_class
-if glob=$(trust_match "$NORM_PATH"); then
+if [ "$OUTSIDE_PROJECT" -eq 0 ] && glob=$(trust_match "$NORM_PATH"); then
   echo "Blocked: '$FILE_PATH' is a TRUST SURFACE (class entry '$glob', core/security/hooks/trust-surfaces.txt). These files decide what a session may do and are operator-edited only: a session proposes the change in chat; the operator applies it outside the session and commits it with \`git commit -S\` under the pinned presence-requiring key (core/security/hooks/allowed_signers). Every honest consumer refuses a trust surface that is not committed-identical and operator-signed, so an unmediated write here is non-authoritative, not a shortcut." >&2
   exit 2
 fi

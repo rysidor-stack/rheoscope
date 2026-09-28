@@ -909,6 +909,7 @@ echo ""
 
 echo "Recommended next steps:"
 echo "  git init"
+echo "  git config core.longpaths true"
 echo "  git add -A"
 echo "  git commit -m \"instantiated rheoscope-harness v$TEMPLATE_VERSION\""
 echo ""

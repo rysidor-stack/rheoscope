@@ -946,6 +946,7 @@ Write-Output ""
 
 Write-Output "Recommended next steps:"
 Write-Output "  git init"
+Write-Output "  git config core.longpaths true"
 Write-Output "  git add -A"
 Write-Output "  git commit -m `"instantiated rheoscope-harness v$($py.template_version)`""
 Write-Output ""

@@ -100,6 +100,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -242,12 +243,39 @@ def _is_none_ish(value):
     return v.rstrip(".").strip().lower() == "none"
 
 
+_FILE_DATE_RE = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
+
+
 def _file_date(path):
-    """A source file's own date -- its filesystem last-modified date, as an ISO
-    YYYY-MM-DD string. Used for sources (like a sweep briefing) with no reliable
-    in-body date stamp of their own."""
+    """A source file's own date as ISO YYYY-MM-DD, for sources (like a sweep
+    briefing) with no reliable in-body date stamp. v3.0-116(b), the
+    2026-08-17 defect-class hunt: this used to be the filesystem mtime, and a
+    clone, branch switch or stash-pop resets that -- after any checkout every
+    finding claimed it was "swept today" while its age counter said
+    otherwise. Resolution order, most checkout-invariant first: (1) a date in
+    the file's own name; (2) the newest git commit that touched the path;
+    (3) mtime, LABELED as such, only for a file git does not know."""
+    m = _FILE_DATE_RE.search(os.path.basename(path))
+    if m:
+        return m.group(1)
+    d, b = os.path.dirname(os.path.abspath(path)), os.path.basename(path)
+    try:
+        # verifier fold 2026-09-26 (finding 3): a tracked file with UNCOMMITTED changes
+        # (a briefing a scheduled session overwrote and has not committed) must not
+        # date by its PREVIOUS commit -- that is the opposite false date
+        st = subprocess.run(["git", "-C", d, "status", "--porcelain", "--", b],
+                            capture_output=True, text=True, timeout=30)
+        if st.returncode == 0 and st.stdout.strip() and not st.stdout.lstrip().startswith("??"):
+            ts = os.path.getmtime(path)
+            return datetime.date.fromtimestamp(ts).isoformat() + " (file time; uncommitted changes)"
+        p = subprocess.run(["git", "-C", d, "log", "-1", "--format=%cs", "--", b],
+                           capture_output=True, text=True, timeout=30)
+        if p.returncode == 0 and p.stdout.strip():
+            return p.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
     ts = os.path.getmtime(path)
-    return datetime.date.fromtimestamp(ts).isoformat()
+    return datetime.date.fromtimestamp(ts).isoformat() + " (file time; not in git history)"
 
 
 def _rel(path, root):
@@ -1671,6 +1699,40 @@ def self_test():
     finally:
         for d in tmp_dirs:
             shutil.rmtree(d, ignore_errors=True)
+
+    # ---- v3.0-116(b): _file_date is checkout-invariant --------------------------
+    _fd_root = tempfile.mkdtemp(prefix="dinbox-fd-")
+    try:
+        for args in (["init", "-q"], ["config", "user.email", "t@t"],
+                     ["config", "user.name", "t"]):
+            subprocess.run(["git", "-C", _fd_root] + args, capture_output=True)
+        _named = os.path.join(_fd_root, "2026-01-02-session-note.md")
+        open(_named, "w", encoding="utf-8").write("x\n")
+        case("v3.0-116(b): a date in the file's own name wins outright",
+             _file_date(_named) == "2026-01-02")
+        _tracked = os.path.join(_fd_root, "SWEEP-BRIEFING.md")
+        open(_tracked, "w", encoding="utf-8").write("briefing\n")
+        _env = dict(os.environ, GIT_AUTHOR_DATE="2026-01-15T12:00:00",
+                    GIT_COMMITTER_DATE="2026-01-15T12:00:00")
+        subprocess.run(["git", "-C", _fd_root, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", _fd_root, "commit", "-qm", "seed"],
+                       capture_output=True, env=_env)
+        os.utime(_tracked, None)          # a checkout's effect: mtime = now
+        case("v3.0-116(b): a tracked file dates by its newest COMMIT, not its mtime "
+             "(the checkout-reset trap)", _file_date(_tracked) == "2026-01-15")
+        with open(_tracked, "a", encoding="utf-8") as fh:
+            fh.write("overwritten by a scheduled session, not yet committed\n")
+        case("v3.0-116(b) fold: a tracked file with UNCOMMITTED changes dates by file time, "
+             "labeled -- never by its previous commit",
+             _file_date(_tracked).startswith(datetime.date.today().isoformat())
+             and "uncommitted changes" in _file_date(_tracked))
+        _untracked = os.path.join(_fd_root, "scratch.md")
+        open(_untracked, "w", encoding="utf-8").write("y\n")
+        case("v3.0-116(b): a file git does not know falls back to mtime and SAYS so",
+             _file_date(_untracked).startswith(datetime.date.today().isoformat())
+             and "not in git history" in _file_date(_untracked))
+    finally:
+        shutil.rmtree(_fd_root, ignore_errors=True)
 
     if failed:
         print("decision-inbox self-test: FAIL (%d/%d)" % (total - failed, total))

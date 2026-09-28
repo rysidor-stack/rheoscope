@@ -92,6 +92,29 @@ def only_derivation_region_changed(pre_text, post_text):
     return pre_outside == post_outside
 
 
+def _strip_derivation_region(text):
+    """TEXT minus its engine-managed derivation region (markers inclusive); text
+    unchanged when the region is absent or malformed. The convention every
+    body comparison in the engine already uses (compile-v2 `_view_body_diff`,
+    `_strip_derivation_region`)."""
+    region = _derivation_region(text)
+    if region is None:
+        return text
+    lines = text.splitlines(keepends=True)
+    return "".join(lines[:region[0]] + lines[region[1] + 1:])
+
+
+def _blob_of_text(repo, text):
+    """Write TEXT into the object db as exactly its own bytes (byte pipe --
+    never text=True, v3.0-169) and return the blob id."""
+    p = subprocess.run(["git", "-C", repo, "hash-object", "-w", "--stdin"],
+                       input=text.encode("utf-8"), capture_output=True)
+    if p.returncode != 0:
+        raise RuntimeError("git hash-object failed: %s"
+                           % (p.stderr or b"").decode("utf-8", "replace")[-200:])
+    return p.stdout.decode("ascii", "replace").strip()
+
+
 def _git(repo, *args):
     p = subprocess.run(["git", "-C", repo] + list(args),
                        capture_output=True, text=True, encoding="utf-8",
@@ -268,6 +291,25 @@ def changed_sections(repo, pre_blob, post_blob):
     return secs
 
 
+def changed_sections_of_body(repo, pre_blob, post_blob):
+    """changed_sections over the BODY of both blobs -- each side with its
+    engine-managed derivation region stripped before the diff (v3.0-127,
+    fleet inbox #15, three live occurrences). The region is engine metadata
+    ABOUT the body: on a view the run CREATES the engine mints it AFTER
+    validation (v3.0-69), so the author's manifest cannot claim the two
+    heading-shaped delimiter lines that did not exist when the manifest was
+    written -- the two gates were jointly unsatisfiable for every brand-new
+    article, and operators learned to ignore a red merge bar. Body hunks are
+    attributed exactly as before; region-only differences attribute to
+    nothing (check_acc4 separately proves a verify commit's stamp stays
+    inside the region)."""
+    pre_text = _git(repo, "cat-file", "-p", pre_blob)
+    post_text = _git(repo, "cat-file", "-p", post_blob)
+    return changed_sections(repo,
+                            _blob_of_text(repo, _strip_derivation_region(pre_text)),
+                            _blob_of_text(repo, _strip_derivation_region(post_text)))
+
+
 def check_sections(repo, sha):
     problems = []
     record, _p = load_run_record(repo, sha)
@@ -278,7 +320,7 @@ def check_sections(repo, sha):
         claimed = {(m.get("section") or "").strip()
                    for m in (a.get("manifest") or []) if isinstance(m, dict)}
         try:
-            actual = changed_sections(repo, a["pre_blob"], a["post_blob"])
+            actual = changed_sections_of_body(repo, a["pre_blob"], a["post_blob"])
         except RuntimeError as e:
             problems.append("%s: cannot diff blobs (%s)" % (v, e))
             continue
@@ -373,6 +415,37 @@ def self_test():
              bool({"Beta"} - secs))
         case("sections: hunk-without-claim trips",
              bool(secs - set()))
+
+        # ---- v3.0-127 (fleet inbox #15): a CREATED view's minted derivation
+        # region is engine metadata, never an unclaimed hunk.
+        empty_blob = _blob_of_text(base, "")
+        minted = ("# New\n\n## Alpha\nfresh alpha\n\n"
+                  "# --- derivation (engine-managed; strip region) ---\n"
+                  "# origin_max: 1\n"
+                  "# --- /derivation ---\n")
+        minted_blob = _blob_of_text(base, minted)
+        body_secs = changed_sections_of_body(base, empty_blob, minted_blob)
+        case("v3.0-127: created view + minted region -> body attribution names "
+             "only the author's sections (no phantom delimiter headings)",
+             body_secs == {"New", "Alpha"} or body_secs == {"Alpha", "New"})
+        raw_secs = changed_sections(base, empty_blob, minted_blob)
+        case("v3.0-127: ...where the raw attribution DID name the two delimiter "
+             "lines (the defect, pinned so the fix is observable)",
+             any(x.startswith("--- derivation") for x in raw_secs)
+             and any(x.startswith("--- /derivation") for x in raw_secs))
+        stamped = minted.replace("# origin_max: 1\n",
+                                 "# origin_max: 1\n# verified: 2026-09-26\n")
+        case("v3.0-127: a stamp inside the region attributes to NOTHING "
+             "(region-only difference)",
+             changed_sections_of_body(base, minted_blob,
+                                      _blob_of_text(base, stamped)) == set())
+        edited = stamped.replace("fresh alpha", "edited alpha")
+        case("v3.0-127: a BODY hunk beside a region change is still attributed "
+             "(the fix narrows nothing about body edits)",
+             changed_sections_of_body(base, minted_blob,
+                                      _blob_of_text(base, edited)) == {"Alpha"})
+        case("v3.0-127: a region-less pair attributes exactly as before",
+             changed_sections_of_body(base, pre_blob, post_blob) == {"Alpha"})
 
         # fabricated claim: absorbed names untouched view
         txt = open(view, encoding="utf-8").read().replace("old beta", "new beta")

@@ -91,10 +91,16 @@ done < <(find "$SCRIPT_ROOT" -type f -not -path "$SCRIPT_ROOT/.git/*" -not -path
 # .claude/worktrees/ excluded (v3.0-61): tool-managed scratch worktrees are git-excluded
 # debris the scanner has no business walking — 92 false failures on a live instance.
 
-# 2. No *.template files remain
+# 2. No *.template files remain (v3.0-181: the SAME exemption + dependency-segment
+#    predicates as the placeholder scan above -- a vendored dependency's own
+#    `meson.build.template` is not a leftover of this harness's substitution, and
+#    .git/ + .claude/worktrees/ are debris here for the same reason as above)
 while IFS= read -r -d '' tf; do
+    rel="${tf#$SCRIPT_ROOT/}"
+    is_scan_exempt "$rel" && continue
+    is_dep_skipped "$rel" && continue
     add_fail "Leftover .template file: $tf"
-done < <(find "$SCRIPT_ROOT" -type f -name '*.template' -print0)
+done < <(find "$SCRIPT_ROOT" -type f -name '*.template' -not -path "$SCRIPT_ROOT/.git/*" -not -path "$SCRIPT_ROOT/.claude/worktrees/*" -print0)
 
 # 3. project.yaml stamped
 PROJECT_YAML="$SCRIPT_ROOT/project.yaml"

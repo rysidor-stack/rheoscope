@@ -92,7 +92,9 @@ foreach ($hit in $placeholderHits) {
 }
 
 # 2. No *.template files remain
-$leftoverTemplates = Get-ChildItem -Path $scriptRoot -Recurse -File -Filter '*.template' -ErrorAction SilentlyContinue
+# v3.0-181: the SAME exemption + dependency-segment predicates as the placeholder scan
+$leftoverTemplates = Get-ChildItem -Path $scriptRoot -Recurse -File -Filter '*.template' -ErrorAction SilentlyContinue |
+    Where-Object { -not $_.FullName.StartsWith($gitDir) -and -not $_.FullName.StartsWith($worktreesDir) -and -not (IsScanExempt $_.FullName) -and -not (IsDepSkipped $_.FullName) }
 foreach ($t in $leftoverTemplates) {
     AddFailure "Leftover .template file: $($t.FullName)"
 }

@@ -5,7 +5,7 @@ version: "1.0"
 status: CERTIFIED
 source_artifacts:
   - path: .claude/skills/sweep/SKILL.md
-    sha256: 66330e0e6495a11ce6b88f47c31dc1e333aad79f78b15edf494d46878deb3898
+    sha256: e00825b751896d0827405386dd9ff19a181972515124328e8ab16b6834013d03
   - path: manifests/sweep-briefing/source/exemplar-1.md
     sha256: 7bc6f7c180da8a08f9f6782393cb617e512af2f2f4d65893bf216da9568b392f
   - path: manifests/sweep-briefing/source/exemplar-2.md

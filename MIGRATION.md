@@ -6,6 +6,13 @@
 
 *General method for any version step: clone the new harness next to your project, `diff -r` the surfaces named in its changelog entry, and copy what you adopt — substituting your project's values where the template uses `{{...}}` variables (your values are all in your `project.yaml`).*
 
+**If your instance predates v3.0.18 (the mirror's tag floor — backlog v3.0-126):** the public
+mirror's history was reset on 2026-08-01 and starts at v3.0.18, so a diff from your own older
+tag is not possible there. Take the diff base from a release-artifact zip of your target
+version (or ask the maintainer for the hunks), apply them, then byte-verify the END STATE of
+every substituted template against the mirror's target tag — the mirror remains the authority
+for what you should end up with; only where the diff starts changes.
+
 **Standing step, every migration (added 2026-07-28, backlog v3.0-75): refresh the root
 orientation docs.** Copy the new harness's `ARCHITECTURE.md` over your project's root copy in
 the same adoption pass — it carries no `{{...}}` variables and describes the harness, not your
@@ -259,6 +266,89 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > "copy `deploy/`", copy the FILES THE RECIPE NAMES, never the whole directory — instances
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
+
+## v3.0.54 → v3.0.55 (the papercut batch: a created view's merge bar is honest, a mixed-verdict run reverts, CRLF views attribute, the observer runs before the render, and eleven smaller fixes)
+
+Two lanes, the same ORDER as v3.0.53→54: **session lane FIRST, operator lane second.**
+Nothing here asks you a question. After this adoption a brand-new article's first compile no
+longer shows a false red merge bar (three instances hit it), a mixed-verdict compile run can be
+reverted through the engine again (two instances hit it), a CRLF view no longer draws phantom
+manifest defects, and an attended sweep open runs the observer before the render so a failed
+cycle is shown and acknowledged by the same close that supersedes it.
+
+**Step 1 — SESSION lane (any session copies these; commit together):**
+`deploy/check-run-diff.py` (v3.0-127: section attribution over the BODY, both blobs with the
+derivation region stripped — a created view's minted region is never a hunk-without-claim;
+24/24); `deploy/compile-v2.py` (v3.0-169: `_blob_of_text` pipes bytes; 253/253 — on a Windows instance the
+journaled `pre_blob`/`post_blob` from this release on equal the committed blob, where earlier records
+hold the CRLF-translated hash; harmless, nothing compares the two, every reader normalizes);
+`deploy/decision-inbox.py` (v3.0-116(b): a source file's date is its filename date, then its
+newest commit, then a labeled mtime; 126/126); `deploy/check-split.py` and
+`deploy/retire-manifest.py` (v3.0-132: CommonMark's ≤3-space fence rule, both tools in one
+release; 25/25, 36/36); `deploy/assemble.py` (v3.0-34: a top-level `reason` on every exit-1
+refusal; 160/160); `deploy/check-loop-state.py` (v3.0-46: the self-test's fixture copy
+survives a source path past MAX_PATH on Windows and names a deep-path failure with its FIX);
+your compile skill from `capabilities/knowledge-os/extracted/compile/SKILL.md.template`
+(Step 3b names when `--revert` is and is not available — v3.0-170(c); substitute your
+`{{...}}` values as usual); `.claude/skills/sweep/SKILL.md` (step 17(a): an attended open runs
+the observer first — v3.0-171; § Scheduling gains **Wrapper hygiene** — v3.0-180);
+`.claude/skills/standing-loop/SKILL.md` (the recipe points at that hygiene);
+`.claude/skills/doctor/doctor.py` and `.claude/skills/doctor/SKILL.md` (check 17
+`sweep-schedule-log`, v3.0-180; the alarm line reads "failed sweep cycle(s) not yet
+acknowledged", v3.0-171; 109/109); `.claude/skills/cross-check-loop/converge.js` (v3.0-188:
+the bridge fallback resolves to `.claude/skills/bridge/`, where init put it — the loop could not
+find its verifier without an environment override); your cross-check skill from
+`core/skills/cross-check/SKILL.md.template` (v3.0-189: step 3a documents the repo-grounding
+the bridge has shipped since ADR #7); `core/onboarding/TOUR.md` (Stage 2 archetype table,
+v3.0-36) and `INIT.md` (its pre-flight pointer); `./init-validate.sh` and `./init-validate.ps1`
+(v3.0-181: the `*.template` scan honors `placeholder_scan_exempt` and `dependency_scan_skip`).
+
+Also copy `manifests/decision-inbox/format-MANIFEST.md` and `manifests/sweep-briefing/format-MANIFEST.md`
+(their sha256 pins re-hashed to this release's `deploy/decision-inbox.py` and sweep-skill bytes — copy
+them together with those sources, or check-manifest reads the pins stale).
+
+**Step 2 — OPERATOR-COPY lane (trust surfaces; you copy and commit these yourself — under
+`required`, `git commit -S`):** `deploy/compile-driver.py` (v3.0-170: `--revert`'s last-word
+guard compares bodies with the derivation region stripped, a stamp-only run is restored to its
+pre-run state explicitly, and the worktree guard is tracked changes under `wiki/` plus ANY
+change under `receipts/journal/`, untracked included; 272/272) and `deploy/pending.py` (v3.0-171: `--heartbeat open` runs
+the observer first when attended — a missed-window alarm can be minted by that open too, and the
+same close acknowledges it — the observation carries `unacknowledged_failed_cycles`, alarm
+rows carry `cycle_ts`; 81/81). Run the batteries after:
+`py deploy/compile-driver.py --self-test` and `py deploy/pending.py --self-test`.
+**Lane 0c, the perimeter (also trust surfaces — the same operator-copy rule):**
+`core/security/hooks/block-env-writes.sh` (v3.0-166: the Edit/Write guard is anchored to your
+project root, with the target path canonicalized first — a sibling repository's file under a
+directory that happens to be named like the perimeter passes, a `..` that resolves INTO your
+perimeter still denies; without the host's project-root variable the old whole-path rule stands),
+`core/security/hooks/block-dangerous-bash.sh` (v3.0-193: exactly one thing changes — a command
+that is a single plain `ssh …` line, with no `| ; & \` $ ( ) < >` character, no `-F` or `-o`
+option, and no ProxyCommand/LocalCommand text, may carry a destructive command in SINGLE quotes
+without denying; everything else the old hook denied it still denies, including `systemd-run`, two ssh
+calls joined by `&&`, and prose inside a heredoc body — keep writing such text through the Write
+tool or a script file),
+and `core/security/hooks/scan-staged-secrets.sh` (v3.0-123: a refusal names every line of the
+staged file that carries the flagged value, so one ruling covers the assignment-shaped siblings
+too; nothing that was blocked before passes now). All three went through a cross-vendor
+firewall until confirmed (record: the v3.0.55 lane-0c review). **Reinstall the scanner BEFORE
+committing it** (the v3.0-112 ordering):
+`cp core/security/hooks/scan-staged-secrets.sh .git/hooks/pre-commit`, then `git add` + commit.
+Boards after: `bash core/security/hooks/block-env-writes.sh --self-test` (74),
+`bash core/security/hooks/block-dangerous-bash.sh --self-test` (276),
+`bash core/security/hooks/scan-staged-secrets.sh --self-test` (74).
+
+**Step 3 — if your nightly wrapper appends the transcript** (the shipped recipe did, v3.0-180):
+trim the log by bytes before each run and write the dated header first — the sweep skill's
+Wrapper hygiene paragraph has the exact shape; the first `/doctor` after adoption tells you
+whether your log already carries the symptom. A pre-v3.0.31 instance that still holds the
+retired dormant-register example file deletes it now (v3.0-108: the v3.0.31 recipe's step 2
+names it). `core/methodology/flight-plan-template-v6.md` changed (its footer now says
+"document revision" rather than "template version") — no action. `./init.sh`, `./init.ps1` and `./TEMPLATE-README.md`
+changed (init's printed next steps now include `git config core.longpaths true`, matching the doc; the
+one expected doctor FAIL before a new project's first commit is named) — instantiation-time only, no
+action for an existing project. Nothing else migrates:
+no re-freeze, no new project.yaml keys; the one data-convention shift is the Windows blob
+note above.
 
 ## v3.0.53 → v3.0.54 (the attention-cost batch: the attended close anchors to a committed briefing, the model-identity question asks once per model, the birth commit scans in seconds)
 
@@ -941,7 +1031,8 @@ schema. Per-surface as always.
    `empire-desk.py`) **or the harness-dev drills** (check-eco2/golden/journal-sidecar/
    origin-propagation/phase-gate, drill-concurrency/crash-absorb/formatter/lock-common-dir/
    planted-defects/r1-acceptance/stage-only/workload-bench) **or
-   `dormant-register.yaml`:** delete them. The desk was removed from the template outright
+   `dormant-register.yaml` (and its example sibling `dormant-register.yaml.example` — the
+   clause this recipe omitted until v3.0.55, backlog v3.0-108):** delete them. The desk was removed from the template outright
    (operator decision — never used anywhere); the drills are harness-dev tools that no longer
    ship; the register's only job was excusing them. None of these is load-bearing on any
    instance. KEEP `check-split.py` and `audit-content.py` — both still ship (the first is the

@@ -214,7 +214,9 @@ replacement for, the pre-merge branch deletion above.
 
 Mirror the nightly-sweep pattern already in place: a `.cmd` wrapper plus a Task Scheduler entry,
 for example 05:30 daily, running just after the sweep. That's the whole recipe — nothing about
-/standing-loop itself needs to change to run on a schedule.
+/standing-loop itself needs to change to run on a schedule. The wrapper hygiene rules in
+`.claude/skills/sweep/SKILL.md` § Scheduling (bounded log, dated header first, task time limit —
+backlog v3.0-180) apply to this wrapper exactly as to the sweep's.
 
 **The wrapper must set `RHEOSCOPE_UNATTENDED=1`** (v3.0.47, backlog v3.0-134) — e.g. the first line
 of the `.cmd`: `set RHEOSCOPE_UNATTENDED=1`. The egress hook reads it: in an unattended run every

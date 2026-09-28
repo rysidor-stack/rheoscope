@@ -75,6 +75,64 @@ if [ "${1:-}" = "--self-test" ]; then
 
   # -- DENY tier (destructive + agent commit-bypass, incl. global-option/quoted)
   run_case DENY 'rm -rf /' 'rm-rf-root'
+  # -- v3.0-193 (v3.0.55): the destructive tier judges the LOCAL surface, both directions
+  run_case silent "ssh -J bastion gw-1 'rm -rf /opt/mail-ingest/releases/abc123'" '193-remote-rm-single-quoted-silent'
+  run_case DENY   "systemd-run --on-active=30 'rm -rf /var/tmp/old'" '193-systemd-run-is-LOCAL-DENY (round-3 counterexample)'
+  run_case DENY   "systemd-run sh -c 'rm -rf /tmp/x'" '193-systemd-run-sh-c-DENY (round-3 counterexample)'
+  run_case DENY   "ssh -o ProxyCommand='rm -rf /tmp/x' gw-1" '193-ssh-ProxyCommand-is-LOCAL-DENY'
+  run_case DENY   "ssh -o LocalCommand='rm -rf /tmp/x' -o PermitLocalCommand=yes gw-1 'ls'" '193-ssh-LocalCommand-is-LOCAL-DENY'
+  run_case DENY   "ssh -o StrictHostKeyChecking=no gw-1 'rm -rf /opt/x/releases/abc'" '193-ssh-with-o-option-not-exempt-DENY (round 7: -o can carry a config door)'
+  run_case DENY   "ssh -F 'rm -rf /tmp/x' gw-1" '193-ssh-F-config-operand-DENY (round-7 counterexample)'
+  run_case DENY   "ssh -F /tmp/cfg gw-1 'rm -rf /opt/x'" '193-ssh-F-config-file-not-exempt-DENY'
+  # -- round 4 (2026-09-27): the surface keeps every separator, so spanning patterns still match
+  run_case DENY   "git \`printf ''\` commit --no-verify -m x" '193-backtick-spanning-commit-bypass-still-DENY (round-4 counterexample)'
+  run_case DENY   "ssh gw-1 'ls' | git commit --no-verify -m x" '193-commit-bypass-after-ssh-pipe-DENY'
+  run_case DENY   "ssh gw-1 'ls'; git reset --hard" '193-reset-hard-after-ssh-semicolon-DENY'
+  run_case DENY   "ssh gw-1 'rm -rf /opt/x' && ssh gw-2 'rm -rf /opt/y'" '193-two-ssh-joined-by-&&-DENY (only the pure single-command shape is exempt)'
+  # -- round 5 (2026-09-27): heredoc bodies are byte-identical to v3.0.54 -- the ssh rule is suspended inside them
+  run_case DENY   "cat <<'EOF' > notes.md
+ssh gw-1 'rm -rf /'
+EOF" '193-heredoc-body-line-starting-with-ssh-still-DENY (round-5 counterexample)'
+  run_case DENY   "cat <<EOF > notes.md
+ssh gw-1 'rm -rf /opt/x'
+EOF" '193-unquoted-heredoc-body-ssh-line-still-DENY'
+  run_case DENY   "cat <<'EOF' > notes.md
+plain body
+EOF
+ssh gw-1 'rm -rf /opt/x/releases/abc'" '193-ssh-after-heredoc-is-multi-line-DENY'
+  run_case DENY   "echo \"see <<'EOF' marker\"
+ssh gw-1 'rm -rf /opt/x'" '193-false-marker-suspends-the-rule-DENY-fail-closed'
+  # -- round 6 (2026-09-27): only the pure single-line `ssh ...` shape is exempt
+  run_case DENY   "echo \"x; ssh host 'rm -rf /'\"" '193-ssh-inside-quoted-prose-DENY (round-6 counterexample)'
+  run_case DENY   "ssh gw-1 'rm -rf /opt/x' \$(id)" '193-ssh-with-substitution-DENY'
+  run_case DENY   "ssh gw-1 'rm -rf /opt/x' > log.txt" '193-ssh-with-redirect-DENY'
+  run_case DENY   "(ssh gw-1 'rm -rf /opt/x')" '193-ssh-in-subshell-parens-DENY'
+  run_case silent "ssh -p 2222 -i ~/.ssh/id_ed25519 -J bastion gw-1 'rm -rf /opt/mail-ingest/releases/abc123 /opt/mail-ingest/releases/def456'" '193-pure-ssh-with-options-silent'
+  run_case DENY   "ssh gw-1 \"rm -rf /opt/x\"" '193-remote-rm-DOUBLE-quoted-still-DENY'
+  run_case DENY   "ssh gw-1 'ls /opt'; rm -rf /tmp/x" '193-local-rm-after-ssh-segment-DENY'
+  run_case DENY   "rm -rf /opt/x && ssh gw-1 'ls'" '193-local-rm-before-ssh-segment-DENY'
+  run_case DENY   "ssh gw-1 rm -rf /opt/x" '193-remote-rm-UNQUOTED-still-DENY'
+  run_case DENY   "cat <<'EOF' > notes.md
+never run rm -rf / by hand on the gateway
+EOF" '193-heredoc-body-prose-still-DENY-unchanged'
+  run_case DENY   "cat <<EOF > notes.md
+harmless body
+EOF
+rm -rf /tmp/after-heredoc" '193-local-rm-AFTER-heredoc-DENY'
+  run_case DENY   "ssh gw-1 'ls' && git reset --hard" '193-local-reset-hard-beside-ssh-DENY'
+  # -- firewall rounds 1+2 (2026-09-27): heredoc bodies stay ON the surface, every shape denies
+  run_case DENY   "cat <<EOF > notes.md
+\$(rm -rf /tmp/x)
+EOF" '193-UNQUOTED-heredoc-substitution-DENY'
+  run_case DENY   "echo \"see the <<'EOF' marker in the docs\"
+rm -rf /tmp/y" '193-false-heredoc-marker-unterminated-DENY'
+  run_case DENY   "echo \"see <<'EOF'\"
+rm -rf /tmp/x
+EOF" '193-false-heredoc-marker-TERMINATED-DENY (round-2 counterexample)'
+  run_case DENY   "cat <<-'EOF' > notes.md
+	body
+	EOF
+rm -rf /tmp/z" '193-quoted-heredoc-then-local-rm-DENY'
   run_case DENY 'git reset --hard origin/main' 'git-reset-hard'
   run_case DENY 'git commit --no-verify -m x' 'commit-no-verify'
   run_case DENY 'git commit -n -m x' 'commit-n-alias'
@@ -441,8 +499,39 @@ DENY_PATTERNS=(
   'git[[:space:]]+([^|;&]*[[:space:]])?commit[[:space:]]([^|;&]*[[:space:]])?(--no-verify|-n)([[:space:]]|$)'
 )
 
+# v3.0-193 (v3.0.55, fleet inbox #24): ONE exemption from the destructive tier, and
+# only in its provably-remote shape. A remote command in SINGLE quotes after `ssh`
+# (`ssh -J bastion host 'rm -rf /opt/x/releases/<sha>'`) carried the pattern text
+# without any local effect and was denied anyway. Six cross-vendor firewall rounds
+# (2026-09-27) rejected every attempt to find "the ssh segment" inside a larger
+# command without a shell parser -- heredoc bodies, systemd-run, ProxyCommand,
+# separator splitting, a body line starting with ssh, `echo "x; ssh host '...'"` --
+# so the rule is now the narrowest one that still covers the incident: the WHOLE
+# command must be a single line beginning with the tool word `ssh`, containing no
+# separator, substitution, redirect or heredoc character at all (| ; & backtick $
+# ( ) < >), no ProxyCommand/LocalCommand text (ssh's local-execution doors), and
+# no `-F` or `-o` option at all (round 7: a config file named by -F, or any -o
+# option, can carry those doors without the words appearing in the command).
+# Only then are its single-quoted strings removed (nothing in single quotes expands
+# locally). Every other command is judged on COMMAND_NORM exactly as in v3.0.54:
+# a double-quoted or unquoted remote command, two ssh calls joined by &&, an ssh
+# after a heredoc, ssh inside quoted prose -- all still deny (the stricter side).
+# Stated residual, unchanged from v3.0.54 and from every bare `ssh host` call: the
+# user's own ~/.ssh/config may carry ProxyCommand for a host; a regex tier is a
+# tripwire against spellings, never a bar on the host's configuration.
+LOCAL_SURFACE="$COMMAND_NORM"
+case "$COMMAND" in
+  *$'\n'*|*'|'*|*';'*|*'&'*|*'`'*|*'$'*|*'('*|*')'*|*'<'*|*'>'*) : ;;
+  *)
+    if printf '%s' "$COMMAND" | grep -Eq '^[[:space:]]*ssh[[:space:]]' \
+       && ! printf '%s' "$COMMAND" | grep -Eqi 'proxycommand|localcommand' \
+       && ! printf '%s' "$COMMAND" | grep -Eq '(^|[[:space:]])-(F|o)([[:space:]]|$)'; then
+      LOCAL_SURFACE=$(printf '%s' "$COMMAND" | sed -E "s/'[^']*'//g" | tr -d "'\"")
+    fi ;;
+esac
+
 for pat in "${DENY_PATTERNS[@]}"; do
-  if echo "$COMMAND_NORM" | grep -Eqi "$pat"; then
+  if echo "$LOCAL_SURFACE" | grep -Eqi "$pat"; then
     log_row destructive-deny "$pat" false || true
     echo "Blocked: command matches denied pattern '$pat'. Destructive commands are denied by policy (unrecoverable -- the v3.0.19 doctrine's deny class). This tier has no allowlist and no ask; if the operation is truly intended, the operator runs it themselves, deliberately." >&2
     exit 2

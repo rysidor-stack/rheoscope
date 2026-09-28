@@ -199,7 +199,34 @@ EOF
     [ -z "$hit" ] && continue
     ln="${hit%%:*}"
     p=$(sed -n "${ln}p" "$paths_f")
-    _fail "staged change in '$p' matches secret pattern '$label'. Remove the value (repo-committed config points at the vault by NAME, never by value), re-stage, and commit again."
+    # v3.0-123 (v3.0.55): the SAME-FILE SIBLING rule. A flagged value usually lives in
+    # the file again in shapes no pattern names (`const password = "<the same literal>"`
+    # beside the flagged URL). An operator who rules "redact" on the flagged line
+    # believes the file is clean; the siblings ride in. So the refusal names every
+    # line of the staged file that carries the flagged VALUE, and one ruling covers
+    # them all. The value is the matched region (for a credential URL, its password);
+    # short values (< 8 chars) are not searched -- too many honest collisions.
+    region="${hit#*:}"
+    # The value VERBATIM (firewall round 1, 2026-09-27, REVISED: stripping punctuation
+    # shrank `!abcdefg!` under the 8-character floor and skipped it). A credential URL's
+    # password is everything between the first `:` after the user and the `@`; every
+    # other class's pattern captures exactly ONE leading boundary character (its
+    # `(^|[^...])` group), which is dropped -- nothing trailing is touched.
+    case "$label" in
+      'embedded credential URL')
+        secret=$(printf '%s' "$region" | sed -E 's#^[a-z][a-z0-9+.-]*://[^/:@[:space:]]+:([^@[:space:]]+)@.*$#\1#') ;;
+      *)
+        # one leading AND one trailing boundary character (the AWS class captures both);
+        # exactly one at each end, never a run -- a token value is alphanumeric by its
+        # own pattern, so this is exact (firewall round 2 board catch, 2026-09-27)
+        secret=$(printf '%s' "$region" | sed -E 's/^[^A-Za-z0-9_-]//; s/[^A-Za-z0-9_.=-]$//') ;;
+    esac
+    sib_note=''
+    if [ "${#secret}" -ge 8 ]; then
+      sib=$(git -C "$repo" show ":$p" 2>/dev/null | grep -nF -- "$secret" | cut -d: -f1 | tr '\n' ' ' | sed -E 's/ $//')
+      case "$sib" in *' '*) sib_note=" The SAME value also appears in '$p' at staged line(s) $sib (v3.0-123: shapes no pattern names -- one ruling covers every occurrence; redact them all, not only the flagged line)." ;; esac
+    fi
+    _fail "staged change in '$p' matches secret pattern '$label'.${sib_note} Remove the value (repo-committed config points at the vault by NAME, never by value), re-stage, and commit again."
   done
   _cleanup
   if [ "$n_paths" -ge "$PROGRESS_FROM" ]; then
@@ -237,6 +264,13 @@ self_test() {
     git -C "$repo" reset -q 2>/dev/null || true
     rm -rf "$repo" 2>/dev/null || true
   }
+  expect_out() { # $1 name, $2 want_rc, $3 substring the refusal must carry, $4 substring it must NOT
+    out=$( (scan_repo "$repo") 2>&1 ); rc=$?
+    if [ "$rc" -eq "$2" ] && printf '%s' "$out" | grep -qF -- "$3" && ! { [ -n "${4:-}" ] && printf '%s' "$out" | grep -qF -- "$4"; }; then
+      case_ "$1" ok; else case_ "$1" XX "rc=$rc want=$2 :: $out"; fi
+    git -C "$repo" reset -q 2>/dev/null || true
+    rm -rf "$repo" 2>/dev/null || true
+  }
 
   # BLOCK direction -- one per content class (values generated here, never committed)
   mkrepo; stage "a.txt" "-----BEGIN RSA PRIVATE KEY-----";                                 expect "PEM private-key block blocks" 1
@@ -250,6 +284,31 @@ self_test() {
   mkrepo; stage "a.txt" "g=AIza$(printf 'E%.0s' $(seq 1 35))";                             expect "Google API key blocks" 1
   mkrepo; stage "a.txt" "j=eyJ$(printf 'f%.0s' $(seq 1 12)).$(printf 'g%.0s' $(seq 1 12)).$(printf 'h%.0s' $(seq 1 12))" ; expect "three-segment JWT blocks" 1
   mkrepo; stage "a.txt" "url=https://svc:hunter2pass@db.example.com/x";                    expect "embedded-credential URL blocks" 1
+  # v3.0-123 (v3.0.55): same-file siblings of the flagged VALUE are named in the refusal
+  mkrepo; stage "src/qa.ts" "$(printf '%s\n' 'const url = "postgres://scheduler:QaOnlyPassword-12345@localhost/db";' 'export const password = "QaOnlyPassword-12345";' 'const other = "unrelated";' 'process.env.PW = "QaOnlyPassword-12345"')"
+  expect_out "v3.0-123: a credential URL's password is named at its sibling lines (2 and 4) in the same staged file" 1 "staged line(s) 1 2 4"
+  mkrepo; stage "a.txt" "url=https://svc:hunter2pass@db.example.com/x";                    expect_out "v3.0-123: a value with NO sibling carries no sibling note" 1 "matches secret pattern" "SAME value also appears"
+  mkrepo; stage "a.txt" "k=sk-ant-$(printf 'b%.0s' $(seq 1 24))
+again: sk-ant-$(printf 'b%.0s' $(seq 1 24))";                                              expect_out "v3.0-123: a key class names its repeat too (region is the value)" 1 "staged line(s) 1 2"
+  # firewall round 1 (2026-09-27): a punctuation-bounded password keeps its full length
+  mkrepo; stage "src/qa.ts" "$(printf '%s\n' 'const url = "postgres://svc:!abcdefg!@localhost/db";' 'export const password = "!abcdefg!";')"
+  expect_out "v3.0-123 fold: a 9-char password bounded by punctuation is named at its sibling (not shrunk under the floor)" 1 "staged line(s) 1 2"
+  mkrepo; stage "src/qa.ts" "$(printf '%s\n' 'const url = "postgres://svc:ab!cd@localhost/db";' 'const other = "ab!cd";')"
+  expect_out "v3.0-123 fold: a 5-char password blocks (URL class) but is NOT sibling-searched (under the floor)" 1 "matches secret pattern" "SAME value also appears"
+  # firewall round 2 (2026-09-27): every token class -- the value is the matched region minus
+  # its one leading boundary character, so a punctuation-bounded repeat is still found
+  _v_aws="AKIA$(printf 'ABCDEFGHIJKLMNOP')"; _v_gh="ghp_$(printf 'a%.0s' $(seq 1 36))"; _v_ant="sk-ant-$(printf 'b%.0s' $(seq 1 24))"
+  _v_slack="xoxb-1234567890-abcdefghij"; _v_stripe="sk_live_$(printf 'd%.0s' $(seq 1 20))"; _v_goog="AIza$(printf 'E%.0s' $(seq 1 35))"
+  _v_jwt="eyJ$(printf 'f%.0s' $(seq 1 12)).$(printf 'g%.0s' $(seq 1 12)).$(printf 'h%.0s' $(seq 1 12))"
+  _v_oai="sk-$(printf 'c%.0s' $(seq 1 40))"; _v_ghfg="github_pat_$(printf 'g%.0s' $(seq 1 60))"
+  for _cls in "AWS:$_v_aws" "GitHub:$_v_gh" "GitHub-fine-grained:$_v_ghfg" "Anthropic:$_v_ant" "OpenAI-style:$_v_oai" "Slack:$_v_slack" "Stripe:$_v_stripe" "Google:$_v_goog" "JWT:$_v_jwt"; do
+    _name="${_cls%%:*}"; _val="${_cls#*:}"
+    mkrepo; stage "src/c.txt" "$(printf '%s\n' "key=(\"$_val\")" "again: [$_val];" "third \"$_val\",")"
+    expect_out "v3.0-123 round 2: $_name value bounded by punctuation on every line is named at lines 1 2 3" 1 "staged line(s) 1 2 3"
+    # round 3: at the START of a line (no leading boundary character exists) and at the END
+    mkrepo; stage "src/d.txt" "$(printf '%s\n' "$_val" "x=$_val" "($_val)")"
+    expect_out "v3.0-123 round 3: $_name bare at line start, bare at line end, and parenthesized -> lines 1 2 3" 1 "staged line(s) 1 2 3"
+  done
   mkrepo; stage ".env" "SECRET=1";                                                        expect "staged .env blocks by path" 1
   mkrepo; stage "keys/deploy.pem" "not even a key";                                       expect "staged *.pem blocks by path" 1
   mkrepo; stage "conf/credentials.json" "{}";                                             expect "staged credentials.json blocks by path" 1

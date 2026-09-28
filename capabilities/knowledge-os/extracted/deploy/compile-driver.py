@@ -353,6 +353,47 @@ def _worktree_clean(repo):
     return rc == 0 and out.strip() == ""
 
 
+def _worktree_clean_for_revert(repo):
+    """v3.0-170(b): a revert restores the run's own files and commits ONLY those
+    paths (stage-only, explicit pathspecs), so the only dirt that can collide
+    with it is a TRACKED modification under wiki/ or receipts/journal/. The
+    blanket `_worktree_clean` demanded empty porcelain, untracked files
+    included -- unsatisfiable on a shared tree where another session's scratch
+    or an unrelated edit is always present (the first production instance, 2026-09-04: the operator had
+    to stash around it). Under `receipts/journal/` UNTRACKED files block too
+    (verifier fold 2026-09-26, finding 1): the revert appends a record through
+    compile-core's chain, which reads whatever `.json` sits in the directory,
+    so an uncommitted record -- a crash leftover, another session's in-flight
+    run -- would be chained onto and left out of the committed history."""
+    rc, out, _ = _git(repo, "status", "--porcelain", "--untracked-files=no",
+                      "--", "wiki")
+    rc2, out2, _ = _git(repo, "status", "--porcelain", "--untracked-files=all",
+                        "--", "receipts/journal")
+    return rc == 0 and rc2 == 0 and out.strip() == "" and out2.strip() == ""
+
+
+_DERIV_START = "# --- derivation"     # the engine-managed region's literal markers,
+_DERIV_END = "# --- /derivation"      # shared verbatim by every module that reads it
+
+
+def _strip_derivation_region_text(text):
+    """TEXT minus its derivation region (markers inclusive); unchanged when
+    absent or malformed -- the engine's body-comparison convention
+    (compile-v2 `_strip_derivation_region`, check-run-diff's sibling)."""
+    lines = text.splitlines(keepends=True)
+    start = end = None
+    for i, ln in enumerate(lines):
+        t = ln.strip()
+        if start is None and t.startswith(_DERIV_START):
+            start = i
+        elif start is not None and t.startswith(_DERIV_END):
+            end = i
+            break
+    if start is not None and end is not None and end > start:
+        return "".join(lines[:start] + lines[end + 1:])
+    return text
+
+
 # --------------------------------------------------------------- argv parsing
 _VALUE_FLAGS = ("--root", "--staging", "--authorization", "--seq", "--reason",
                 "--view", "--ruling", "--since", "--union-event",
@@ -1209,9 +1250,20 @@ def _restore_path_from_commit(repo, sha, rel_path):
     return True, ""
 
 
-def revert_run_commit(repo, run_sha, seq, reason, out=print):
+def revert_run_commit(repo, run_sha, seq, reason, out=print, stamp_only=()):
     """Auto-revert of an unverified run commit (atomicity rule, incomplete-leg
     branch). Returns (ok, detail).
+
+    STAMP_ONLY (v3.0-170a, fleet inbox #17 + pickler second occurrence): the
+    run's own verify legs stamp `verified:` strictly inside the derivation
+    region of every CONFIRMED view, so HEAD's tree differs from the run
+    commit on exactly those files. `git revert -n` three-way-merges against
+    HEAD's tree and would conflict there. When the caller has proven that
+    every differing file differs ONLY inside its region, the run's files are
+    restored to their pre-run state EXPLICITLY -- parent bytes, or deletion
+    for a view the run created -- which is the end state a clean revert
+    produces. The stamp goes with the absorption it stamped; the verify
+    record stays in the journal as history.
 
     The run commit carries BOTH the view writes and the run's journal record.
     A plain `git revert` would delete the journal record too -- but the journal
@@ -1229,18 +1281,47 @@ def revert_run_commit(repo, run_sha, seq, reason, out=print):
     other_files = [f for f in _commit_files(repo, run_sha)
                    if f not in journal_files]
 
-    rc, _o, err = _git(repo, "revert", "-n", run_sha)
-    if rc != 0:
-        _git(repo, "revert", "--abort")
-        _git(repo, "revert", "--quit")
-        detail = "git revert refused/conflicted: %s" % err.strip()[-300:]
-        try:
-            _journal_revert(repo, seq, run_sha, "revert-failed",
-                            "%s | original reason: %s" % (detail, reason))
-        except Exception as e:                              # noqa: BLE001
-            detail += " | AND the revert-failure record could not be journaled: %s" % e
-        out("  revert FAILED: %s" % detail)
-        return False, detail
+    if stamp_only:
+        for path in other_files:
+            rc_p, _o, _e = _git(repo, "rev-parse", "--verify", "--quiet",
+                                "%s^:%s" % (run_sha, path))
+            if rc_p == 0:
+                ok, err = _restore_path_from_commit(repo, run_sha + "^", path)
+            else:                       # the run CREATED it: pre-run state is absence
+                abs_path = os.path.join(repo, path.replace("/", os.sep))
+                try:
+                    if os.path.isfile(abs_path):
+                        os.remove(abs_path)
+                    ok, err = True, ""
+                except OSError as e:
+                    ok, err = False, str(e)
+            if not ok:
+                detail = ("stamp-aware revert could not restore %s to its "
+                          "pre-run state: %s" % (path, err))
+                try:
+                    _journal_revert(repo, seq, run_sha, "revert-failed",
+                                    "%s | original reason: %s" % (detail, reason))
+                except Exception as e:                      # noqa: BLE001
+                    detail += (" | AND the revert-failure record could not be "
+                               "journaled: %s" % e)
+                out("  revert FAILED: %s" % detail)
+                return False, detail
+        out("  stamp-aware revert (v3.0-170): %d file(s) restored to pre-run "
+            "state explicitly; only verify stamps had changed since: %s"
+            % (len(other_files), ", ".join(sorted(stamp_only))))
+    else:
+        rc, _o, err = _git(repo, "revert", "-n", run_sha)
+        if rc != 0:
+            _git(repo, "revert", "--abort")
+            _git(repo, "revert", "--quit")
+            detail = "git revert refused/conflicted: %s" % err.strip()[-300:]
+            try:
+                _journal_revert(repo, seq, run_sha, "revert-failed",
+                                "%s | original reason: %s" % (detail, reason))
+            except Exception as e:                          # noqa: BLE001
+                detail += " | AND the revert-failure record could not be journaled: %s" % e
+            out("  revert FAILED: %s" % detail)
+            return False, detail
 
     for jf in journal_files:
         ok, err = _restore_path_from_commit(repo, run_sha, jf)
@@ -1256,7 +1337,8 @@ def revert_run_commit(repo, run_sha, seq, reason, out=print):
         detail = "revert applied but could not be journaled/committed: %s" % e
         out("  revert FAILED: %s" % detail)
         return False, detail
-    _git(repo, "revert", "--quit")
+    if not stamp_only:
+        _git(repo, "revert", "--quit")
     out("  reverted run commit %s; revert journaled at seq %d (%s)"
         % (run_sha[:12], rseq, rrel))
     return True, "reverted at journal seq %d" % rseq
@@ -2118,10 +2200,13 @@ def execute_revert(root, seq, reason=None, out=print):
     if not os.path.isdir(repo) or not _is_git_repo(repo):
         out("REFUSED: --root %s is not a git repository." % root)
         return EXIT_FAIL
-    if not _worktree_clean(repo):
-        out("REFUSED: the worktree is not clean. The revert must land as its "
-            "own stage-only commit; commit or stash your changes first. "
-            "Nothing was reverted.")
+    if not _worktree_clean_for_revert(repo):
+        out("REFUSED: uncommitted changes under wiki/ (tracked) or "
+            "receipts/journal/ (tracked OR untracked) are present. The revert "
+            "restores the run's own files and appends a journal record; commit "
+            "or stash those changes first. (v3.0-170: untracked files and edits "
+            "elsewhere in the tree no longer block a revert.) Nothing was "
+            "reverted.")
         return EXIT_FAIL
 
     recs = load_journal(repo)
@@ -2190,14 +2275,32 @@ def execute_revert(root, seq, reason=None, out=print):
     # anything is written, by blob comparison against the run commit --
     # exact, side-effect-free, and fail-closed on any path git cannot resolve
     # on either side.
-    moved_on = []
+    moved_on, stamp_only = [], []
     for path in _commit_files(repo, run_sha):
         if re.match(r"receipts/journal/\d+\.json$", path):
             continue        # restored by the revert itself, never a conflict
         rc_a, then_blob, _ea = _git(repo, "rev-parse",
                                     "%s:%s" % (run_sha, path))
         rc_b, now_blob, _eb = _git(repo, "rev-parse", "HEAD:%s" % path)
-        if rc_a != 0 or rc_b != 0 or then_blob.strip() != now_blob.strip():
+        if rc_a != 0 or rc_b != 0:
+            moved_on.append(path)
+            continue
+        if then_blob.strip() == now_blob.strip():
+            continue
+        # v3.0-170(a) (fleet inbox #17; pickler 2026-09-17): the run's OWN verify
+        # legs stamp `verified:` strictly inside the derivation region of every
+        # CONFIRMED view -- engine metadata about the body, not later work. A
+        # mixed-verdict run therefore ALWAYS failed this guard on its confirmed
+        # siblings, and the documented correction path was dead. Compare the
+        # bodies with the region stripped: byte-identical outside it is
+        # stamp-only and never blocks; any body difference still does.
+        rc_t, then_text, _et = _git(repo, "show", "%s:%s" % (run_sha, path))
+        rc_n, now_text, _en = _git(repo, "show", "HEAD:%s" % path)
+        if (rc_t == 0 and rc_n == 0
+                and _strip_derivation_region_text(then_text)
+                == _strip_derivation_region_text(now_text)):
+            stamp_only.append(path)
+        else:
             moved_on.append(path)
     if moved_on:
         out("REFUSED: run seq %d is no longer the last word on its own "
@@ -2221,7 +2324,8 @@ def execute_revert(root, seq, reason=None, out=print):
     reason = reason or ("operator adjudication via --revert: %s -- corrected "
                         "re-absorb to follow" % disposition)
     out("REVERT: run seq %d (%s) -- %s" % (seq, run_sha[:12], disposition))
-    ok, detail = revert_run_commit(repo, run_sha, seq, reason, out=out)
+    ok, detail = revert_run_commit(repo, run_sha, seq, reason, out=out,
+                                   stamp_only=tuple(stamp_only))
     if not ok:
         out("REVERT FAILED: %s" % detail)
         out("If the revert conflicted, the failure is journaled as "
@@ -4026,12 +4130,16 @@ def self_test():                                            # noqa: C901
              execute_revert(repo_p, 9999, out=silent) == EXIT_FAIL)
         case("--revert refuses a seq that is not a compile run",
              execute_revert(repo_p, cseq_p + 1, out=silent) == EXIT_FAIL)
-        junk = os.path.join(repo_p, "dirty.txt")
-        with open(junk, "w", encoding="utf-8") as fh:
-            fh.write("uncommitted\n")
+        # v3.0-170(b): "dirty" means a TRACKED change under wiki/ or
+        # receipts/journal/ -- an untracked file elsewhere no longer counts
+        junk = os.path.join(repo_p, "wiki", "a.md")
+        junk_before = open(junk, encoding="utf-8").read()
+        with open(junk, "a", encoding="utf-8") as fh:
+            fh.write("uncommitted edit under wiki/\n")
         case("--revert refuses a dirty worktree (the revert must land alone)",
              execute_revert(repo_p, cseq_p, out=silent) == EXIT_FAIL)
-        os.remove(junk)
+        with open(junk, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(junk_before)
         rc = execute_revert(repo_p, cseq_p, out=silent)
         recs_p = load_journal(repo_p)
         case("--revert over a rejected run exits 0 and restores the view",
@@ -4262,6 +4370,128 @@ def self_test():                                            # noqa: C901
              "behind)", _worktree_clean(repo_rc))
     finally:
         shutil.rmtree(repo_rc, ignore_errors=True)
+
+    # ------------------ O4b. v3.0-170: a same-run verify STAMP is not "later work"
+    _STAMP = ("# --- derivation (engine-managed; strip region) ---\n"
+              "# verified: 2026-09-26 by the confirmed sibling's leg\n"
+              "# --- /derivation ---\n")
+    repo_rs = make_repo("cdrv-revert-stamp-")
+    try:
+        make_staging(repo_rs)
+        make_grant(repo_rs)
+        write(os.path.join(repo_rs, "notes.md"), "tracked, outside wiki/\n")
+        _git(repo_rs, "add", "-A")
+        _git(repo_rs, "commit", "-qm", "fixtures")
+        cseq_rs = plant_seq103(repo_rs, "rejected")
+        run_sha_rs = _find_run_commit(repo_rs, cseq_rs)
+        pre_run_text = _git(repo_rs, "show", "%s^:wiki/a.md" % run_sha_rs)[1]
+        vp_rs = os.path.join(repo_rs, "wiki", "a.md")
+        write(vp_rs, open(vp_rs, encoding="utf-8").read() + _STAMP)
+        _git(repo_rs, "add", "-A")
+        _git(repo_rs, "commit", "-qm", "compile-v2 verify: stamp inside the region")
+        # (b): untracked noise + a tracked edit OUTSIDE wiki/ must not block
+        write(os.path.join(repo_rs, "scratch-from-another-session.txt"), "x\n")
+        write(os.path.join(repo_rs, "notes.md"), "edited, uncommitted, outside wiki/\n")
+        rc = execute_revert(repo_rs, cseq_rs, out=silent)
+        case("v3.0-170(a): --revert PROCEEDS when the only later change to a "
+             "written view is the verify stamp inside its derivation region",
+             rc == EXIT_OK
+             and any(r.get("driver_revert", {}).get("status") == "reverted"
+                     for r in load_journal(repo_rs).values()))
+        case("...and the view is back to its exact pre-run bytes (the stamp "
+             "went with the absorption it stamped)",
+             open(vp_rs, encoding="utf-8").read() == pre_run_text)
+        case("v3.0-170(b): untracked files and a tracked edit outside wiki/ + "
+             "receipts/journal/ neither blocked the revert nor were touched by it",
+             os.path.isfile(os.path.join(repo_rs, "scratch-from-another-session.txt"))
+             and open(os.path.join(repo_rs, "notes.md"), encoding="utf-8").read()
+             == "edited, uncommitted, outside wiki/\n")
+    finally:
+        shutil.rmtree(repo_rs, ignore_errors=True)
+
+    # ...and a genuine BODY edit after the stamp still refuses (the fix narrows
+    # the guard to the region, it does not remove it)
+    repo_rt = make_repo("cdrv-revert-stamp-plus-edit-")
+    try:
+        make_staging(repo_rt)
+        make_grant(repo_rt)
+        _git(repo_rt, "add", "-A")
+        _git(repo_rt, "commit", "-qm", "fixtures")
+        cseq_rt = plant_seq103(repo_rt, "rejected")
+        vp_rt = os.path.join(repo_rt, "wiki", "a.md")
+        write(vp_rt, open(vp_rt, encoding="utf-8").read()
+              + "a later BODY edit\n" + _STAMP)
+        _git(repo_rt, "add", "-A")
+        _git(repo_rt, "commit", "-qm", "stamp AND a body edit")
+        head_rt = _git(repo_rt, "rev-parse", "HEAD")[1].strip()
+        rc = execute_revert(repo_rt, cseq_rt, out=silent)
+        case("v3.0-170(a): a body edit beside the stamp still REFUSES (last-word "
+             "guard intact outside the region), nothing written",
+             rc == EXIT_FAIL
+             and _git(repo_rt, "rev-parse", "HEAD")[1].strip() == head_rt)
+        # (b) the narrowed guard still refuses a tracked edit UNDER wiki/
+        write(vp_rt, open(vp_rt, encoding="utf-8").read() + "dirty\n")
+        case("v3.0-170(b): an uncommitted tracked edit under wiki/ still refuses",
+             execute_revert(repo_rt, cseq_rt, out=silent) == EXIT_FAIL
+             and not _worktree_clean_for_revert(repo_rt))
+    finally:
+        shutil.rmtree(repo_rt, ignore_errors=True)
+
+    # verifier fold 2026-09-26 (finding 1): an UNTRACKED journal record blocks the
+    # revert -- the chain would append onto it and leave a gap in committed history
+    repo_ru = make_repo("cdrv-revert-untracked-journal-")
+    try:
+        make_staging(repo_ru)
+        make_grant(repo_ru)
+        _git(repo_ru, "add", "-A")
+        _git(repo_ru, "commit", "-qm", "fixtures")
+        cseq_ru = plant_seq103(repo_ru, "rejected")
+        stray = os.path.join(repo_ru, "receipts", "journal", "%d.json" % (cseq_ru + 7))
+        write(stray, "{\"run_type\": \"compile\", \"note\": \"another session, uncommitted\"}\n")
+        head_ru = _git(repo_ru, "rev-parse", "HEAD")[1].strip()
+        case("v3.0-170(b) fold: an UNTRACKED receipts/journal/*.json refuses the revert "
+             "(the chain would append onto it), nothing written",
+             execute_revert(repo_ru, cseq_ru, out=silent) == EXIT_FAIL
+             and _git(repo_ru, "rev-parse", "HEAD")[1].strip() == head_ru
+             and os.path.isfile(stray))
+        os.remove(stray)
+        case("...and with the stray record gone the same revert proceeds",
+             execute_revert(repo_ru, cseq_ru, out=silent) == EXIT_OK)
+    finally:
+        shutil.rmtree(repo_ru, ignore_errors=True)
+
+    # verifier fold 2026-09-26 (finding 6): a run that CREATED a view, stamped after
+    # the run, reverts by DELETION through the explicit-restore branch
+    repo_rn = make_repo("cdrv-revert-created-stamp-")
+    try:
+        make_staging(repo_rn)
+        make_grant(repo_rn)
+        _git(repo_rn, "add", "-A")
+        _git(repo_rn, "commit", "-qm", "fixtures")
+        core_rn = _core()
+        vp_new = os.path.join(repo_rn, "wiki", "new.md")
+        write(vp_new, "# New\n\nborn in this run\n")
+        rec_rn = core_rn.minimal_record("compile", "0" * 40)
+        rec_rn["absorbed"] = [{"view": "wiki/new.md", "events": ["raw/e1.md"],
+                               "pre_blob": "a" * 40, "post_blob": "b" * 40,
+                               "manifest": [], "corpus_support": []}]
+        rec_rn["run_window"] = {"start": "t0", "end": "t1"}
+        cseq_rn, cpath_rn = core_rn.append_record(repo_rn, rec_rn)
+        core_rn.stage_only_commit(
+            repo_rn, ["wiki/new.md", os.path.relpath(cpath_rn, repo_rn).replace(os.sep, "/")],
+            "run that CREATES a view, seq %d" % cseq_rn)
+        write(vp_new, open(vp_new, encoding="utf-8").read() + _STAMP)
+        _git(repo_rn, "add", "-A")
+        _git(repo_rn, "commit", "-qm", "verify stamp on the created view")
+        rc = execute_revert(repo_rn, cseq_rn, out=silent)
+        case("v3.0-170(a) fold: a CREATED view with a same-run stamp reverts by deletion "
+             "(explicit-restore branch), journal record restored, worktree clean",
+             rc == EXIT_OK and not os.path.exists(vp_new)
+             and any(r.get("driver_revert", {}).get("status") == "reverted"
+                     for r in load_journal(repo_rn).values())
+             and _worktree_clean_for_revert(repo_rn))
+    finally:
+        shutil.rmtree(repo_rn, ignore_errors=True)
 
     # the pre-check must NOT fire when the run IS still the last word
     repo_rd = make_repo("cdrv-revert-nocollision-")

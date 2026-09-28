@@ -128,12 +128,12 @@ class _FenceTracker(object):
     def feed(self, line):
         """Returns True if the line is INSIDE a fence (or is a fence delimiter)."""
         m = _split.FENCE_RE.match(line)
-        # DELIBERATELY matches check-split's fence recognition, leading whitespace and
-        # all (cross-vendor round-3): the Release-2 acceptance gate reuses check-split's
+        # DELIBERATELY matches check-split's fence recognition by IMPORTING its regex
+        # (cross-vendor round-3): the Release-2 acceptance gate reuses check-split's
         # anchor primitive, so this instrument must see exactly the anchor set that gate
-        # will see. check-split's FENCE_RE is looser than CommonMark (it accepts a 4+-space
-        # indented marker as a fence); that leniency is filed upstream as a shared defect
-        # to fix in BOTH tools together (v3.0-132), never in one alone.
+        # will see. v3.0.55 (v3.0-132): that regex is now CommonMark's <=3-space rule --
+        # a 4+-space-indented marker is an indented code block line, not a fence -- and
+        # both tools moved in the same release, as the parity pin below demands.
         if m:
             run = m.group(1)
             ch, n = run[0], len(run)
@@ -661,8 +661,9 @@ def self_test():
             rc = main(["--root", td, "--out", alias])
             if rc != 2:
                 fails.append("aliased in-repo --out was not refused: %s (rc=%s)" % (alias, rc))
-        # fence recognition must equal check-split's (incl. its leniency on indented
-        # markers) so both tools see one anchor set; pinned as PARITY, not as CommonMark
+        # fence recognition must equal check-split's so both tools see one anchor set;
+        # pinned as PARITY -- and since v3.0-132 that shared recognition IS CommonMark's
+        # <=3-space rule, so the 4-space-indented marker below is NOT a fence in either
         with open(vp, "w", encoding="utf-8", newline="\n") as fh:
             fh.write("---\nt: x\n---\n## H\n    ```\n## parity-heading\n    ```\n")
         text = open(vp, encoding="utf-8").read()
@@ -670,6 +671,9 @@ def self_test():
         theirs = set(_split.heading_slugs(text)) if hasattr(_split, "heading_slugs") else None
         if theirs is not None and (("parity-heading" in theirs) != ("parity-heading" in ours)):
             fails.append("fence parity with check-split broken: ours=%r theirs=%r" % (ours, theirs))
+        if "parity-heading" not in ours or (theirs is not None and "parity-heading" not in theirs):
+            fails.append("v3.0-132: a 4-space-indented marker must NOT open a fence (CommonMark) -- "
+                         "ours=%r theirs=%r" % (ours, theirs))
         # wiki enumeration error -> refusal, never a partial universe
         def _bad_walk(top, onerror=None):
             onerror(OSError("simulated inaccessible subtree"))

@@ -264,7 +264,7 @@ project-root/
 
 ---
 
-*Template version: 6.0*
+*Flight-plan document revision: v6.0 (this document's own revision — not the harness template version, which lives in root `VERSION`)*
 *Created: April 2026*
 *Origin: v5.0 + unified build architecture merger. Added verification columns, tier routing, CC Controller session contract, verification audit at hold points, methodology routing table. Absorbed autonomous execution principles loading into session contracts. Absorbed subagent skill governance into CC Controller contract.*
 *Philosophy: One file. Layered for the machine. The cockpit routes to the methodology — it doesn't contain it. Auto-update is structural, not optional.*

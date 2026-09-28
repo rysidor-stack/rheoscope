@@ -82,6 +82,21 @@ propagate regardless of any toggle). See `ARCHITECTURE.md` § Overview and § Co
 § Capabilities (Zone 2) for the full model, and `capabilities/INDEX.md` for the toggle table
 (template-only — deleted once init consumes it).
 
+**Which capabilities for which project** (backlog v3.0-36 — the table that used to be
+spread across three docs):
+
+| Your project looks like… | `knowledge-os` | `code-conventions` (prototype) | Why |
+|---|---|---|---|
+| Research, operations, or a knowledge-heavy domain — facts and decisions accumulate faster than code | **on** | off | The wiki, compile, verify legs and sweep briefings — the memory engine — are built for exactly this |
+| A code build with a real spec and a real repo, little prose knowledge | off | **on** | Manifests, tiers and the code firewall carry the build; a wiki with nothing to absorb is dead weight |
+| Both — a product with a codebase AND an operating domain (an accounting OS, a production pipeline) | **on** | **on** | The common shape for a business system; expect the first compile inside the first week |
+| A media or generative-asset production | **on** | off | Shot contracts, editorial ledgers and forensics notes live as raw intake and views today; a dedicated capability is designed (backlog v3.0-186), not shipped |
+| A one-shot experiment or a prototype you may throw away | off | off | Core alone — governance, handoffs, the perimeter. Turn a capability on when the project earns it |
+
+`stress-testing` is a retired no-op: the key is still required by the schema and its value is ignored either way (the example ships it `true`). The three docs-only
+capabilities propagate regardless of any toggle. Changing your mind later is manual:
+`INIT.md` § How to disable a capability after the fact.
+
 ### The skills you'll actually type
 
 These are the tour stops — the skills a first week actually touches — not the complete

@@ -492,10 +492,21 @@ def status(repo, branch=None, now=None):
         if d and (now - d).total_seconds() > wdays * 86400:
             overdue.append(it["id"])
     missed = bool(overdue) or (since is None and bool(pending)) or (since is not None and since > wdays)
+    # v3.0-171 (fleet inbox #18): `failed_cycles` is every failed cycle EVER (the round-3
+    # fold stands: a failure is never excused by a later success -- it is excused by being
+    # SHOWN and acknowledged). What the operator is told about is the subset whose
+    # failed-cycle alarm has not been acknowledged yet -- "since the last attended ok"
+    # was the wrong wording, and it read false the moment an ok landed after the failure.
+    acked_failed_cycles = {a.get("cycle") for a in alarms
+                          if "_malformed" not in a and a.get("kind") == "failed-cycle"
+                          and "alarm:%s:%s" % (a.get("ts"), a.get("kind")) in acked}
+    unacknowledged_failed = [f for f in failed
+                             if "%s:%s" % (f.get("run_id"), f.get("ts")) not in acked_failed_cycles]
     obs = {"window_days": wdays, "window_note": wnote, "last_attended_ok": last_attended_ok,
            "overdue_items": overdue,
            "last_any_close": last_any_close, "days_since_attended": round(since, 2) if since is not None else None,
            "missed": missed, "failed_cycles": failed,
+           "unacknowledged_failed_cycles": unacknowledged_failed,
            "alarms_outstanding": [it for it in pending if it["kind"] == "alarm"]}
     return {"head": head, "items": items, "pending": pending, "acked": list(acked.values()),
             "superseded_ack_rows": superseded,
@@ -791,11 +802,31 @@ def observe(repo, observer="standing-loop", branch=None, now=None):
         key = "%s:%s" % (f.get("run_id"), f.get("ts"))
         if not any(a.get("kind") == "failed-cycle" and a.get("cycle") == key for a in existing):
             row = {"ts": _iso(now), "kind": "failed-cycle", "observer": observer, "cycle": key,
+                   "cycle_ts": f.get("ts"),      # v3.0-171(c): when the cycle itself failed
                    "detail": "sweep run %s (%s) %s" % (f.get("run_id"), f.get("ts"),
                                                       "failed" if f.get("outcome") == "failed" else "never closed")}
             _append(repo, ALARMS, row)
             new.append(row)
     return st, new
+
+
+def heartbeat_open_attended(repo, run_id, observer="attended-open", branch=None, now=None):
+    """v3.0-171(a) (fleet inbox #18): an ATTENDED sweep's `open` heartbeat runs
+    the observer FIRST, then writes its open row. A failed cycle that no
+    observer ever saw gets its alarm row now -- before the render -- so the
+    same attended close shows it and acknowledges it. Before this, the first
+    `--observe` after a clean attended close minted the alarm for a failure
+    that close had already superseded, and the next render read "failed
+    cycles since the last attended ok: 1" under an ok three days newer than
+    the failure. Returns (open_row, new_alarm_rows)."""
+    now = now or _now()
+    new = []
+    if attended():
+        # observe() mints MISSED-cycle alarms too: an attended open after a missed window
+        # writes that alarm now, and this close acknowledges it (verifier note 2026-09-26)
+        _st, new = observe(repo, observer, branch, now=now)
+    row = heartbeat(repo, "open", run_id, now=now)
+    return row, new
 
 
 # ------------------------------------------------------------------ render
@@ -824,8 +855,8 @@ def render(st):
     out.append("observation window: %d day(s) (%s); last attended sweep ok: %s; %s" % (
         obs["window_days"], obs["window_note"], obs["last_attended_ok"] or "never",
         "MISSED" if obs["missed"] else "within window"))
-    if obs["failed_cycles"]:
-        out.append("failed cycles since the last attended ok: %d" % len(obs["failed_cycles"]))
+    if obs.get("unacknowledged_failed_cycles"):
+        out.append("failed cycles not yet acknowledged: %d" % len(obs["unacknowledged_failed_cycles"]))
     out.append("%-9s %-12s %-24s %-20s %s" % ("kind", "commit", "author", "date", "detail"))
     for it in st["pending"]:
         if it["kind"] == "retirement":
@@ -1197,6 +1228,32 @@ def self_test():
              "failed-cycle alarm (a failure is never excused by a later success)",
              any(n["kind"] == "failed-cycle" and n.get("cycle", "").startswith("nf") for n in new)
              and st["observation"]["failed_cycles"], new)
+        # v3.0-171 (fleet inbox #18)
+        case("v3.0-171(b): the observation names failed cycles NOT YET ACKNOWLEDGED -- with the alarm "
+             "just minted and nothing acked, that is all of them -- and render says so",
+             any(f.get("run_id", "").startswith("nf") for f in st["observation"]["unacknowledged_failed_cycles"])
+             and len(st["observation"]["unacknowledged_failed_cycles"]) <= len(st["observation"]["failed_cycles"])
+             and "failed cycles not yet acknowledged" in render(st)
+             and "since the last attended ok" not in render(st))
+        case("v3.0-171(c): the failed-cycle alarm row carries the cycle's own close timestamp",
+             all(n.get("cycle_ts") == n["cycle"].split(":", 1)[1] for n in new if n["kind"] == "failed-cycle"), new)
+        # (a): an ATTENDED open runs the observer first -- the alarm for an unseen failure
+        # exists BEFORE the open row that will render and acknowledge it
+        tZ = tF + datetime.timedelta(days=2)
+        heartbeat(r, "open", "zz", now=tZ)
+        heartbeat(r, "failed", "zz", now=tZ)
+        alarms_before = len([a for a in _rows(r, ALARMS) if a.get("cycle", "").startswith("zz:")])
+        _open_row, new_zz = heartbeat_open_attended(r, "zz-next", now=tZ + datetime.timedelta(hours=1))
+        zz_alarm = [a for a in _rows(r, ALARMS) if a.get("cycle", "").startswith("zz:")]
+        case("v3.0-171(a): an attended `open` heartbeat runs the observer FIRST -- the unseen failed "
+             "cycle's alarm row exists, labeled attended-open, stamped with the cycle's close, and "
+             "dated no later than the open row it precedes",
+             alarms_before == 0 and len(zz_alarm) == 1 and zz_alarm[0]["observer"] == "attended-open"
+             and zz_alarm[0]["cycle_ts"] == _iso(tZ) and zz_alarm[0]["ts"] <= _open_row["ts"]
+             and _open_row["kind"] == "open" and _open_row["run_id"] == "zz-next", zz_alarm)
+        _open_row2, new_zz2 = heartbeat_open_attended(r, "zz-next-2", now=tZ + datetime.timedelta(hours=2))
+        case("v3.0-171(a): ...and a second attended open mints nothing new (alarm-row dedup holds)",
+             new_zz2 == [] and _open_row2["run_id"] == "zz-next-2")
         # tamper direction 4: delete the retire record from the branch -> item persists (history)
         git("rm", "-q", "receipts/journal/1.json")
         c5 = commit("suppress the journal record")
@@ -1647,7 +1704,12 @@ def main(argv=None):
             if not a.run_id:
                 print("REFUSED: --heartbeat needs --run-id")
                 return 2
-            row = heartbeat(repo, a.heartbeat, a.run_id)
+            if a.heartbeat == "open":
+                row, new = heartbeat_open_attended(repo, a.run_id, "attended-open", a.branch)
+                for n in new:
+                    print("ALARM written: %s -- %s" % (n["kind"], n["detail"]))
+            else:
+                row = heartbeat(repo, a.heartbeat, a.run_id)
             print(json.dumps(row))
             return 0
         if a.ack:

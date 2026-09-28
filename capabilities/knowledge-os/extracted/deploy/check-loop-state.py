@@ -1172,6 +1172,33 @@ def run_live(yaml, root=None):
 _TREE_SRC = os.path.join(FIXTURES, "trees")
 
 
+def _longpath(p):
+    """Windows: the absolute path with the `\\\\?\\` prefix so file operations past
+    MAX_PATH (260) succeed (v3.0-46: this sensor's own fixture source sat 264
+    characters deep on a real instance and the self-test copy failed with a
+    raw WinError). Unchanged on other platforms."""
+    p = os.path.abspath(p)
+    if os.name == "nt" and not p.startswith("\\\\?\\"):
+        return "\\\\?\\" + p
+    return p
+
+
+def _copytree_long(src, dst):
+    """shutil.copytree over long-path-safe absolute paths; a failure that is
+    plausibly path-depth is re-raised NAMED as such, with the remedy."""
+    import shutil
+    try:
+        shutil.copytree(_longpath(src), _longpath(dst))
+    except OSError as e:
+        if os.name == "nt" and (len(os.path.abspath(src)) > 200 or len(os.path.abspath(dst)) > 200):
+            raise RuntimeError(
+                "environment path too deep for this Windows host (%d-char source, %d-char "
+                "destination; MAX_PATH is 260): %s. FIX: enable long paths (LongPathsEnabled) "
+                "or run the sensor from a shorter checkout path -- v3.0-46"
+                % (len(os.path.abspath(src)), len(os.path.abspath(dst)), e)) from e
+        raise
+
+
 def _build_tree_copy(case_name, dest):
     """Copies the committed fixture SOURCE tree (deploy/test-fixtures/
     loop-state/trees/<case_name>/ -- plain files, no .git, no minted
@@ -1189,8 +1216,8 @@ def _build_tree_copy(case_name, dest):
     src = os.path.join(_TREE_SRC, case_name)
     for sub in ("raw", "handoffs", "core", "receipts"):
         s = os.path.join(src, sub)
-        if os.path.isdir(s):
-            shutil.copytree(s, os.path.join(dest, sub))
+        if os.path.isdir(_longpath(s)):       # v3.0-46: isdir on a >260-char path is False without the prefix
+            _copytree_long(s, os.path.join(dest, sub))
     subprocess.run(["git", "-C", dest, "init", "-q"], capture_output=True)
     subprocess.run(["git", "-C", dest, "config", "user.email", "t@t"], capture_output=True)
     subprocess.run(["git", "-C", dest, "config", "user.name", "t"], capture_output=True)
@@ -1223,6 +1250,23 @@ def run_self_test(yaml):
     import shutil
     import tempfile
     failures = []
+    # v3.0-46: the fixture copy survives a source path past MAX_PATH (Windows)
+    if os.name == "nt":
+        import shutil as _sh
+        _deep_root = tempfile.mkdtemp(prefix="cls-deep-")
+        try:
+            _deep = os.path.join(_deep_root, *(["d" * 40] * 7))      # ~300 chars
+            os.makedirs(_longpath(os.path.join(_deep, "raw")))
+            with open(_longpath(os.path.join(_deep, "raw", "x.md")), "w", encoding="utf-8") as fh:
+                fh.write("deep\n")
+            _dst = os.path.join(_deep_root, "copy")
+            _copytree_long(os.path.join(_deep, "raw"), os.path.join(_dst, "raw"))
+            if not os.path.isfile(os.path.join(_dst, "raw", "x.md")):
+                failures.append("v3.0-46: long-path fixture copy did not land")
+        except Exception as e:  # noqa: BLE001
+            failures.append("v3.0-46: long-path fixture copy raised: %s" % e)
+        finally:
+            _sh.rmtree(_longpath(_deep_root), ignore_errors=True)
 
     # ---- (1) ported base-check fixtures (schema-only, handoff kind only --
     # dispatch fixtures trimmed along with dispatches/ support).

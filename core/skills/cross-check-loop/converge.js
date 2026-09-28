@@ -54,7 +54,7 @@ const crypto = require('node:crypto');
 const VERIFY_CLI = process.env.CONVERGE_VERIFY_CLI ||
   (process.env.CROSS_VENDOR_BRIDGE_DIR
     ? path.join(process.env.CROSS_VENDOR_BRIDGE_DIR, 'verify-cli.js')
-    : path.join(__dirname, '..', '..', 'bridge', 'verify-cli.js'));
+    : path.join(__dirname, '..', 'bridge', 'verify-cli.js'));   // .claude/skills/<this>/../bridge (v3.0-188: was '..','..' -> .claude/bridge, which init never creates)
 
 const ROUND_CAP = { T2: 2, T3: 1 };           // the handoff protocol tier round caps
 const ACTIVE = new Set(['pending', 'recheck']);

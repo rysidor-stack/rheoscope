@@ -121,6 +121,11 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     This row, and its closing twin in (c), are the "previous sweep receipt" every other
     step refers to (`receipts/pending/sweeps.jsonl`; the term was undefined before
     v3.0.50). A sweep that opens and never closes is a FAILED cycle the observer alarms on.
+    **An attended `open` runs the observer first** (v3.0.55, backlog v3.0-171, fleet inbox
+    #18): any failed cycle nobody has observed yet gets its alarm row *now*, before (b)
+    renders — so this close shows it and acknowledges it, and the counter reads "failed
+    cycles not yet acknowledged", never "since the last attended ok" under an ok newer
+    than the failure.
 
     (b) **Render — the table to a receipt file, the appendix to the briefing (v3.0.53,
     backlog v3.0-159, fleet inbox #11: the old "put its table in the briefing verbatim"
@@ -341,6 +346,15 @@ briefing to SWEEP-BRIEFING.md, overwriting."
 That's the whole recipe — /sweep itself needs no changes to support it. The briefing save
 belongs to the WRITE-SIDE scheduled session, never to `/sweep` itself: a direct, manual
 `/sweep` invocation still performs zero writes — the read-only rule above stands unchanged.
+
+**Wrapper hygiene (v3.0.55, backlog v3.0-180 — learned when the first production wrapper
+silently stopped for a week):** (a) never append the session transcript to the log unbounded:
+capture the exit code and the last few KB, or trim the log BY BYTES before each run (keep the
+last 1 MB once it passes 4 MB) — never by line count, because one multi-megabyte line makes a
+`Get-Content -Tail` walk for hours; (b) write the run's dated header line to the log BEFORE any
+pre-step, so a stall is at least dated; (c) give the scheduled task an explicit execution limit
+(about 2 h) instead of the 72 h default, and refuse a second instance while one runs. `/doctor`
+warns (`sweep-schedule-log`) when the log passes 16 MB or carries a line over 1 MB.
 
 Turning this on is an **operator decision**, not a default. It creates standing automation and
 spends model time on a fixed schedule whether or not anything is wrong. Nothing here activates

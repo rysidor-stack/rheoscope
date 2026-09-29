@@ -62,7 +62,8 @@ instance-local entries use `v3.0-local-N` from the start.
 ## Trust surfaces are operator-signed, and adoption sessions never write them (v3.0-120, v3.0.46)
 
 A short list of files decides what a session may do: the security hooks and their
-allowlist, `allowed_signers`, `trust-surfaces.txt`, `deploy/safe-allowlist.yaml`, the
+allowlist, `allowed_signers`, `trust-surfaces.txt`, `deploy/safe-allowlist.yaml`,
+`deploy/credential-bindings.yaml` (the credential delivery gate, since v3.0.56), the
 `deploy/evidence/operator-*.md` authorization artifacts, `deploy/rulings/**`, the verifier
 and the HUMAN-GATE consumers (`deploy/trust.py`, `compile-driver.py`,
 `compile-backends.py`, `audit-content.py`), and `.claude/settings*.json`. Since v3.0.46

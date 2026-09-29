@@ -543,6 +543,7 @@ def check_precommit_scanner(ctx):
 TRUST_SURFACE_FLOOR = (
     "core/security/hooks/**",
     "deploy/safe-allowlist.yaml",
+    "deploy/credential-bindings.yaml",  # v3.0-198 (v3.0.56)
     "deploy/evidence/operator-*.md",
     "deploy/rulings/**",
     "deploy/trust.py",

@@ -267,6 +267,81 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.56 → v3.0.57 (mirror-safe fixtures: v3.0.56 as published, with two test lines rebuilt so GitHub push protection accepts the public mirror)
+
+**If you adopt from the public mirror:** the mirror never carried v3.0.56. GitHub's push protection
+refused it over a fake Google client-ID-shaped test filename in two hook batteries (backlog v3.0-202),
+so the mirror goes from v3.0.55 straight to v3.0.57. Apply the v3.0.55 → v3.0.56 section above first,
+then this one. Nothing here changes what any hook allows or refuses.
+
+**Operator-copy lane only (trust surfaces; you copy and commit these yourself):**
+`core/security/hooks/block-env-writes.sh` and `core/security/hooks/scan-staged-secrets.sh` (test lines
+only: the Google download name and the placeholder client secret are assembled from fragments, so the
+bytes the hooks see at run time are unchanged). **Reinstall the scanner BEFORE committing it:**
+`cp core/security/hooks/scan-staged-secrets.sh .git/hooks/pre-commit`, then `git add` + commit.
+Boards after: `bash core/security/hooks/block-env-writes.sh --self-test` (157),
+`bash core/security/hooks/scan-staged-secrets.sh --self-test` (113). Nothing else migrates.
+
+## v3.0.55 → v3.0.56 (the credential-guard patch: the files Google's client libraries write, and the credential bindings file, are guarded mechanically)
+
+Two lanes, the usual ORDER: **session lane FIRST, operator lane second.** Nothing here asks you a
+question. After this adoption a session can no longer write `credentials.json`, `token.json`,
+`token.pickle`, `client_secret*.json`, a service-account key JSON or key material into your tree
+through the Edit/Write tools, the commit scanner refuses to commit any of them (or a Google OAuth
+client secret, access token or refresh token pasted into any file), and a session can no longer add
+its own line to your `credential-bindings.yaml` under `deploy/` (backlog v3.0-197 and v3.0-198, fleet inbox #19
+and #20, both filed from the first Google-API build on this harness).
+
+**Step 1 — SESSION lane (any session copies these; commit together):**
+`.claude/skills/doctor/doctor.py` (the trust-surface floor gains your `credential-bindings.yaml` under `deploy/`,
+so check 16 covers it; 110/110), `core/security/CREDENTIALS.md` (the Google API paragraph;
+the bindings gate is now mechanical) and `core/onboarding/UPDATING.md` (the class list names the
+bindings file).
+
+**Step 2 — OPERATOR-COPY lane (trust surfaces; you copy and commit these yourself — under
+`required`, `git commit -S`):** `core/security/hooks/block-env-writes.sh` (v3.0-197: the
+credential-file class by name, in any letter case, wherever the path lies — `*.example.json` /
+`*.sample.json` copies of the OAuth names are exempt, key material has no exemption; v3.0-198: the
+bindings file joins the class; and firewall folds that apply to EVERY guarded file on this lane,
+`.env` included: letter case is ignored, repeated separators, `.` segments and `seg/..` pairs
+collapse, trailing dots or spaces on any path component, a `::$DATA` suffix and the Win32
+device-namespace prefix are stripped before any rule reads the path), `core/security/hooks/block-dangerous-bash.sh` (the bindings file joins the class on the
+Bash/PowerShell lane, and a write target is read with repeated separators, `.` segments and `seg/..`
+pairs collapsed first), `core/security/hooks/scan-staged-secrets.sh` (the path class gains the Google
+client-library names and `*.p12`/`*.pfx`, the whole path class — `.env*` included — is matched in any
+letter case, the perimeter's fixture-directory exemption is anchored at the repository root (a
+nested lookalike directory is scanned), and three content classes catch Google OAuth values — `GOCSPX-` client secrets,
+`ya29.` access tokens, `1//0` refresh tokens — wherever they are pasted, an example-named file
+included), `core/security/hooks/trust-surfaces.txt` (the new floor line), `core/security/hooks/README.md`,
+and `deploy/trust.py` (the floor line). All of it went through a cross-vendor firewall (record: the
+v3.0.56 credential-guard review). **Reinstall the scanner BEFORE committing it** (the v3.0-112
+ordering): `cp core/security/hooks/scan-staged-secrets.sh .git/hooks/pre-commit`, then `git add` +
+commit. Boards after: `bash core/security/hooks/block-env-writes.sh --self-test` (157),
+`bash core/security/hooks/block-dangerous-bash.sh --self-test` (298),
+`bash core/security/hooks/scan-staged-secrets.sh --self-test` (113), `py deploy/trust.py --self-test` (118).
+
+**Step 3 — what changes in your day, and one check before you commit:**
+- **Binding a credential destination is yours alone now.** Edit your `credential-bindings.yaml` under `deploy/`
+  outside the session and commit it; a session that needs a binding asks, as `CREDENTIALS.md` always
+  said. `/doctor` check 16 names an uncommitted change to it, and under `warn` its newest commit
+  draws the same unsigned-commit WARN every other member does.
+- **The next attended sweep shows the bindings file's history once.** Every past commit that touched
+  it becomes a trust item on the pending list (the fleet's one instance with such commits carries two);
+  the sweep that shows them acknowledges them, and every later binding edit is shown the same way.
+- **Before your first commit after adoption, list tracked credential names:**
+  `git ls-files | grep -iE '(^|/)(credentials\.json|token\.json|token\.pickle|client_secret[^/]*\.json|service[-_]?account[^/]*\.json|[^/]*\.(pem|key|ppk|p12|pfx))$'`.
+  Empty is the expected answer (it was empty on every local instance on 2026-09-28). A tracked file
+  there blocks the next commit that touches it: move the secret into the vault, `git rm --cached`
+  the file, and decide separately whether its history needs rewriting (an operator act).
+- **A Google API connector** reads its client secret and refresh token from the broker
+  (`deploy/credential-store.ps1`, delivered by `credential-use.ps1`), never from the library's
+  default `credentials.json` / `token.json`; `CREDENTIALS.md` has the paragraph.
+- A public certificate you genuinely want in the repo as `*.pem` was already refused at commit since
+  v3.0.36; the Edit/Write lane now refuses it too. Write it yourself and commit it with your own
+  one-time `--no-verify`, or keep it outside the tree.
+
+Nothing else migrates: no re-freeze, no new `project.yaml` keys.
+
 ## v3.0.54 → v3.0.55 (the papercut batch: a created view's merge bar is honest, a mixed-verdict run reverts, CRLF views attribute, the observer runs before the render, and eleven smaller fixes)
 
 Two lanes, the same ORDER as v3.0.53→54: **session lane FIRST, operator lane second.**

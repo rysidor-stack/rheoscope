@@ -140,6 +140,7 @@ SK_TYPES = frozenset({"sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@open
 TRUST_SURFACE_FLOOR = (
     "core/security/hooks/**",
     "deploy/safe-allowlist.yaml",
+    "deploy/credential-bindings.yaml",  # v3.0-198 (v3.0.56): the credential delivery gate
     "deploy/evidence/operator-*.md",
     "deploy/rulings/**",
     "deploy/trust.py",

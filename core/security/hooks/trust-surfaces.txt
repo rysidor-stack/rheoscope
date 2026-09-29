@@ -12,6 +12,7 @@
 # presence-requiring key (core/security/hooks/allowed_signers).
 core/security/hooks/**
 deploy/safe-allowlist.yaml
+deploy/credential-bindings.yaml
 deploy/evidence/operator-*.md
 deploy/rulings/**
 deploy/trust.py

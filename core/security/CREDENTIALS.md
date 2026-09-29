@@ -26,6 +26,17 @@ wrong: it is readable by any session, any subprocess, and any exfiltration the e
 miss; it has no delivery gate; and it recreates the shredding problem the broker exists to
 remove. If a session proposes one, the proposal itself is the signal to re-read this file.
 
+**Google API clients (and every library with a quickstart like theirs).** Google's own
+quickstart downloads `credentials.json` (or `client_secret_*.json`) into the project and has
+the library write `token.json` (older versions: `token.pickle`) beside it on first consent.
+Both files are secrets. Store the client secret and the refresh token with
+`credential-store.ps1`, and have the connector read them from the vault at run time. Since
+v3.0.56 the perimeter enforces this: the Edit/Write guard refuses those names (and key
+material) by basename, and the pre-commit scanner refuses to commit them (backlog v3.0-197).
+A library that writes its token file at run time, inside a script, is not stopped at write
+time. The scanner is the gate there, so point the library's token path at the broker rather
+than relying on it.
+
 ## The mechanism: the credential broker
 
 Four scripts, shipped with the knowledge-os capability and living at `deploy/` in an
@@ -45,7 +56,11 @@ stdout, stderr, argv, any log, any file, or any error message — only the NAME.
 **The bindings file is an operator-gated trust surface.** `credential-bindings.yaml` ships
 empty and fails safe: absent, malformed, or partially valid all degrade to "refuse
 everything." A session that needs a new destination bound ASKS the operator to add the
-line; it never adds the line itself. Read that file's header before touching it.
+line; it never adds the line itself. Read that file's header before touching it. Since
+v3.0.56 (backlog v3.0-198) this is mechanical, not a request: `deploy/credential-bindings.yaml`
+is in the trust-surface class, so both tool lanes deny a session's write to it, `/doctor`
+check 16 names an uncommitted change, and every commit that touches it joins the pending
+list until an attended sweep shows it to the operator.
 
 ## What never enters the broker
 
@@ -64,7 +79,7 @@ changes.
 | Positive convention | this file | Says where secrets live: the vault, via the broker. |
 | The vault + broker | `deploy/credential-*.ps1` | OS-encrypted storage; name-only echo; operator-typed entry. |
 | Delivery gate | `deploy/credential-bindings.yaml` | Operator-pinned destinations per credential; fails closed. |
-| Negative perimeter | `core/security/hooks/` | Blocks AI writes of `.env*` files and the egress/destruction command classes. |
+| Negative perimeter | `core/security/hooks/` | Blocks AI writes of `.env*` files, credential files by name (`credentials.json`, `token.json`, `client_secret*.json`, key material — v3.0.56), the trust-surface class (the bindings file included), and the egress/destruction command classes; the pre-commit scanner refuses the same files and secret-shaped content at commit. |
 | Artifact hygiene | `core/governance/DATA-POLICY.md` | Auth secrets are a mandatory mask category in every artifact, summary, and commit. |
 | Session hygiene | session contract (governance `CLAUDE.md`), /cross-check + /handoff taint rules | Credentialed sessions don't co-reside with untrusted content; nothing secret enters an outbound packet — and the bridge's repo-grounding scanner enforces the return path mechanically. |
 | Capability scope | `core/governance/AUTOMATION-ISOLATION.md` + `core/methodology/least-privilege-isolation.md` | Each autonomous capability runs as a distinct least-privilege credential, declared before enablement. |

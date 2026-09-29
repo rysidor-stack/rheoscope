@@ -18,11 +18,19 @@
 #   2. known-prefix tokens WITH LENGTH/CHARSET TEETH (prose can't trip them):
 #      AWS AKIA..., GitHub ghp_/gho_/ghs_/github_pat_..., Anthropic sk-ant-...,
 #      OpenAI sk-..., Slack xox[baprs]-..., Stripe sk_live_..., Google AIza...,
-#      three-segment JWTs
+#      three-segment JWTs, and (v3.0.56, v3.0-197) Google OAuth's own shapes: the
+#      client secret GOCSPX-..., the access token ya29.... and the refresh token
+#      1//0... -- so a real value in an example-NAMED file, or pasted into any file,
+#      still blocks where the path class cannot see it
 #   3. embedded-credential URLs -- scheme://user:password@host, password not a
 #      named placeholder shape
 #   4. credential FILES by staged path -- .env* (except .env.example/.env.sample,
-#      byte-parity with block-env-writes.sh), *.pem/*.key/*.ppk, credentials.json.
+#      byte-parity with block-env-writes.sh), key material *.pem/*.key/*.ppk/*.p12/*.pfx,
+#      and (v3.0.56, v3.0-197) the files Google's client libraries write:
+#      credentials.json, token.json, token.pickle, client_secret*.json, service-account
+#      key JSON -- template copies with a .example./.sample. name segment exempt for
+#      those JSON/pickle names only. All of class 4 is matched case-insensitively (.env*
+#      included since v3.0.56 -- `.ENV` is `.env` on Windows).
 #      credential-bindings.yaml is deliberately NOT blocked (committed by design;
 #      holds destinations, never values -- core/security/CREDENTIALS.md).
 #
@@ -61,6 +69,9 @@ CONTENT_PATTERNS=(
   'Slack token|(^|[^A-Za-z0-9_-])xox[baprs]-[A-Za-z0-9-]{10,}'
   'Stripe live secret key|(^|[^A-Za-z0-9_-])sk_live_[A-Za-z0-9]{16,}'
   'Google API key|(^|[^A-Za-z0-9_-])AIza[A-Za-z0-9_-]{35}'
+  'Google OAuth client secret|(^|[^A-Za-z0-9_-])GOCSPX-[A-Za-z0-9_-]{24,}'
+  'Google OAuth access token|(^|[^A-Za-z0-9_-])ya29\.[A-Za-z0-9_-]{20,}'
+  'Google OAuth refresh token|(^|[^A-Za-z0-9_-])1//0[A-Za-z0-9_-]{40,}'
   'JWT|(^|[^A-Za-z0-9._-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
   'embedded credential URL|[a-z][a-z0-9+.-]*://[^/:@[:space:]]+:[^@[:space:]]{3,}@[A-Za-z0-9.-]+'
 )
@@ -71,11 +82,17 @@ CONTENT_PATTERNS=(
 PLACEHOLDER_RE='EXAMPLE|REDACTED|PLACEHOLDER|CHANGE[-_]?ME|your-[a-z0-9-]+-here|<[A-Za-z][A-Za-z0-9 _-]*>|\{\{[^}]+\}\}|[Xx]{6,}|\.\.\.'
 
 # Staged PATHS that are credential homes. Basename-matched, extended regex.
-PATH_BLOCK_RE='(^|/)(\.env(\..*)?|[^/]*\.(pem|ppk)|credentials\.json)$'
-PATH_KEY_RE='(^|/)[^/]*\.key$'
+PATH_BLOCK_RE='(^|/)\.env(\..*)?$'
 PATH_ALLOW_RE='(^|/)\.env\.(example|sample)$'
+# key material, case-insensitive, no exemption (a staged *.pem blocks whatever it is called)
+PATH_KEY_RE='(^|/)[^/]*\.(pem|key|ppk|p12|pfx)$'
+# v3.0-197 (v3.0.56): OAuth client / token / service-account files, case-insensitive
+PATH_CRED_RE='(^|/)(credentials\.json|token\.json|token\.pickle|client_secret[^/]*\.json|service[-_]?account[^/]*\.json)$'
+PATH_CRED_TEMPLATE_RE='(^|/)[^/]*\.(example|sample)(\.[^/]*)?$'
 # The perimeter's own fixture dir -- hard-coded, never configurable.
-EXEMPT_RE='(^|/)core/security/hooks/test-inputs/'
+# anchored at the repository ROOT since v3.0.56 (firewall round 4, 2026-09-28: the unanchored
+# form exempted any path CONTAINING the directory -- x/core/security/hooks/test-inputs/.env)
+EXEMPT_RE='^core/security/hooks/test-inputs/'
 # The scanner's own source at its canonical path gets the KNOWN-OWN-LINES rule
 # instead of an exemption (v3.0-104 fixed the adoption self-block; v3.0-109
 # caught the fix's hole: a blanket path exemption composed with the
@@ -139,10 +156,15 @@ scan_repo() {
   # (git quotes a name with a non-ASCII or control byte -- `"caf\303\251/.env"` -- and the
   # trailing quote defeated the $-anchored class patterns in the old loop too; strip the
   # quotes first, cross-vendor round-3 fold)
-  hit=$(printf '%s\n' "$paths" | sed -e 's/^"//' -e 's/"$//' | grep -Ev -e "$EXEMPT_RE" | grep -Ev -e "$PATH_ALLOW_RE" \
-        | grep -E -e "$PATH_BLOCK_RE" -e "$PATH_KEY_RE" | head -n 1 || true)
+  local cand
+  cand=$(printf '%s\n' "$paths" | sed -e 's/^"//' -e 's/"$//' | grep -Ev -e "$EXEMPT_RE" || true)
+  # .env* in any letter case too (v3.0.56: `.ENV` is `.env` on Windows; the release's own
+  # differential run found it passing both versions), the exemption likewise
+  hit=$(printf '%s\n' "$cand" | grep -Evi -e "$PATH_ALLOW_RE" | grep -Ei -e "$PATH_BLOCK_RE" | head -n 1 || true)
+  [ -n "$hit" ] || hit=$(printf '%s\n' "$cand" | grep -Ei -e "$PATH_KEY_RE" | head -n 1 || true)
+  [ -n "$hit" ] || hit=$(printf '%s\n' "$cand" | grep -Ei -e "$PATH_CRED_RE" | grep -Evi -e "$PATH_CRED_TEMPLATE_RE" | head -n 1 || true)
   if [ -n "$hit" ]; then
-    _fail "staged file '$hit' is a credential-file class (.env*/key material/credentials.json). Unstage it (git restore --staged '$hit'); .env.example/.env.sample are exempt."
+    _fail "staged file '$hit' is a credential-file class (.env*, key material, or an OAuth client/token/service-account file such as credentials.json, token.json, client_secret*.json). Unstage it (git restore --staged '$hit') and keep the secret in the OS vault via the credential broker (core/security/CREDENTIALS.md); .env.example/.env.sample and *.example.json/*.sample.json copies of the OAuth names are exempt."
   fi
 
   # ---- classes 1-3: added lines, ONE diff over the whole index -----------------
@@ -282,6 +304,24 @@ self_test() {
   mkrepo; stage "a.txt" "s=xoxb-1234567890-abcdefghij";                                    expect "Slack token blocks" 1
   mkrepo; stage "a.txt" "s=sk_live_$(printf 'd%.0s' $(seq 1 20))";                         expect "Stripe live key blocks" 1
   mkrepo; stage "a.txt" "g=AIza$(printf 'E%.0s' $(seq 1 35))";                             expect "Google API key blocks" 1
+  # v3.0-197 (v3.0.56): Google OAuth's own value shapes
+  mkrepo; stage "a.txt" "\"client_secret\": \"GOCSPX-$(printf 'k%.0s' $(seq 1 28))\"";   expect "v3.0-197: Google OAuth client secret (GOCSPX-) blocks" 1
+  mkrepo; stage "a.txt" "\"token\": \"ya29.$(printf 'm%.0s' $(seq 1 60))\"";              expect "v3.0-197: Google OAuth access token (ya29.) blocks" 1
+  mkrepo; stage "a.txt" "\"refresh_token\": \"1//0$(printf 'n%.0s' $(seq 1 60))\"";      expect "v3.0-197: Google OAuth refresh token (1//0) blocks" 1
+  mkrepo; stage "client_secret.example.json" "{\"client_secret\": \"GOCSPX-$(printf 'k%.0s' $(seq 1 28))\"}"; expect "v3.0-197: an example-NAMED file carrying a REAL client secret still blocks (content rule)" 1
+  mkrepo; stage "client_secret.example.json" "{\"client_secret\": \"GOCSPX-""XXXXXXXXXXXXXXXXXXXXXXXXXXXX\"}"; expect "v3.0-197: an example file with a placeholder secret passes" 0
+  mkrepo; stage "docs/oauth.md" "the refresh token looks like 1//0... and the access token like ya29.<value>"; expect "v3.0-197: prose naming the Google prefixes passes" 0
+  # firewall round 1 (2026-09-28): the boundary/format matrix -- realistic mixed-character
+  # shapes (assembled at run time from fragments; never literal in this file) in the places
+  # a value actually lands
+  _gcs_real="GOCSPX-""4bC_d9Ef-Gh1Jk2Lm3No4Pq5Rs6T"; _gat_real="ya29.""a0AfB_byC2dE3fG4hI5jK6lM7nO8pQ9rS0tU1vW2xY3zA4-bC5dE6fG7hI8"
+  _grt_real="1//0""gLpQ7rS8tU9vW0xY1zA2bC3dE4fG5hI6jK7lM8nO9pQ0rS1tU2vW3xY4zA5-bC6_dE7"
+  for _case in "slash-before-refresh:path/$_grt_real" "dot-before-access:x.$_gat_real" "bearer-header:Authorization: Bearer $_gat_real" \
+               "url-query:https://h.example/cb?refresh_token=$_grt_real&x=1" "json-secret:{\"client_secret\":\"$_gcs_real\"}" \
+               "yaml-secret:client_secret: $_gcs_real" "env-style:GOOGLE_REFRESH_TOKEN=$_grt_real" "python-dict:{'token': '$_gat_real'}"; do
+    mkrepo; stage "src/m.txt" "${_case#*:}"; expect "r1 matrix: ${_case%%:*} blocks" 1
+  done
+  mkrepo; stage "docs/n.md" "prefix GOCSPX- alone, ya29. alone, 1//0 alone, and a short ya29.abc"; expect "r1 matrix: bare prefixes and short tails pass" 0
   mkrepo; stage "a.txt" "j=eyJ$(printf 'f%.0s' $(seq 1 12)).$(printf 'g%.0s' $(seq 1 12)).$(printf 'h%.0s' $(seq 1 12))" ; expect "three-segment JWT blocks" 1
   mkrepo; stage "a.txt" "url=https://svc:hunter2pass@db.example.com/x";                    expect "embedded-credential URL blocks" 1
   # v3.0-123 (v3.0.55): same-file siblings of the flagged VALUE are named in the refusal
@@ -301,7 +341,8 @@ again: sk-ant-$(printf 'b%.0s' $(seq 1 24))";                                   
   _v_slack="xoxb-1234567890-abcdefghij"; _v_stripe="sk_live_$(printf 'd%.0s' $(seq 1 20))"; _v_goog="AIza$(printf 'E%.0s' $(seq 1 35))"
   _v_jwt="eyJ$(printf 'f%.0s' $(seq 1 12)).$(printf 'g%.0s' $(seq 1 12)).$(printf 'h%.0s' $(seq 1 12))"
   _v_oai="sk-$(printf 'c%.0s' $(seq 1 40))"; _v_ghfg="github_pat_$(printf 'g%.0s' $(seq 1 60))"
-  for _cls in "AWS:$_v_aws" "GitHub:$_v_gh" "GitHub-fine-grained:$_v_ghfg" "Anthropic:$_v_ant" "OpenAI-style:$_v_oai" "Slack:$_v_slack" "Stripe:$_v_stripe" "Google:$_v_goog" "JWT:$_v_jwt"; do
+  _v_gcs="GOCSPX-$(printf 'k%.0s' $(seq 1 28))"; _v_gat="ya29.$(printf 'm%.0s' $(seq 1 60))"; _v_grt="1//0$(printf 'n%.0s' $(seq 1 60))"
+  for _cls in "AWS:$_v_aws" "GitHub:$_v_gh" "GitHub-fine-grained:$_v_ghfg" "Anthropic:$_v_ant" "OpenAI-style:$_v_oai" "Slack:$_v_slack" "Stripe:$_v_stripe" "Google:$_v_goog" "JWT:$_v_jwt" "Google-OAuth-client-secret:$_v_gcs" "Google-OAuth-access-token:$_v_gat" "Google-OAuth-refresh-token:$_v_grt"; do
     _name="${_cls%%:*}"; _val="${_cls#*:}"
     mkrepo; stage "src/c.txt" "$(printf '%s\n' "key=(\"$_val\")" "again: [$_val];" "third \"$_val\",")"
     expect_out "v3.0-123 round 2: $_name value bounded by punctuation on every line is named at lines 1 2 3" 1 "staged line(s) 1 2 3"
@@ -312,6 +353,27 @@ again: sk-ant-$(printf 'b%.0s' $(seq 1 24))";                                   
   mkrepo; stage ".env" "SECRET=1";                                                        expect "staged .env blocks by path" 1
   mkrepo; stage "keys/deploy.pem" "not even a key";                                       expect "staged *.pem blocks by path" 1
   mkrepo; stage "conf/credentials.json" "{}";                                             expect "staged credentials.json blocks by path" 1
+  # v3.0-197 (v3.0.56): the Google client-library files and the widened key-material names
+  mkrepo; stage "connectors/gmail/token.json" "{}";                                       expect "v3.0-197: staged token.json blocks by path" 1
+  mkrepo; stage "secrets/token.pickle" "x";                                               expect "v3.0-197: staged token.pickle blocks by path" 1
+  # the Google download name is assembled from fragments: a literal client-ID shape made GitHub push
+  # protection refuse the public mirror (v3.0.56.1); the scanner sees the same staged path either way
+  mkrepo; stage "client_secret_1234-abcd.apps.google""usercontent.com.json" "{}";           expect "v3.0-197: Google's downloaded client_secret_*.json blocks by path" 1
+  mkrepo; stage "keys/service-account.json" "{}";                                        expect "v3.0-197: service-account.json blocks by path" 1
+  mkrepo; stage "serviceAccountKey.json" "{}";                                           expect "v3.0-197: Firebase's serviceAccountKey.json blocks (case-insensitive)" 1
+  mkrepo; stage "conf/Credentials.JSON" "{}";                                            expect "v3.0-197: credentials.json blocks in any letter case" 1
+  mkrepo; stage "legacy.p12" "x";                                                        expect "v3.0-197: *.p12 key material blocks" 1
+  mkrepo; stage "certs/site.PEM" "x";                                                    expect "v3.0-197: *.PEM blocks (key material is case-insensitive now)" 1
+  mkrepo; stage "certs/server.example.pem" "x";                                          expect "v3.0-197: key material has no example exemption" 1
+  mkrepo; stage "client_secret.example.json" "{}";                                       expect "v3.0-197: an .example. copy of a client_secret name passes" 0
+  mkrepo; stage "service-account.sample.json" "{}";                                      expect "v3.0-197: a .sample. copy of a service-account name passes" 0
+  mkrepo; stage "tokens.json" "{}";                                                      expect "v3.0-197: design tokens (tokens.json) are not the class" 0
+  mkrepo; stage ".env.example.json" "x";                                                 expect "v3.0-197: the new template exemption never reaches the .env rule" 1
+  mkrepo; stage ".ENV" "SECRET=1";                                                         expect "v3.0.56: .ENV blocks (case-insensitive .env rule)" 1
+  mkrepo; stage "conf/.Env.Local" "SECRET=1";                                              expect "v3.0.56: .Env.Local blocks" 1
+  mkrepo; stage ".ENV.EXAMPLE" "SECRET=";                                                  expect "v3.0.56: .ENV.EXAMPLE passes (the exemption is case-insensitive too)" 0
+  mkrepo; stage "x/core/security/hooks/test-inputs/.env" "SECRET=1";                        expect "v3.0.56 r4: a NESTED lookalike of the fixture dir is not exempt (path class)" 1
+  mkrepo; stage "x/core/security/hooks/test-inputs/a.txt" "-----BEGIN RSA PRIVATE KEY-----"; expect "v3.0.56 r4: a NESTED lookalike of the fixture dir is not exempt (content class)" 1
 
   # PASS direction -- placeholders, exemptions, ordinary content
   mkrepo; stage "doc.md" "set ANTHROPIC_API_KEY (an sk-ant-... value) in your vault";      expect "prose naming a prefix without a value passes" 0

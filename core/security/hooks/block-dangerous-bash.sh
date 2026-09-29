@@ -225,6 +225,27 @@ rm -rf /tmp/z" '193-quoted-heredoc-then-local-rm-DENY'
   run_case DENY 'install -m 644 /tmp/d.py deploy/compile-driver.py' 'ts-install-driver'
   run_case DENY 'truncate -s 0 deploy/compile-backends.py' 'ts-truncate-backends'
   run_case DENY 'echo x > deploy/rulings/retire-1/proposal.md' 'ts-redirect-rulings'
+  # v3.0-198 (v3.0.56): the credential delivery gate joins the class
+  run_case DENY 'echo "gmail: https://gmail.googleapis.com/*" >> deploy/credential-bindings.yaml' 'ts-198-append-bindings'
+  run_case DENY 'Add-Content deploy\credential-bindings.yaml "x: y"' 'ts-198-ps-addcontent-bindings'
+  run_case DENY 'cp /tmp/b.yaml capabilities/knowledge-os/extracted/deploy/credential-bindings.yaml' 'ts-198-dev-source-path'
+  run_case DENY 'echo x >> DEPLOY/Credential-Bindings.YAML' 'ts-198-mixed-case-append'
+  # firewall round 2 (2026-09-28): repeated separators and `.` segments collapse first
+  run_case DENY 'echo x >> deploy//credential-bindings.yaml' 'ts-r2-double-slash-append'
+  run_case DENY 'cp /tmp/b deploy/./credential-bindings.yaml' 'ts-r2-dot-segment-cp'
+  run_case DENY 'Set-Content -Path deploy\\credential-bindings.yaml -Value x' 'ts-r2-ps-double-backslash'
+  run_case DENY 'echo x > ././deploy/./trust.py' 'ts-r2-repeated-dot-segments'
+  run_case DENY 'tee core//security//hooks/allowed_signers < /tmp/k' 'ts-r2-slash-run-hooks-dir'
+  run_case DENY 'python -c "open(\"deploy//trust.py\",\"w\")"' 'ts-r2-interp-double-slash'
+  run_case silent 'cat deploy//credential-bindings.yaml' 'ts-r2-read-double-slash'
+  # firewall round 3 (2026-09-28): internal `seg/..` pairs collapse first
+  run_case DENY 'echo x >> deploy/x/../credential-bindings.yaml' 'ts-r3-internal-parent-append'
+  run_case DENY 'cp /tmp/b deploy/a/b/../../credential-bindings.yaml' 'ts-r3-two-internal-parents-cp'
+  run_case DENY 'Set-Content -Path deploy\x\..\credential-bindings.yaml -Value x' 'ts-r3-ps-backslash-parent'
+  run_case DENY 'python -c "open(\"deploy/x/../trust.py\",\"w\")"' 'ts-r3-interp-internal-parent'
+  run_case silent 'cat deploy/x/../credential-bindings.yaml' 'ts-r3-read-internal-parent'
+  run_case silent 'echo x > deploy/credential-bindings.yaml/../notes.md' 'ts-r3-parent-leaves-class'
+  run_case silent 'echo see https://example.com/deploy/trust.py > notes.md' 'ts-r2-url-prose-elsewhere'
   run_case DENY 'Set-Content -Path deploy/compile-driver.py -Value x' 'ts-ps-setcontent'
   run_case DENY 'Add-Content .claude\settings.json "{}"' 'ts-ps-addcontent-winpath'
   run_case DENY '"x" | Out-File .git\hooks\pre-commit' 'ts-ps-outfile-githook'
@@ -258,6 +279,10 @@ rm -rf /tmp/z" '193-quoted-heredoc-then-local-rm-DENY'
   run_case silent 'bash core/security/hooks/block-dangerous-bash.sh --self-test' 'ts-run-hook-battery'
   run_case silent 'git add core/security/hooks/allowed_signers && git commit -S -m "pin"' 'ts-git-commit-signed'
   run_case silent 'echo x > deploy/safe-allowlist.yaml.example' 'ts-write-example-sibling'
+  run_case silent 'cat deploy/credential-bindings.yaml' 'ts-198-read-bindings'
+  run_case silent 'cat DEPLOY/Credential-Bindings.YAML' 'ts-198-mixed-case-read'
+  run_case silent 'cp deploy/credential-bindings.yaml.example /tmp/x.yaml' 'ts-198-read-example-into-elsewhere'
+  run_case silent 'echo x > deploy/credential-bindings.yaml.example' 'ts-198-write-example-sibling'
   run_case silent 'cp /tmp/r.md deploy/evidence/README.md' 'ts-write-evidence-readme'
   run_case silent 'echo x > deploy/retire-manifest.py' 'ts-write-deploy-sibling'
   run_case silent 'Get-Content deploy/compile-driver.py' 'ts-ps-getcontent'
@@ -598,6 +623,7 @@ fi
 TRUST_FLOOR=(
   'core/security/hooks/**'
   'deploy/safe-allowlist.yaml'
+  'deploy/credential-bindings.yaml'   # v3.0-198 (v3.0.56): the credential delivery gate
   'deploy/evidence/operator-*.md'
   'deploy/rulings/**'
   'deploy/trust.py'
@@ -687,13 +713,36 @@ $tok" ;;
   printf '%s' "$out"
 })
 [ -n "$TOOL_TARGETS" ] && TRUST_TARGETS="$TRUST_TARGETS$TOOL_TARGETS"
+# v3.0.56 firewall round 2 (2026-09-28, REJECTED): repeated separators and `.` segments
+# name the same file (`deploy//x`, `deploy/./x`; PowerShell's doubled backslash arrives as
+# `//`) and broke the contiguous class match -- pre-existing for every member. Collapse
+# them in the two strings the class regex reads (pure bash, no fork).
+while [[ "$TRUST_TARGETS" == *//* ]]; do TRUST_TARGETS=${TRUST_TARGETS//\/\//\/}; done
+while [[ "$TRUST_TARGETS" == */./* ]]; do TRUST_TARGETS=${TRUST_TARGETS//\/.\//\/}; done
+TRUST_WHOLE=$COMMAND_PATHS
+while [[ "$TRUST_WHOLE" == *//* ]]; do TRUST_WHOLE=${TRUST_WHOLE//\/\//\/}; done
+while [[ "$TRUST_WHOLE" == */./* ]]; do TRUST_WHOLE=${TRUST_WHOLE//\/.\//\/}; done
+# v3.0.56 firewall round 3 (2026-09-28, REJECTED): a `seg/..` pair INSIDE a path
+# (`deploy/x/../credential-bindings.yaml`) names the guarded file and broke the contiguous
+# match; round 2's note that `..` needs nothing was wrong for internal pairs. Every `seg/..`
+# pair is collapsed lexically, leftmost first, until none is left -- pure bash (no fork),
+# entered only when the text contains `/..`. A leading `../` run collapses too
+# (`../../deploy/x` reads as `deploy/x`): that can only ADD a match, never remove one the
+# anchored regex already had, so over-collapse is a harmless over-match, never a loosening.
+_PARENT_RE='([^/[:space:]]+)/\.\.(/|$)'
+while [[ "$TRUST_TARGETS" == */..* ]] && [[ "$TRUST_TARGETS" =~ $_PARENT_RE ]]; do
+  TRUST_TARGETS=${TRUST_TARGETS/"${BASH_REMATCH[0]}"/}
+done
+while [[ "$TRUST_WHOLE" == */..* ]] && [[ "$TRUST_WHOLE" =~ $_PARENT_RE ]]; do
+  TRUST_WHOLE=${TRUST_WHOLE/"${BASH_REMATCH[0]}"/}
+done
 deny_trust=0
 if [ -n "$TRUST_TARGETS" ] && printf '%s' "$TRUST_TARGETS" | grep -Eq "$TRUST_RE"; then
   deny_trust=1
 fi
 # interpreter one-liners: whole-text matching kept (target unparseable inside code)
 if [ "$deny_trust" -eq 0 ] && printf '%s' "$COMMAND_PATHS" | grep -Eq "$INTERP_WRITE_RE" \
-   && printf '%s' "$COMMAND_PATHS" | grep -Eq "$TRUST_RE"; then
+   && printf '%s' "$TRUST_WHOLE" | grep -Eq "$TRUST_RE"; then
   deny_trust=1
 fi
 if [ "$deny_trust" -eq 1 ]; then

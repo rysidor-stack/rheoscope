@@ -152,7 +152,8 @@ events; (vi) headings are immutable once written.
 
 ### 7. Cross-vendor verify
 
-A substrate-different model (the fork defaults to `gpt-5.6-sol` via the bridge; routine T1 gates
+A substrate-different model (resolved at run time by the bridge's `models.js` -- the Codex CLI's own
+default unless an operator registry overrides it; `node .claude/skills/bridge/models.js` shows which; routine T1 gates
 on model-id difference, migration/design-gate work on vendor difference — spec §5) receives the
 full event + the current view body and answers whether the absorption is faithful.
 

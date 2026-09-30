@@ -25,26 +25,66 @@ const { spawn, spawnSync } = require('node:child_process');
 // Resolve the real claude executable so we can spawn it DIRECTLY (shell:false),
 // which pipes stdin straight to claude and avoids the cmd.exe wrapper (DEP0190 +
 // stdin-forwarding failures). Prefer a .exe on Windows.
+// v3.0.58 (backlog v3.0-204): the NEWEST claude CLI wins. The desktop app keeps its own current
+// CLI under %APPDATA%\Claude\claude-code\<version>\claude.exe, while a standalone install on PATH
+// can lag months behind -- and an older CLI refuses (or silently re-maps) the newest models.
+function claudeVersionOf(bin) {
+  try {
+    const r = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
+    if (r.status !== 0) return null;
+    const m = /(\d+)\.(\d+)\.(\d+)/.exec((r.stdout || '') + ' ' + (r.stderr || ''));
+    return m ? [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)] : null;
+  } catch (e) { return null; }
+}
+function appBundledClaudeUnder(roamingRoot) {
+  if (!roamingRoot) return [];
+  const path = require('node:path'), fs = require('node:fs');
+  const dir = path.join(roamingRoot, 'Claude', 'claude-code');
+  try {
+    return fs.readdirSync(dir).map(d => path.join(dir, d, 'claude.exe'))
+      .filter(x => { try { return fs.statSync(x).isFile(); } catch (e) { return false; } });
+  } catch (e) { return []; }
+}
 function resolveClaudeBin() {
   if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
+  const path = require('node:path'), os = require('node:os'), fs = require('node:fs');
+  const candidates = [
+    ...appBundledClaudeUnder(process.env.APPDATA),
+    ...appBundledClaudeUnder(path.join(os.homedir() || '', 'AppData', 'Roaming')),
+  ];
   const finder = process.platform === 'win32' ? 'where' : 'which';
   try {
     const r = spawnSync(finder, ['claude'], { encoding: 'utf8' });
     if (r.status === 0 && r.stdout) {
       const lines = r.stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-      return lines.find(l => /\.exe$/i.test(l)) || lines[0] || 'claude';
+      const hit = lines.find(l => /\.exe$/i.test(l)) || lines[0];
+      if (hit) candidates.push(hit);
     }
-  } catch (e) { /* fall through to bare name */ }
-  return 'claude';
+  } catch (e) { /* no PATH candidate */ }
+  let best = null, bestV = null;
+  const seen = new Set();
+  for (const c of candidates) {
+    if (!c || seen.has(c.toLowerCase())) continue;
+    seen.add(c.toLowerCase());
+    try { if (!fs.existsSync(c)) continue; } catch (e) { continue; }
+    const v = claudeVersionOf(c);
+    if (!v) continue;
+    if (!best || v[0] > bestV[0] || (v[0] === bestV[0] && (v[1] > bestV[1] || (v[1] === bestV[1] && v[2] > bestV[2])))) {
+      best = c; bestV = v;
+    }
+  }
+  return best || candidates.find(Boolean) || 'claude';
 }
 const CLAUDE_BIN = resolveClaudeBin();
 const VERIFY_TIMEOUT_MS = parseInt(process.env.VERIFY_TIMEOUT_MS || '180000', 10);
-// Floor the verifier to a strong model: a judge leg must never auto-drop to haiku (model-economy
-// rule — weak refuters rubber-stamp). Mirrors codex-verify pinning gpt-5.6-sol. MUST be the CLI's
-// documented alias ('sonnet' = latest sonnet, never goes stale) — a bare full id like
-// claude-sonnet-4-6 is NOT accepted by claude.exe 2.1.x and SILENTLY falls back to haiku.
-// Override for a high-stakes claim via VERIFY_MODEL=opus.
-const VERIFY_MODEL = process.env.VERIFY_MODEL || 'sonnet';
+// The verifier is a strong model, resolved at run time (v3.0.58, backlog v3.0-204): VERIFY_MODEL ->
+// the operator registry -> ~/.claude/settings.json `model` -> the alias 'fable', which the claude CLI
+// maps to its newest top-tier model. A judge leg must never auto-drop to haiku (weak refuters
+// rubber-stamp). Use an ALIAS or a registry id the CLI accepts: a full id an older claude.exe does
+// not know can be refused or silently re-mapped -- the newest-CLI resolver above is what keeps
+// the alias pointing at the current model.
+const MODEL_RES = require('./models.js').resolveModel('anthropic', { envNames: ['VERIFY_MODEL'], skipLive: true });
+const VERIFY_MODEL = MODEL_RES.model;
 
 // Built from the ACTUAL tool-surface enumeration (claude-containment-probe.js control run), not guesses.
 // Covers every read / egress / shell / escalation tool the probe revealed. PowerShell (the Windows
@@ -140,6 +180,9 @@ function runVerifier(packet) {
   return new Promise((resolve) => {
     const argv = ['-p', '--output-format', 'json'];
     if (VERIFY_MODEL) argv.push('--model', VERIFY_MODEL);
+    // v3.0.58: an EMPTY allow-list first -- no built-in tool at all, on any CLI version -- then the
+    // enumerated deny-list as the second layer (a newer CLI can add tools the list never named)
+    argv.push('--tools', '');
     argv.push('--disallowedTools', ...DISALLOWED_TOOLS);
     // Load ZERO MCP servers. --disallowedTools only covers BUILT-IN tools; the operator's global MCP
     // servers (firecrawl/playwright/lighthouse — all web-capable egress) would otherwise be loaded and
@@ -261,4 +304,4 @@ async function handle(line) {
 
 process.on('SIGTERM', () => process.exit(0));
 process.on('SIGINT', () => process.exit(0));
-log('claude-verify MCP server ready — verifier=' + CLAUDE_BIN + ' -p (disallowed: ' + DISALLOWED_TOOLS.join(',') + ')');
+log('claude-verify MCP server ready — verifier=' + CLAUDE_BIN + ' -p (model=' + VERIFY_MODEL + ' [' + MODEL_RES.source + '], tools: none; disallowed: ' + DISALLOWED_TOOLS.join(',') + ')');

@@ -19,7 +19,8 @@ want to pressure-test the verifier's verdict, or it's a T1 keystone call — tha
 ## Non-negotiables (read before every run)
 
 1. **Cross-vendor only counts if the verifier ≠ the substrate that produced the thing.** You are
-   Claude; this skill routes to a **GPT** verifier. That direction is fixed by the tool you call
+   Claude; this skill routes to a **GPT** verifier (which GPT is resolved at run time — the Codex CLI's own
+   default unless overridden; `node .claude/skills/bridge/models.js` shows it). That direction is fixed by the tool you call
    (`verify-cli.js` → codex-verify server → GPT) — you cannot accidentally get a same-vendor
    rubber-stamp. (If you were a *Codex/GPT* session, you'd use the mirror, `claude-verify` → Claude,
    from the Codex harness — not this skill.)

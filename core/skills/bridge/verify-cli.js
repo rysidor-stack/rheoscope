@@ -27,7 +27,7 @@
  * Usage:
  *   node verify-cli.js --claim "<one falsifiable sentence>" \
  *                      --evidence-file <path to RAW primary artifacts> \
- *                      [--tier T2|T3|T4] [--model gpt-5.6-sol] [--effort medium] [--timeout-ms 180000]
+ *                      [--tier T2|T3|T4] [--model <id>] [--effort medium] [--timeout-ms 180000]
  *   node verify-cli.js --claim "..." --evidence "<inline string>"   # small evidence only
  *
  * Exit codes: 0 = parseable verdict returned; 2 = verifier/tool error (isError);
@@ -75,7 +75,8 @@ const HELP = [
   '  --evidence-file <path>   RAW primary artifacts (diff/test-output/source/data). PREFERRED.',
   '  --evidence      <text>   Inline evidence (small only; prefer --evidence-file for artifacts).',
   '  --tier          T2|T3|T4 Optional decision tier (informational).',
-  '  --model         <id>     Verifier model (default gpt-5.6-sol).',
+  '  --model         <id>     Verifier model (default: resolved -- VERIFY_MODEL, the operator registry,\n' +
+  '                           the Codex CLI\'s own default, then a fallback; `node models.js`).',
   '  --effort        <level>  model_reasoning_effort (default medium).',
   '  --timeout-ms    <n>      Verifier timeout (default server default, 180000).',
   '',
@@ -110,7 +111,7 @@ function main() {
   const serverTimeout = args.timeoutMs || parseInt(env.VERIFY_TIMEOUT_MS || '180000', 10);
   const guardMs = serverTimeout + 40000;
 
-  process.stderr.write('[cross-check] verifier=openai/' + (args.model || env.VERIFY_MODEL || 'gpt-5.6-sol') +
+  process.stderr.write('[cross-check] verifier=openai/' + require('./models.js').resolveModel('openai', { explicit: args.model, envNames: ['VERIFY_MODEL'], env, skipLive: true }).model +
     ' (asker MUST be a non-OpenAI substrate for this to count as cross-vendor)\n');
 
   const srv = spawn(process.execPath, [args.server], { stdio: ['pipe', 'pipe', 'inherit'], env });

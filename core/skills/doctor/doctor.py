@@ -658,6 +658,70 @@ def check_sweep_schedule_log(ctx):
                   "%d KB, longest line %d KB" % (size // 1024, longest // 1024))
 
 
+def _default_models_runner(root):
+    exe = shutil.which("node")
+    if not exe:
+        return None, "node not on PATH"
+    rc, out = _run([exe, str(Path(root) / ".claude" / "skills" / "bridge" / "models.js"), "--json"],
+                   timeout=60)
+    if rc != 0:
+        return None, "`node models.js --json` exited %s: %s" % (rc, _tail(out))
+    try:
+        return json.loads(out.strip().splitlines()[-1]), None
+    except (ValueError, IndexError):
+        return None, "unparseable models.js output: %s" % _tail(out)
+
+
+def check_verifier_models(ctx):
+    """Check 18 (v3.0.58, backlog v3.0-204): which model each cross-vendor verifier will run,
+    and where that answer came from. The legs resolve it at run time (operator registry ->
+    the provider CLI's own default -> a fallback) instead of pinning an id, so this is the
+    one place an operator SEES it. WARN when a registry override lags the CLI's own default,
+    or when the OpenAI verifier has no live source and would run the shipped fallback."""
+    root = Path(ctx["root"])
+    if not (root / ".claude" / "skills" / "bridge" / "models.js").is_file():
+        return Result("SKIP", "verifier-models",
+                      "no .claude/skills/bridge/models.js (a pre-v3.0.58 bridge pins its models "
+                      "in the scripts)")
+    runner = ctx.get("models_runner") or _default_models_runner
+    rows, err = runner(root)
+    if rows is None:
+        return Result("WARN", "verifier-models",
+                      "could not resolve the verifier models: %s. FIX: run "
+                      "`node .claude/skills/bridge/models.js` and read its error." % err)
+    shown = "; ".join("%s %s (%s)" % (r.get("leg") or r.get("provider"), r.get("model"),
+                                       r.get("source")) for r in rows)
+    # ONE WARN listing every problem (review round 3: returning on the first hid the rest)
+    problems = []
+    weak = sorted({w for r in rows for w in (r.get("skipped_weak") or [])})
+    if weak:
+        problems.append("a WEAK model tier was named and ignored (a judge leg never runs one): %s "
+                        "-- FIX: remove that setting (the env var, the registry line, or the CLI's "
+                        "own default) so the legs resolve a frontier model by design, not by the floor"
+                        % ", ".join(weak))
+    diff, seen_p = [], set()
+    for r in rows:                                # one line per provider, not per leg
+        if r.get("overrides_live") and r.get("provider") not in seen_p:
+            diff.append(r); seen_p.add(r.get("provider"))
+    if diff:
+        problems.append("a registry override DIFFERS from the provider CLI's own default: %s. "
+                        "Names are not a ranking, so this may be deliberate, but the registry is "
+                        "meant for temporary overrides -- FIX: delete that line in "
+                        "~/.rheoscope/frontier-models.json to follow the CLI again, or keep it knowingly"
+                        % ", ".join("%s registry %s; its CLI defaults to %s"
+                                    % (r["provider"], r.get("registry") or r["model"],
+                                       r.get("live_default")) for r in diff))
+    oa = [r for r in rows if r.get("provider") == "openai" and r.get("source") == "fallback"]
+    if oa:
+        problems.append("the OpenAI verifier has NO live source, so /cross-check, /handoff legs and "
+                        "compile verify legs run the shipped fallback %s, which goes stale -- FIX: "
+                        "pick a model in the Codex app (it writes `model` to ~/.codex/config.toml), "
+                        "or add \"openai\" to ~/.rheoscope/frontier-models.json" % oa[0]["model"])
+    if problems:
+        return Result("WARN", "verifier-models", "%s. %s." % (shown, "; ".join(problems)))
+    return Result("PASS", "verifier-models", shown)
+
+
 def check_trust_surfaces(ctx):
     """Check 16 (v3.0-120, brief section 6): the trust-surface class is what it was
     committed and signed to be. Five sub-checks, one Result each:
@@ -1498,6 +1562,7 @@ def run_all(root, fast_selftests=False):
     add(_safe(check_skill_adapters, "skill-adapters", ctx))
     add(_safe(check_corpus_reachability, "corpus-reachability", ctx))
     add(_safe(check_sweep_schedule_log, "sweep-schedule-log", ctx))
+    add(_safe(check_verifier_models, "verifier-models", ctx))
     return results
 
 def _exit_code(results):
@@ -1677,6 +1742,48 @@ def self_test():
         check("sweep-schedule-log: a log over 16 MB of SHORT lines -> WARN on size",
               r.status == "WARN" and "MB" in r.detail and "FIX:" in r.detail)
         (claude_dir / "sweep-schedule.log").unlink()
+
+        # v3.0-204: which model each verifier resolves to (runner injected; no node needed)
+        r = note(check_verifier_models(ctx))
+        check("verifier-models: no bridge/models.js -> SKIP", r.status == "SKIP")
+        (claude_dir / "skills" / "bridge").mkdir(parents=True, exist_ok=True)
+        (claude_dir / "skills" / "bridge" / "models.js").write_text("// fixture\n", encoding="utf-8")
+        live = [{"leg": "openai/verify", "provider": "openai", "model": "gpt-6-astra", "source": "live", "live_default": "gpt-6-astra", "lagging": False},
+                {"provider": "xai", "model": "grok-4.7", "source": "live", "live_default": "grok-4.7", "lagging": False},
+                {"provider": "anthropic", "model": "fable", "source": "fallback", "live_default": None, "lagging": False}]
+        ctx["models_runner"] = lambda root: (live, None)
+        r = note(check_verifier_models(ctx))
+        check("verifier-models: every provider resolved -> PASS naming model and source",
+              r.status == "PASS" and "openai/verify gpt-6-astra (live)" in r.detail)
+        lagged = [dict(live[0], model="gpt-6-astra", source="registry", live_default="gpt-7-nova", overrides_live=True)] + live[1:]
+        ctx["models_runner"] = lambda root: (lagged, None)
+        r = note(check_verifier_models(ctx))
+        check("verifier-models: a registry override that differs from the CLI default -> WARN with FIX",
+              r.status == "WARN" and "gpt-7-nova" in r.detail and "DIFFERS" in r.detail and "FIX:" in r.detail)
+        both = [dict(live[0], source="env:VERIFY_MODEL", model="gpt-6-astra", registry="gpt-6-pro",
+                     live_default="gpt-7-nova", overrides_live=True, skipped_weak=["env:HANDOFF_LEG_MODEL=gpt-6-mini"])] + live[1:]
+        ctx["models_runner"] = lambda root: (both, None)
+        r = note(check_verifier_models(ctx))
+        check("verifier-models: a weak tier AND a registry difference are BOTH reported, naming the "
+              "registry value (review round 3)",
+              r.status == "WARN" and "gpt-6-mini" in r.detail and "registry gpt-6-pro" in r.detail
+              and r.detail.count("FIX:") == 2)
+        weakrows = [dict(live[0], skipped_weak=["registry=gpt-6-mini"])] + live[1:]
+        ctx["models_runner"] = lambda root: (weakrows, None)
+        r = note(check_verifier_models(ctx))
+        check("verifier-models: a weak tier named anywhere -> WARN naming it, with FIX",
+              r.status == "WARN" and "gpt-6-mini" in r.detail and "FIX:" in r.detail)
+        fb = [dict(live[0], source="fallback", live_default=None)] + live[1:]
+        ctx["models_runner"] = lambda root: (fb, None)
+        r = note(check_verifier_models(ctx))
+        check("verifier-models: the OpenAI verifier on the shipped fallback -> WARN with FIX",
+              r.status == "WARN" and "NO live source" in r.detail and "FIX:" in r.detail)
+        ctx["models_runner"] = lambda root: (None, "node not on PATH")
+        r = note(check_verifier_models(ctx))
+        check("verifier-models: resolution fails -> WARN naming why",
+              r.status == "WARN" and "node not on PATH" in r.detail)
+        ctx.pop("models_runner", None)
+        (claude_dir / "skills" / "bridge" / "models.js").unlink()
 
         (claude_dir / "settings.local.json").write_text(
             json.dumps({"hooks": {"PreToolUse": [

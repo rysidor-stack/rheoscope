@@ -1406,12 +1406,18 @@ class RealEngine:
 # (which carries the same not-drift note and the same CODEX_MIN_VERSION floor).
 # Kept as a DUPLICATE rather than a shell-out to the server, on purpose: the
 # probe must answer "what will the child leg resolve?" before any child exists.
-# THE TWO MUST NOT DRIFT -- change both or neither. One deliberate asymmetry,
-# documented on both sides: this side has a known-folder syscall candidate that
-# the JS side does not need (Node's os.homedir() already syscall-falls-back;
-# Python's os.path.expanduser does not), and the JS side keeps a bare-name last
-# resort that this side deliberately refuses (a probe that "succeeds" on an
-# unresolvable name is worse than a refusal).
+# THE TWO MUST NOT DRIFT -- change both or neither. Since v3.0.58 (review rounds
+# 1-2) both sides search the SAME places: the APPDATA npm exe, the npm exe and the
+# desktop app's bundled CLIs under the user's home as NODE derives it
+# (os.homedir(): USERPROFILE, else the OS profile folder -- this side reproduces
+# that with USERPROFILE, else FOLDERID_Profile), LOCALAPPDATA's bundled CLIs, and
+# where/which; the newest qualifying one wins. (The v3.0-68 known-folder
+# RoamingAppData candidate is retired: a redirected Roaming folder made it a root
+# the JS side could not see.) Two deliberate asymmetries remain, documented on
+# both sides: the JS side honors CODEX_BIN as-is (this side version-checks it,
+# and exports its choice as CODEX_BIN to the legs, so they run exactly it), and
+# the JS side keeps a bare-name last resort that this side deliberately refuses
+# (a probe that "succeeds" on an unresolvable name is worse than a refusal).
 _NPM_VENDOR_TAIL = ("npm", "node_modules", "@openai", "codex", "node_modules",
                     "@openai", "codex-win32-x64", "vendor",
                     "x86_64-pc-windows-msvc", "bin", "codex.exe")
@@ -1447,36 +1453,42 @@ def _npm_vendor_exe_under(roaming_root):
     return os.path.join(roaming_root, *_NPM_VENDOR_TAIL)
 
 
-def _known_folder_roaming_appdata():
-    """%APPDATA% from the OS, not from the environment: SHGetKnownFolderPath
-    (FOLDERID_RoamingAppData) via stdlib ctypes.
+def _app_bundled_exes_under(local_root, lister=None):
+    """The Codex DESKTOP APP's bundled CLIs: <local_root>/OpenAI/Codex/bin/<build-hash>/codex.exe
+    (v3.0.58, backlog v3.0-204). The app keeps this copy current, while a standalone install can
+    lag behind a model's minimum CLI version. `lister` is injectable for the hermetic board."""
+    if not local_root:
+        return []
+    lister = lister or os.listdir
+    base = os.path.join(local_root, "OpenAI", "Codex", "bin")
+    try:
+        names = sorted(lister(base))
+    except Exception:                                       # noqa: BLE001
+        return []
+    return [os.path.join(base, n, "codex.exe") for n in names]
 
-    This exists because the environment lies under scrubbing. Node's
-    os.homedir() syscall-falls-back when USERPROFILE is absent; Python's
-    os.path.expanduser does NOT -- under the scrubbed `py deploy/...` profile it
-    returns a garbage root, so BOTH npm candidates missed and resolution fell
-    through to the version-gated native install. The known-folder syscall is
-    immune to a scrubbed APPDATA/USERPROFILE. Windows-only; every other platform
-    (and any failure) returns None and the walk simply continues."""
+
+def _known_folder_profile():
+    """The user profile directory from the OS (FOLDERID_Profile via SHGetKnownFolderPath) --
+    what Node's os.homedir() falls back to when USERPROFILE is scrubbed. Used ONLY to derive
+    the desktop app's Local root exactly as the JS resolvers do (`os.homedir()/AppData/Local`),
+    so the two sides search the same places (review round 1, 2026-09-29). Windows-only; any
+    failure returns None."""
     if os.name != "nt":
         return None
     try:
         import ctypes
 
         class _GUID(ctypes.Structure):
-            _fields_ = [("Data1", ctypes.c_ulong),
-                        ("Data2", ctypes.c_ushort),
-                        ("Data3", ctypes.c_ushort),
-                        ("Data4", ctypes.c_ubyte * 8)]
+            _fields_ = [("Data1", ctypes.c_ulong), ("Data2", ctypes.c_ushort),
+                        ("Data3", ctypes.c_ushort), ("Data4", ctypes.c_ubyte * 8)]
 
-        # FOLDERID_RoamingAppData {3EB685DB-65F9-4CF6-A03A-E3EF65729F3D}
-        fid = _GUID(0x3EB685DB, 0x65F9, 0x4CF6,
-                    (ctypes.c_ubyte * 8)(0xA0, 0x3A, 0xE3, 0xEF,
-                                         0x65, 0x72, 0x9F, 0x3D))
+        # FOLDERID_Profile {5E6C858F-0E22-4760-9AFE-EA3317B67173}
+        fid = _GUID(0x5E6C858F, 0x0E22, 0x4760,
+                    (ctypes.c_ubyte * 8)(0x9A, 0xFE, 0xEA, 0x33, 0x17, 0xB6, 0x71, 0x73))
         ptr = ctypes.c_wchar_p()
-        hr = ctypes.windll.shell32.SHGetKnownFolderPath(
-            ctypes.byref(fid), 0, None, ctypes.byref(ptr))
-        if hr != 0:
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(fid), 0, None,
+                                                       ctypes.byref(ptr)) != 0:
             return None
         value = ptr.value
         try:
@@ -1495,10 +1507,23 @@ def _default_version_runner(args, timeout):
 
 
 def resolve_codex_bin(env=None, homedir=None, isfile=None, which=None,
-                      runner=None, known_folder=None):
-    """Resolve the codex binary the verify legs will actually run. Walk order:
-    CODEX_BIN env -> APPDATA-derived npm exe -> known-folder-syscall-derived npm
-    exe -> expanduser-derived npm exe -> where/which.
+                      runner=None, known_folder=None, lister=None, profile=None):
+    """Resolve the codex binary the verify legs will actually run. Candidates:
+    CODEX_BIN env -> APPDATA-derived npm exe -> the npm exe under the user's home
+    -> the Codex desktop app's bundled CLIs (LOCALAPPDATA; the home's AppData/Local)
+    -> where/which. "The user's home" is derived EXACTLY as Node's os.homedir()
+    does it -- USERPROFILE, else the OS profile folder (FOLDERID_Profile) -- so the
+    JS and Python sides search the same places (v3.0.58 review rounds 1-2; this
+    also covers the scrubbed-environment case v3.0-68 added a known-folder
+    candidate for, since the profile syscall survives `env -i`). `known_folder` is
+    accepted and ignored (retired v3.0.58).
+
+    v3.0.58 (backlog v3.0-204): a CODEX_BIN that exists and meets the floor is an
+    operator pin and wins outright; otherwise the NEWEST qualifying candidate wins
+    (a tie keeps the earlier one) -- not the first. A model that needs a newer CLI
+    than the floor (gpt-6-astra refuses 0.144.1) then works as soon as any
+    installed CLI is new enough, the app's bundled one included. Lockstep with
+    resolveCodexBin() in the bridge server.
 
     EVERY candidate is version-checked IN THE WALK (`<bin> --version` against
     CODEX_MIN_VERSION), not once at the end: a candidate that exists but is
@@ -1516,8 +1541,6 @@ def resolve_codex_bin(env=None, homedir=None, isfile=None, which=None,
     env = os.environ if env is None else env
     isfile = os.path.isfile if isfile is None else isfile
     runner = runner or _default_version_runner
-    known_folder = (_known_folder_roaming_appdata if known_folder is None
-                    else known_folder)
     if which is None:
         import shutil
         which = shutil.which
@@ -1551,40 +1574,68 @@ def resolve_codex_bin(env=None, homedir=None, isfile=None, which=None,
     candidates.append(("APPDATA-derived npm exe",
                        _npm_vendor_exe_under(env.get("APPDATA")),
                        "(APPDATA unset -- candidate skipped)"))
-    kf = None
-    try:
-        kf = known_folder()
-    except Exception:                                       # noqa: BLE001
-        kf = None
-    candidates.append(("known-folder npm exe (SHGetKnownFolderPath)",
-                       _npm_vendor_exe_under(kf),
-                       "(known-folder syscall unavailable)"))
-    home = homedir if homedir is not None else os.path.expanduser("~")
-    candidates.append(("expanduser npm exe",
+    if homedir is not None:                       # the board injects the home directly
+        node_home = homedir
+    else:                                         # Node: USERPROFILE, else the OS profile
+        try:
+            node_home = env.get("USERPROFILE") or (profile or _known_folder_profile)()
+        except Exception:                                   # noqa: BLE001
+            node_home = None
+    candidates.append(("home npm exe (Node os.homedir() equivalent)",
                        _npm_vendor_exe_under(
-                           os.path.join(home, "AppData", "Roaming")
-                           if home else None),
+                           os.path.join(node_home, "AppData", "Roaming")
+                           if node_home else None),
                        "(no home directory)"))
     found_path = None
     try:
         found_path = which("codex")
     except Exception:                                       # noqa: BLE001
         found_path = None
+    local_roots = [
+        ("LOCALAPPDATA", env.get("LOCALAPPDATA"), "(LOCALAPPDATA unset)"),
+        ("home Local", os.path.join(node_home, "AppData", "Local")
+         if node_home else None, "(no home directory)"),
+    ]
+    for root_label, root, absent in local_roots:
+        exes = _app_bundled_exes_under(root, lister) if root else []
+        if not exes:
+            candidates.append(("desktop-app bundled CLI (%s)" % root_label, None,
+                               absent if not root else "(none under %s)" % root))
+        for exe in exes:
+            candidates.append(("desktop-app bundled CLI (%s)" % root_label, exe,
+                               "(none)"))
     candidates.append(("where/which codex", found_path, "(not on PATH)"))
 
     chain = []
+    best = None                       # (version, index-in-chain, path)
+    seen = set()
     for label, path, absent_note in candidates:
         if not path:
             chain.append((label, absent_note, False, "skipped"))
             continue
+        key = os.path.normcase(path)
+        if key in seen:
+            chain.append((label, path, False, "duplicate of an earlier candidate"))
+            continue
+        seen.add(key)
         if not isfile(path):
             chain.append((label, path, False, "not on disk"))
             continue
         accepted, detail = check(path)
-        chain.append((label, path, accepted, detail))
-        if accepted:
+        if accepted and label == "CODEX_BIN env":
+            chain.append((label, path, True, detail + " (operator pin)"))
             return path, chain
-    return None, chain
+        chain.append((label, path, False, detail if not accepted
+                      else detail + " (qualifies)"))
+        if accepted:
+            ver = parse_codex_version(detail)
+            if best is None or ver > best[0]:
+                best = (ver, len(chain) - 1, path)
+    if best is None:
+        return None, chain
+    lbl, cand, _acc, det = chain[best[1]]
+    chain[best[1]] = (lbl, cand, True, det.replace(" (qualifies)", " (newest)"))
+    return best[2], chain
 
 
 def _render_chain(chain):
@@ -5100,13 +5151,15 @@ def self_test():                                            # noqa: C901
         return run
 
     def resolver_probe(env, present, which_result=None, homedir="C:\\home\\u",
-                       kf=None, versions=None):
+                       kf=None, versions=None, app_dirs=None, profile_dir=None):
         return resolve_codex_bin(
             env=env, homedir=homedir,
             isfile=lambda p: p in present,
             which=lambda _n: which_result,
             known_folder=lambda: kf,
-            runner=versions_runner(versions or {}))
+            runner=versions_runner(versions or {}),
+            lister=lambda base: (app_dirs or {}).get(base, []),
+            profile=lambda: profile_dir)
 
     case("version parse: 'codex-cli 0.144.1' -> (0, 144, 1)",
          parse_codex_version("codex-cli 0.144.1") == (0, 144, 1))
@@ -5123,14 +5176,18 @@ def self_test():                                            # noqa: C901
     b, chain = resolver_probe({"APPDATA": "C:\\ad"}, {APPDATA_EXE})
     case("resolve: APPDATA-derived npm exe is preferred over PATH",
          b == APPDATA_EXE, chain)
-    b, chain = resolver_probe({}, {KF_EXE}, kf="C:\\kf\\Roaming")
-    case("resolve: APPDATA scrubbed -> the SHGetKnownFolderPath candidate "
-         "finds the npm exe (v3.0-68 round 4)", b == KF_EXE, chain)
-    case("...and the known-folder candidate is a named row in the chain",
-         any("known-folder" in row[0] for row in chain), chain)
+    PROFILE_NPM = os.path.join("C:\\prof", "AppData", "Roaming", NPM_TAIL)
+    b, chain = resolver_probe({}, {PROFILE_NPM}, homedir=None, profile_dir="C:\\prof")
+    case("resolve: APPDATA and USERPROFILE scrubbed -> the OS profile folder (what Node's "
+         "os.homedir() falls back to) finds the npm exe (v3.0-68's case, v3.0.58 lockstep)",
+         b == PROFILE_NPM, chain)
+    case("...and the home candidate is a named row in the chain",
+         any("os.homedir() equivalent" in row[0] for row in chain), chain)
+    b, chain = resolver_probe({"USERPROFILE": "C:\\home\\u"}, {HOME_EXE}, homedir=None,
+                              profile_dir="C:\\elsewhere")
+    case("resolve: USERPROFILE wins over the profile syscall, as in Node", b == HOME_EXE, chain)
     b, chain = resolver_probe({}, {HOME_EXE}, kf=None)
-    case("resolve: with no known-folder either, expanduser still gets a turn",
-         b == HOME_EXE, chain)
+    case("resolve: the injected home's npm exe is found", b == HOME_EXE, chain)
     b, chain = resolver_probe({}, {NATIVE_EXE}, which_result=NATIVE_EXE)
     case("resolve: falls back to where/which when no npm exe exists",
          b == NATIVE_EXE, chain)
@@ -5172,7 +5229,7 @@ def self_test():                                            # noqa: C901
          "crash", b is None, chain)
     b, chain = resolver_probe({}, set(), which_result=None)
     case("resolve: nothing found -> None (never a bare name the probe would "
-         "'succeed' on)", b is None and len(chain) == 5, chain)
+         "'succeed' on)", b is None and len(chain) == 6, chain)
     case("...and every candidate is still reported, skipped ones included",
          all(len(row) == 4 for row in chain)
          and any("skipped" in row[3] for row in chain), chain)
@@ -5180,6 +5237,71 @@ def self_test():                                            # noqa: C901
     case("resolve: a CODEX_BIN pointing at a missing file does not win",
          b == HOME_EXE
          and any("not on disk" in row[3] for row in chain), chain)
+
+    # v3.0.58 (backlog v3.0-204): the NEWEST qualifying candidate wins, and the
+    # desktop app's bundled CLIs are candidates
+    APP_BASE = os.path.join("C:\\lad", "OpenAI", "Codex", "bin")
+    APP_EXE = os.path.join(APP_BASE, "abc123", "codex.exe")
+    b, chain = resolver_probe(
+        {"APPDATA": "C:\\ad", "LOCALAPPDATA": "C:\\lad"}, {APPDATA_EXE, APP_EXE},
+        versions={APPDATA_EXE: (0, "codex-cli 0.144.1\n"),
+                  APP_EXE: (0, "codex-cli 0.158.0-alpha.2\n")},
+        app_dirs={APP_BASE: ["abc123"]})
+    case("resolve: the desktop app's bundled CLI (0.158) beats an older npm "
+         "exe (0.144.1) -- newest wins, not first (v3.0-204)", b == APP_EXE, chain)
+    case("...the chosen row is marked newest; the older qualifier is kept, "
+         "not used",
+         any(row[1] == APP_EXE and row[2] and "newest" in row[3] for row in chain)
+         and any(row[1] == APPDATA_EXE and not row[2] and "qualifies" in row[3]
+                 for row in chain), chain)
+    b, chain = resolver_probe(
+        {"APPDATA": "C:\\ad", "LOCALAPPDATA": "C:\\lad"}, {APPDATA_EXE, APP_EXE},
+        versions={APPDATA_EXE: (0, "codex-cli 0.150.0\n"),
+                  APP_EXE: (0, "codex-cli 0.150.0\n")},
+        app_dirs={APP_BASE: ["abc123"]})
+    case("resolve: a version tie keeps the EARLIER candidate", b == APPDATA_EXE,
+         chain)
+    b, chain = resolver_probe(
+        {"CODEX_BIN": HOME_EXE, "LOCALAPPDATA": "C:\\lad"}, {HOME_EXE, APP_EXE},
+        versions={HOME_EXE: (0, "codex-cli 0.144.1\n"),
+                  APP_EXE: (0, "codex-cli 0.158.0\n")},
+        app_dirs={APP_BASE: ["abc123"]})
+    case("resolve: a qualifying CODEX_BIN is an operator pin -- it wins over a "
+         "newer candidate", b == HOME_EXE
+         and any("operator pin" in row[3] for row in chain), chain)
+    PROF_BASE = os.path.join("C:\\home\\u", "AppData", "Local", "OpenAI", "Codex", "bin")
+    PROF_EXE = os.path.join(PROF_BASE, "h1", "codex.exe")
+    b, chain = resolver_probe(
+        {}, {PROF_EXE, HOME_EXE}, kf=None,
+        versions={PROF_EXE: (0, "codex-cli 0.158.0\n"), HOME_EXE: (0, "codex-cli 0.144.1\n")},
+        app_dirs={PROF_BASE: ["h1"]})
+    case("resolve: the profile's AppData/Local (Node's os.homedir() equivalent) finds the "
+         "app's bundled CLI with LOCALAPPDATA unset, and it beats the older npm exe",
+         b == PROF_EXE, chain)
+    # review round 1 (2026-09-29): a redirected Roaming folder must NOT open a search root the
+    # JS side lacks -- the known-folder Roaming is used for the npm exe only, never for Local
+    REDIR_BASE = os.path.join("D:\\Profile", "Local", "OpenAI", "Codex", "bin")
+    REDIR_EXE = os.path.join(REDIR_BASE, "h2", "codex.exe")
+    b, chain = resolver_probe(
+        {}, {REDIR_EXE, HOME_EXE}, kf="D:\\Profile\\Roaming",
+        versions={REDIR_EXE: (0, "codex-cli 0.158.0\n"), HOME_EXE: (0, "codex-cli 0.144.1\n")},
+        app_dirs={REDIR_BASE: ["h2"]})
+    case("resolve: lockstep -- a CLI reachable only through a redirected Roaming's sibling "
+         "Local is NOT a candidate (the JS resolvers cannot see it either)", b == HOME_EXE, chain)
+    # review round 2 (2026-09-29): the same for the npm exe -- the retired known-folder
+    # RoamingAppData candidate made a redirected Roaming a root the JS side lacked
+    REDIR_NPM = os.path.join("D:\\Profile\\Roaming", NPM_TAIL)
+    b, chain = resolver_probe(
+        {}, {REDIR_NPM, HOME_EXE}, kf="D:\\Profile\\Roaming",
+        versions={REDIR_NPM: (0, "codex-cli 0.158.0\n"), HOME_EXE: (0, "codex-cli 0.144.1\n")})
+    case("resolve: lockstep -- an npm exe only under a redirected Roaming folder is NOT a "
+         "candidate either (both sides use the home's AppData/Roaming)", b == HOME_EXE, chain)
+    b, chain = resolver_probe(
+        {"LOCALAPPDATA": "C:\\lad"}, {APP_EXE},
+        versions={APP_EXE: (0, "codex-cli 0.142.3\n")},
+        app_dirs={APP_BASE: ["abc123"]})
+    case("resolve: a bundled CLI below the floor is still rejected", b is None,
+         chain)
 
     repo_p = make_repo("cdrv-probe-")
     try:
@@ -5268,10 +5390,15 @@ def self_test():                                            # noqa: C901
         case("bridge server: has the same 0.144 version floor as this module",
              "CODEX_MIN_VERSION = [0, 144]" in jstext
              and CODEX_MIN_VERSION == (0, 144))
-        case("bridge server: version-checks candidates and keeps walking on a "
-             "floor failure (not a single check after resolution)",
-             "codexVersionOk" in jstext
-             and "if (codexVersionOk(cand)) return cand;" in jstext)
+        case("bridge server: version-checks every candidate and the NEWEST "
+             "qualifying one wins (v3.0.58, lockstep with resolve_codex_bin)",
+             "codexVersionOf" in jstext
+             and "versionCmp(v, bestV) > 0" in jstext)
+        case("bridge server: the desktop app's bundled CLIs are candidates "
+             "(lockstep with _app_bundled_exes_under)",
+             "appBundledExesUnder" in jstext)
+        case("bridge server: the model is resolved (models.js), never pinned",
+             "require('./models.js').resolveModel('openai'" in jstext)
         case("bridge server: keeps the bare-name last resort (degrades no "
              "worse than before the floor)",
              "return 'codex';" in jstext)

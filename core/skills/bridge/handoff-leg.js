@@ -45,7 +45,7 @@
  * Usage:
  *   node handoff-leg.js --role answer --packet-file <packet-round-N.md> --out <output-round-N.md>
  *   node handoff-leg.js --role close  --packet-file <close-packet.md>   --out <close-deliverable.json>
- *                       [--model gpt-5.6-sol] [--effort medium|high] [--timeout-ms 300000]
+ *                       [--model <id>] [--effort medium|high] [--timeout-ms 300000]
  *
  * Exit codes: 0 = deliverable landed; 2 = leg/tool error; 3 = unusable output;
  *             4 = timeout; 64 = usage error; 1 = internal error.
@@ -71,23 +71,55 @@ function npmVendorExeUnder(roamingRoot) {
 
 const CODEX_MIN_VERSION = [0, 144];
 
-function codexVersionOk(bin) {
+// v3.0.58 (backlog v3.0-204): the NEWEST qualifying CLI wins, not the first. A model that
+// needs a newer CLI (gpt-6-astra refuses 0.144.1) then works as soon as ANY installed CLI is new
+// enough -- including the Codex desktop app's bundled one, which the app keeps current under
+// %LOCALAPPDATA%\OpenAI\Codex\bin\<build-hash>\codex.exe. The floor stays a sanity minimum.
+function codexVersionOf(bin) {
   try {
     const r = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
-    if (r.status !== 0) return false;
+    if (r.status !== 0) return null;
     const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec((r.stdout || '') + ' ' + (r.stderr || ''));
-    if (!m) return false;
-    const major = parseInt(m[1], 10), minor = parseInt(m[2], 10);
-    if (major !== CODEX_MIN_VERSION[0]) return major > CODEX_MIN_VERSION[0];
-    return minor >= CODEX_MIN_VERSION[1];
-  } catch (e) { return false; }
+    if (!m) return null;                        // unparseable -> reject (fail-closed)
+    return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3] || '0', 10)];
+  } catch (e) { return null; }
+}
+
+function versionCmp(a, b) {
+  for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] - b[i]; }
+  return 0;
+}
+
+function codexVersionOk(bin) {
+  const v = codexVersionOf(bin);
+  return !!v && versionCmp(v, [CODEX_MIN_VERSION[0], CODEX_MIN_VERSION[1], 0]) >= 0;
+}
+
+function appBundledExesUnder(localRoot) {
+  if (!localRoot) return [];
+  const dir = path.join(localRoot, 'OpenAI', 'Codex', 'bin');
+  try {
+    // sort the directory NAMES (review round 3: sorting whole paths put `a0` before `a`,
+    // because '0' < '\\'; Python sorts names) -- identical order on both sides
+    return fs.readdirSync(dir).sort().map(d => path.join(dir, d, 'codex.exe'))
+      .filter(x => { try { return fs.statSync(x).isFile(); } catch (e) { return false; } });
+  } catch (e) { return []; }
 }
 
 function resolveCodexBin() {
+  // An explicit CODEX_BIN is an operator pin (compile-driver.py exports the binary its
+  // pre-write probe accepted); honored as-is, not re-gated.
   if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
+  // Candidates (history: v3.0-68 -- APPDATA can be scrubbed in headless runs, so the
+  // homedir-derived paths survive `env -i`; a below-floor candidate is skipped, never returned):
+  // APPDATA npm exe, homedir npm exe, the desktop app's bundled CLIs (LOCALAPPDATA and
+  // homedir-derived), then where/which. Among those that exist and meet the floor, the
+  // HIGHEST version wins; a tie keeps the earlier candidate.
   const candidates = [
     npmVendorExeUnder(process.env.APPDATA),
     npmVendorExeUnder(path.join(os.homedir() || '', 'AppData', 'Roaming')),
+    ...appBundledExesUnder(process.env.LOCALAPPDATA),
+    ...appBundledExesUnder(path.join(os.homedir() || '', 'AppData', 'Local')),
   ];
   const finder = process.platform === 'win32' ? 'where' : 'which';
   try {
@@ -98,11 +130,19 @@ function resolveCodexBin() {
       if (hit) candidates.push(hit);
     }
   } catch (e) { /* no PATH candidate */ }
+  let best = null, bestV = null;
+  const seen = new Set();
   for (const cand of candidates) {
-    if (!cand) continue;
+    if (!cand || seen.has(cand.toLowerCase())) continue;
+    seen.add(cand.toLowerCase());
     try { if (!fs.existsSync(cand)) continue; } catch (e) { continue; }
-    if (codexVersionOk(cand)) return cand;
+    const v = codexVersionOf(cand);
+    if (!v || versionCmp(v, [CODEX_MIN_VERSION[0], CODEX_MIN_VERSION[1], 0]) < 0) continue;
+    if (!best || versionCmp(v, bestV) > 0) { best = cand; bestV = v; }
   }
+  if (best) return best;
+  // LAST RESORT: the bare name. If nothing met the floor the run fails at the API with the
+  // loud version-gate message rather than silently on a binary we quietly preferred.
   return 'codex';
 }
 
@@ -221,7 +261,8 @@ const HELP = [
   '  --packet-file  <path>        REQUIRED. Self-contained packet (inline mode; the leg reads nothing else).',
   '  --out          <path>        REQUIRED. Deliverable lands here (tmp-then-rename; absent on any failure).',
   '  --attest-out   <path>        F17 attestation sidecar (default <out>.attest.json).',
-  '  --model        <id>          Leg model (default gpt-5.6-sol).',
+  '  --model        <id>          Leg model (default: resolved -- HANDOFF_LEG_MODEL, the operator registry,\n' +
+  '                               the Codex CLI\'s own default, then a fallback; `node models.js`).',
   '  --effort       <level>       model_reasoning_effort (default medium; close legs may warrant high).',
   '  --timeout-ms   <n>           Leg timeout (default 300000).',
   '',
@@ -240,7 +281,8 @@ function main() {
   catch (e) { die(64, 'could not read --packet-file ' + args.packetFile + ': ' + e.message); }
   if (!packet.trim()) die(64, '--packet-file ' + args.packetFile + ' is empty');
 
-  const model = args.model || process.env.HANDOFF_LEG_MODEL || 'gpt-5.6-sol';
+  // v3.0.58 (v3.0-204): resolved, never pinned (models.js)
+  const model = require('./models.js').resolveModel('openai', { explicit: args.model, envNames: ['HANDOFF_LEG_MODEL'], skipLive: true }).model;
   const effort = args.effort || process.env.HANDOFF_LEG_EFFORT || 'medium';
   const timeoutMs = args.timeoutMs || parseInt(process.env.HANDOFF_LEG_TIMEOUT_MS || '300000', 10);
   const attestOut = args.attestOut || (args.out + '.attest.json');

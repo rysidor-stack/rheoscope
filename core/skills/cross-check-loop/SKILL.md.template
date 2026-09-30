@@ -211,7 +211,8 @@ lifts into a real packet (the handoff protocol § packet-round-N). It must carry
 - **Prior artifacts (§4 of a packet)** — the rounds already run: per claim, each verdict + uncertainty +
   the evidence SHA and `verdicts/<id>-r<n>.json` path. This is the loop's value to the handoff —
   pre-grounded prior rounds, not a cold start.
-- **Substrate already used** — `openai/gpt-5.5` via `verify-cli.js` for rounds 1..N, so the handoff
+- **Substrate already used** — the `verifier.vendor/model` your round verdicts recorded (e.g. `openai/gpt-6-astra`;
+  resolved at run time, so read it from the verdicts) via `verify-cli.js` for rounds 1..N, so the handoff
   knows to challenge on a *different* substrate (and that the Builder/Verifier firewall already held).
 - **What's still contested** — the specific divergence or the correction that wouldn't settle.
 

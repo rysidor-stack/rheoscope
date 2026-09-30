@@ -78,40 +78,55 @@ function npmVendorExeUnder(roamingRoot) {
 // neither.
 const CODEX_MIN_VERSION = [0, 144];
 
-function codexVersionOk(bin) {
+// v3.0.58 (backlog v3.0-204): the NEWEST qualifying CLI wins, not the first. A model that
+// needs a newer CLI (gpt-6-astra refuses 0.144.1) then works as soon as ANY installed CLI is new
+// enough -- including the Codex desktop app's bundled one, which the app keeps current under
+// %LOCALAPPDATA%\OpenAI\Codex\bin\<build-hash>\codex.exe. The floor stays a sanity minimum.
+function codexVersionOf(bin) {
   try {
     const r = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
-    if (r.status !== 0) return false;
+    if (r.status !== 0) return null;
     const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec((r.stdout || '') + ' ' + (r.stderr || ''));
-    if (!m) return false;                       // unparseable -> reject (fail-closed)
-    const major = parseInt(m[1], 10), minor = parseInt(m[2], 10);
-    if (major !== CODEX_MIN_VERSION[0]) return major > CODEX_MIN_VERSION[0];
-    return minor >= CODEX_MIN_VERSION[1];
-  } catch (e) { return false; }
+    if (!m) return null;                        // unparseable -> reject (fail-closed)
+    return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3] || '0', 10)];
+  } catch (e) { return null; }
+}
+
+function versionCmp(a, b) {
+  for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] - b[i]; }
+  return 0;
+}
+
+function codexVersionOk(bin) {
+  const v = codexVersionOf(bin);
+  return !!v && versionCmp(v, [CODEX_MIN_VERSION[0], CODEX_MIN_VERSION[1], 0]) >= 0;
+}
+
+function appBundledExesUnder(localRoot) {
+  if (!localRoot) return [];
+  const dir = require('path').join(localRoot, 'OpenAI', 'Codex', 'bin');
+  try {
+    // sort the directory NAMES (review round 3: sorting whole paths put `a0` before `a`,
+    // because '0' < '\\'; Python sorts names) -- identical order on both sides
+    return require('fs').readdirSync(dir).sort().map(d => require('path').join(dir, d, 'codex.exe'))
+      .filter(x => { try { return require('fs').statSync(x).isFile(); } catch (e) { return false; } });
+  } catch (e) { return []; }
 }
 
 function resolveCodexBin() {
-  // An explicit CODEX_BIN is an operator pin (compile-driver.py exports the
-  // binary its pre-write probe accepted); honored as-is, not re-gated.
+  // An explicit CODEX_BIN is an operator pin (compile-driver.py exports the binary its
+  // pre-write probe accepted); honored as-is, not re-gated.
   if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
-  // 2026-07-09 instance note: the native Codex install (0.142.3) predates the
-  // GPT-5.6 family and its self-updater is serving a broken archive, so a
-  // known-good npm-installed 0.144.1 real exe is preferred when present.
-  // Remove this block once the native install updates past 0.144.
-  //
-  // 2026-07-28 (backlog v3.0-68, deterministically reproduced): in a SCRUBBED
-  // environment -- the nightly/headless context, reproducible with
-  // `env -i PATH=... node verify-cli.js ...` -- APPDATA is absent, so
-  // path.join('', ...) produced a relative path that never exists and this
-  // resolver silently fell through to `where codex` (the version-gated native
-  // 0.142.3 -> instant API 400) or to bare 'codex' (spawn ENOENT). Node's
-  // os.homedir() falls back to a syscall when USERPROFILE is scrubbed too, so
-  // the homedir-derived Roaming path survives `env -i` where APPDATA does not.
-  // Order: CODEX_BIN env -> APPDATA npm exe -> homedir npm exe -> where/which
-  // -> bare fallback.
+  // Candidates (history: v3.0-68 -- APPDATA can be scrubbed in headless runs, so the
+  // homedir-derived paths survive `env -i`; a below-floor candidate is skipped, never returned):
+  // APPDATA npm exe, homedir npm exe, the desktop app's bundled CLIs (LOCALAPPDATA and
+  // homedir-derived), then where/which. Among those that exist and meet the floor, the
+  // HIGHEST version wins; a tie keeps the earlier candidate.
   const candidates = [
     npmVendorExeUnder(process.env.APPDATA),
     npmVendorExeUnder(require('path').join(os.homedir() || '', 'AppData', 'Roaming')),
+    ...appBundledExesUnder(process.env.LOCALAPPDATA),
+    ...appBundledExesUnder(require('path').join(os.homedir() || '', 'AppData', 'Local')),
   ];
   const finder = process.platform === 'win32' ? 'where' : 'which';
   try {
@@ -122,23 +137,29 @@ function resolveCodexBin() {
       if (hit) candidates.push(hit);
     }
   } catch (e) { /* no PATH candidate */ }
+  let best = null, bestV = null;
+  const seen = new Set();
   for (const cand of candidates) {
-    if (!cand) continue;
+    if (!cand || seen.has(cand.toLowerCase())) continue;
+    seen.add(cand.toLowerCase());
     try { if (!require('fs').existsSync(cand)) continue; } catch (e) { continue; }
-    // exists is not enough -- a below-floor binary is skipped and the walk
-    // continues to the next candidate (v3.0-68 round 4).
-    if (codexVersionOk(cand)) return cand;
+    const v = codexVersionOf(cand);
+    if (!v || versionCmp(v, [CODEX_MIN_VERSION[0], CODEX_MIN_VERSION[1], 0]) < 0) continue;
+    if (!best || versionCmp(v, bestV) > 0) { best = cand; bestV = v; }
   }
-  // LAST RESORT: the bare name, exactly as before this change -- degrading no
-  // worse than today. If nothing met the floor, the run still fails, but it
-  // fails at the API with the loud version-gate message below rather than
-  // silently on a binary we quietly preferred.
+  if (best) return best;
+  // LAST RESORT: the bare name. If nothing met the floor the run fails at the API with the
+  // loud version-gate message rather than silently on a binary we quietly preferred.
   return 'codex';
 }
 
 const CODEX_BIN = resolveCodexBin();
 const VERIFY_TIMEOUT_MS = parseInt(process.env.VERIFY_TIMEOUT_MS || '180000', 10);
-const VERIFY_MODEL = process.env.VERIFY_MODEL || 'gpt-5.6-sol';  // default = GPT-5.6 Sol (flagship, GA 2026-07-09); --ignore-user-config drops the user's default model
+// v3.0.58 (backlog v3.0-204): the model is RESOLVED, never pinned -- VERIFY_MODEL (verify-cli sets it
+// from --model) -> the operator registry -> the Codex CLI's own configured default -> a fallback
+// (models.js). --ignore-user-config still drops the rest of the user's Codex config (containment).
+const MODEL_RES = require('./models.js').resolveModel('openai', { envNames: ['VERIFY_MODEL'], skipLive: true });
+const VERIFY_MODEL = MODEL_RES.model;
 const VERIFY_EFFORT = process.env.VERIFY_EFFORT || 'medium';     // model_reasoning_effort; 'none' is fast but shallow
 
 const PROTOCOL_VERSION = '2024-11-05';
@@ -489,4 +510,4 @@ async function handle(line) {
 
 process.on('SIGTERM', () => process.exit(0));
 process.on('SIGINT', () => process.exit(0));
-log('codex-verify MCP server ready — verifier=' + CODEX_BIN + ' exec (model=' + VERIFY_MODEL + ', read-only, --ignore-user-config)');
+log('codex-verify MCP server ready — verifier=' + CODEX_BIN + ' exec (model=' + VERIFY_MODEL + ' [' + MODEL_RES.source + '], read-only, --ignore-user-config)');

@@ -267,12 +267,52 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.57 → v3.0.58 (the verifiers follow the frontier: every cross-vendor leg resolves its model at run time, picks the newest installed CLI, and the Claude-direction verifier is finally tool-less)
+
+**Adopt BOTH lanes in ONE sitting.** The new bridge resolves the OpenAI verifier to your Codex CLI's own
+default (GPT-6 Astra on this machine), which needs a newer Codex CLI than 0.144; the new compile driver is
+what finds that CLI. With the new bridge but the OLD driver, the driver's pre-write probe keeps exporting the
+older CLI to its verify legs and every compile run fails loud at the API ("requires a newer version of
+Codex") until the driver lands. Nothing else here asks you a question.
+
+After this adoption `/cross-check`, `/cross-check-loop`, `/handoff` legs and every compile verify leg run
+the model your Codex app is set to, not a model named in the harness; when the provider ships a new model
+and your app moves to it, the legs follow with no harness update (backlog v3.0-204, PRIORITY). See what
+each provider resolves to with `node .claude/skills/bridge/models.js`; the doctor's new check 18 shows the
+same. To override deliberately, write `frontier-models.json` in your home's `~/.rheoscope/` folder
+(`{"openai": "…", "xai": "…", "anthropic": "…"}`); delete it to follow the CLIs again. Weak tiers
+(mini/nano/lite/fast/haiku) are ignored from every source.
+
+**Step 1 — SESSION lane (any session copies these; commit together):** `.claude/skills/bridge/models.js`
+(NEW — the resolver; 23/23), `.claude/skills/bridge/codex-verify-server.js`,
+`.claude/skills/bridge/handoff-leg.js`, `.claude/skills/bridge/verify-cli.js` (the model is resolved,
+never pinned; the NEWEST qualifying codex CLI wins, the Codex desktop app's bundled CLIs included),
+`.claude/skills/bridge/verify-server.js` (the Claude-direction verifier: newest claude CLI, resolved model,
+and an EMPTY tool allow-list — backlog v3.0-205: its deny-list alone left 12–16 newer tools loaded,
+Artifact publishing and SendMessage among them), `.claude/skills/bridge/README.md`,
+`.claude/skills/doctor/doctor.py` and `.claude/skills/doctor/SKILL.md` (check 18 `verifier-models`;
+117/117), your cross-check and cross-check-loop skills from `core/skills/cross-check/SKILL.md.template`
+and `core/skills/cross-check-loop/SKILL.md.template` (one line each naming where the model comes from;
+substitute your placeholders as usual), and `docs/engine/OPERATIONS.md`.
+
+**Step 2 — OPERATOR-COPY lane (trust surface; you copy and commit it yourself — under `required`,
+`git commit -S`):** `deploy/compile-driver.py` (its `resolve_codex_bin` probe moves in lockstep with the
+bridge: newest qualifying CLI wins, the desktop app's bundled CLIs are candidates; its board reads the new
+bridge text, so run it AFTER step 1: `py deploy/compile-driver.py --self-test` — 290/290 with the new
+bridge beside it).
+
+**Step 3 — check:** `node .claude/skills/bridge/models.js` should print a model with source `live` for
+`openai`; then `python .claude/skills/doctor/doctor.py` shows check 18 PASS. If `openai` reads
+`fallback`, pick a model in the Codex app (it writes `model` to `config.toml` in your home's `~/.codex/` folder). No re-freeze, no
+new `project.yaml` keys.
+
 ## v3.0.56 → v3.0.57 (mirror-safe fixtures: v3.0.56 as published, with two test lines rebuilt so GitHub push protection accepts the public mirror)
 
 **If you adopt from the public mirror:** the mirror never carried v3.0.56. GitHub's push protection
 refused it over a fake Google client-ID-shaped test filename in two hook batteries (backlog v3.0-202),
-so the mirror goes from v3.0.55 straight to v3.0.57. Apply the v3.0.55 → v3.0.56 section above first,
-then this one. Nothing here changes what any hook allows or refuses.
+so the mirror goes from v3.0.55 straight to v3.0.57. Apply the v3.0.55 → v3.0.56 section (directly BELOW this one — the recent
+sections run newest-first) first, then this one; both copy the same two scanner-side hook files, so if
+you adopt straight from a v3.0.57 tree, copy them once. Nothing here changes what any hook allows or refuses.
 
 **Operator-copy lane only (trust surfaces; you copy and commit these yourself):**
 `core/security/hooks/block-env-writes.sh` and `core/security/hooks/scan-staged-secrets.sh` (test lines

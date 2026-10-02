@@ -267,6 +267,31 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.58 → v3.0.59 (the verify packet stops grading what the engine itself did: a retirement, a revert, a cross-link edit or a flight-plan edit no longer makes an article's next absorb reject)
+
+**Session lane only; there is no operator command.** Nothing here is a trust surface.
+
+**Step 1 — copy, commit together:** `deploy/compile-v2.py` (backlog v3.0-191: the attribution walk
+and the reverted-approval rule; 278/278) and `docs/engine/OPERATIONS.md` (§7, "Grading starts after
+what the engine itself recorded"; §9 points to it). Then `py deploy/compile-v2.py --self-test`.
+Also copy `.claude/skills/bridge/README.md` (text only: its "Which model verifies" section now names the
+source labels `models.js` prints, `live` among them — the v3.0.58 stranger test's one finding).
+
+**What changes in your day.** Until now, an article that had been retired, reverted, given a compile
+Step-4 cross-link, or hand-edited as a flight plan since its last verification came back rejected on its
+next absorb ("fabrication: unaccounted diff", or an empty diff naming a baseline the checker could not
+see), and each one cost you a set-aside. From this release the verify packet lists those changes as
+recorded by the engine, "not part of this claim", and grades only what the absorb itself changed. On the
+first production instance this was 12 of 37 rejected legs in one day, half of that day's set-asides. An
+ordinary edit to a compiled article made outside the engine is still graded exactly as before, and the
+packet says where grading starts and why.
+
+**Verdicts already rejected for this reason stay as they are.** Set them aside as before (their content
+was judged faithful), or redo them through the correction cycle (`--revert`, then re-run), and the re-run
+is graded the new way. Nothing else migrates: no re-freeze, no new `project.yaml` keys. The verify
+journal gains two additive fields per leg where history was found (`graded_from_commit`,
+`ungraded_history`, with `graded_stop` when the walk stopped).
+
 ## v3.0.57 → v3.0.58 (the verifiers follow the frontier: every cross-vendor leg resolves its model at run time, picks the newest installed CLI, and the Claude-direction verifier is finally tool-less)
 
 **Adopt BOTH lanes in ONE sitting.** The new bridge resolves the OpenAI verifier to your Codex CLI's own

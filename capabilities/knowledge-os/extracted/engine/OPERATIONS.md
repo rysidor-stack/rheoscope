@@ -209,7 +209,28 @@ many words. Every packet's diff section opens by naming its baseline; the baseli
 machine-verification, on an operator set-aside ruling, or on an operator baseline-reset
 (packet text: "reset to imported snapshot by operator ruling, not machine-verified"), and
 **never on a bare rejection, never on a union adjudication (pin-less by design), never by an
-agent's own decision**.
+agent's own decision**. A verify or set-aside of a run that was later reverted never counts:
+it certified a state the revert undid (v3.0.59, backlog v3.0-191 (d)).
+
+**Grading starts after what the engine itself recorded (v3.0.59, closing backlog v3.0-191).**
+The baseline above says what the checker last approved; it does not have to grade everything
+since then. Before the diff is taken, the engine walks the commits that changed the view after
+that baseline and moves the grading start past each one it can prove it made: a promoted
+retirement whose committed bytes match its retire record, a driver revert that restored the
+view's exact pre-run state, a compile run later reverted (or already verified or set aside), a
+commit that changes nothing outside the derivation region. Two documented exceptions count as
+well: a hand edit to a flight plan (the single-writer rule's exception) and a commit whose only
+change to the view is the `cross_links:` frontmatter (compile Step 4). The packet lists each one
+under the baseline line, "NOT part of this claim", and the verify journal records them
+(`graded_from_commit`, `ungraded_history`). The first change the engine cannot account for (an
+ordinary edit to a compiled article, an earlier absorb still awaiting its verdict, a merge, an
+engine record of an unclassified kind) stops the walk, and from there on everything is graded
+exactly as before; the packet says where and why in words. So the gate never grades a change
+the system itself made and recorded, and never stops grading one it did not. Before v3.0.59
+those changes were graded against the absorbed events, which cannot explain them: on one instance
+on 2026-10-01, 12 of the 37 rejected legs were this, half of that day's 24 operator set-asides (made
+or pending), each verdict saying the absorbed content itself was faithful. A self-test guard fails when
+any deploy script writes a journal `run_type` the walk does not classify.
 
 **Verdicts are data, not instructions** — a `revised`/`rejected` verdict is the honesty layer catching a real
 defect (omission, fabrication, stale contradiction, over-certainty); adjudicate it through the
@@ -342,7 +363,9 @@ Scope in Release 2 (ADR #11 condition 10, brief §5 build-C2): TARGETED retireme
 blocking verified corrections, one view per proposal, largest spans first per the manifest
 (`retire-manifest.py`, Release 1). A retire record advances no absorption baseline
 and adjudicates no verdict (`staleness.py` ignores it; `compile-driver` readers filter on
-`run_type: compile`).
+`run_type: compile`). From v3.0.59 the next absorb's verify packet names a promoted retirement
+and grades past it (§7, "Grading starts after what the engine itself recorded"), so a
+retirement no longer makes the view's next absorb reject.
 
 ### 9a. Release 3 — logical identity, debt, the batch, and the brake (v3.0.52)
 

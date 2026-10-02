@@ -1618,7 +1618,19 @@ def _absorption_trigger_state(repo, compile_seq):
     content at a NAMED out-of-engine refresh commit, kind "baseline-reset",
     competing newest-by-journal-seq with the other two rungs exactly as
     machine-verified and adjudicated compete with each other. The entry's
-    provenance is carried so the packet can name it out loud."""
+    provenance is carried so the packet can name it out loud.
+
+    REVERTED APPROVALS NEVER BASELINE (v3.0-191 (d), fleet inbox #37). A
+    verify record whose `verifies_seq` -- or an adjudication whose
+    `adjudicates_seq` -- names a reverted run certifies a state the revert
+    undid. Before v3.0.59 those stamps still advanced the baseline, so after
+    the compile skill's Step 3b correction cycle (revert the mixed run, re-run
+    it) each byte-identical confirmed sibling diffed from the undone state: an
+    empty cumulative diff naming a baseline the checker could not see, rejected
+    as unaccountable (the first production instance, 2026-10-01: one re-ride,
+    four legs). Such
+    entries are skipped here, exactly as the reverted run's own absorbed[]
+    entries are."""
     reverted = set()
     for _seq, rec in _iter_all_journal_records(repo):
         dr = rec.get("driver_revert")
@@ -1648,10 +1660,13 @@ def _absorption_trigger_state(repo, compile_seq):
                     st["first_pre_blob"] = a.get("pre_blob", "")
                     st["first_pre_seq"] = seq
                 st["absorbed_seqs"].append(seq)
+        verifies = rec.get("verifies_seq")
         for av in rec.get("absorption_verified", []):
             v = av.get("view")
             if not v:
                 continue
+            if isinstance(verifies, int) and verifies in reverted:
+                continue   # v3.0-191 (d): approval of an undone state
             st = state.setdefault(v, _blank())
             if st["last_verified_seq"] is None or seq > st["last_verified_seq"]:
                 st["last_verified_seq"] = seq
@@ -1671,6 +1686,9 @@ def _absorption_trigger_state(repo, compile_seq):
             v = aj.get("view")
             if not v:
                 continue
+            if isinstance(aj.get("adjudicates_seq"), int) \
+                    and aj["adjudicates_seq"] in reverted:
+                continue   # v3.0-191 (d): ruling on an undone state
             st = state.setdefault(v, _blank())
             if st["last_verified_seq"] is None or seq > st["last_verified_seq"]:
                 st["last_verified_seq"] = seq
@@ -1730,7 +1748,338 @@ def _absorbed_events_for_view(rec, view):
     return sorted(events)
 
 
-def _cumulative_diff(repo, view, current_body, state):
+# --------------------------------------------- v3.0-191: the attribution walk
+# Five-pass run audits/2026-10-01-reason-verify-baseline-fix.md. The packet
+# asks the verifier whether every change it is shown is accounted for by the
+# absorbed events -- a question only the engine's journal can answer for the
+# history between the last verified state and this run. So before the diff is
+# taken, the walk below advances the starting point through every commit since
+# that baseline which the engine can PROVE it made (checked by content against
+# its own journal record, never by author or message) or which a documented
+# exception allows; those changes are named in the packet and journaled, not
+# graded. The first change it cannot account for stops the walk, and from there
+# on everything is graded as before: a misclassification can only make the
+# gate stricter, never looser.
+#
+# The journal record kinds the engine writes in production, by how the walk
+# treats a commit that adds one. A kind outside this table stops the walk
+# (fail-safe); the self-test fails when any deploy script writes a run_type
+# that is neither listed here nor a named test fixture, so a new engine verb
+# cannot silently become a false rejection or a silent pass.
+_WALK_VIEW_CHANGING_RUN_TYPES = ("compile", "driver-revert", "retire")
+_WALK_BODY_NEUTRAL_RUN_TYPES = ("verify", "verify-adjudication",
+                                "baseline-reset")
+_WALK_FLIGHT_PLAN_PREFIX = "wiki/flight-plans/"
+_WALK_LABELS = {
+    "retirement": "retirement: spans moved to the cold store, byte-checked "
+                  "by the engine",
+    "revert": "engine revert of a compile run",
+    "reverted-absorb": "an absorb later undone by an engine revert",
+    "verified-absorb": "an absorb already verified or set aside",
+    "no-body-change": "no change to the body (engine metadata only)",
+    "flight-plan-edit": "flight-plan edit (the single-writer rule's "
+                        "documented exception)",
+    "cross-link-edit": "cross_links frontmatter only (compile Step 4)",
+}
+
+
+def _git_ok(repo, *args):
+    """(returncode, stdout) -- for git calls whose failure is an answer
+    (an absent path, a non-ancestor), not an error."""
+    p = subprocess.run(["git", "-C", repo] + list(args), capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    return p.returncode, p.stdout
+
+
+def _blob_at(repo, commit, path):
+    rc, out = _git_ok(repo, "rev-parse", "-q", "--verify",
+                      "%s:%s" % (commit, path))
+    return out.strip() if rc == 0 and out.strip() else None
+
+
+def _text_at(repo, commit, path):
+    """The file's text at COMMIT (None when absent), read the way
+    _recover_verified_body reads a baseline, so the two are comparable."""
+    rc, out = _git_ok(repo, "show", "%s:%s" % (commit, path))
+    return out if rc == 0 else None
+
+
+def _strip_cross_links_block(text):
+    """Text with the leading frontmatter's `cross_links:` entry removed (the
+    key line, inline or block form, plus its indented list items). Used only
+    to recognise a commit whose sole change to a view is a compile Step-4
+    cross-link projection; nothing is ever written from it."""
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return text
+    end = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end = i
+            break
+    if end is None:
+        return text
+    out, i = [lines[0]], 1
+    while i < end:
+        if re.match(r"cross_links:\s*(\[.*\])?\s*$", lines[i]):
+            i += 1
+            while i < end and lines[i][:1] in (" ", "\t") \
+                    and lines[i].strip().startswith("-"):
+                i += 1
+            continue
+        out.append(lines[i])
+        i += 1
+    return "".join(out + lines[end:])
+
+
+def _absorbed_views(record):
+    return {a.get("view") for a in (record or {}).get("absorbed", [])
+            if a.get("view")}
+
+
+def _attribute_view_history(repo, view, base_commit, upto_commit):
+    """Walk the first-parent commits that changed VIEW after BASE_COMMIT (its
+    last verified state) up to and including UPTO_COMMIT (the compile run's
+    parent). Returns {"graded_from": commit, "ungraded": [{"commit", "kind",
+    "seq"}], "stop": None | {"commit", "reason"}}: grading starts at
+    graded_from, the ungraded list names what the engine accounted for, and
+    stop names the first change it could not.
+
+    A commit is accounted for when:
+      - it adds a `retire` record for this view and its committed view blob
+        equals the record's post_view_blob (and its parent's equals
+        pre_view_blob);
+      - it adds the `compile` record of an absorb into this view that is
+        itself verified or set aside and whose committed blob equals the
+        record's post_blob;
+      - it is a reverted run's commit together with the `driver-revert`
+        commit that undoes it, both inside this window, the revert leaving the
+        view exactly as it was before the run (or absent, as it was) -- a PAIR:
+        nothing between them advances the grading start, the span (overlapping
+        pairs included) is released only when the view is byte-identical to
+        its state before the first reverted run, and a failed check rolls the
+        walk back to before that run;
+      - it changes nothing outside the derivation region (verify stamps,
+        set-aside and reset records, any metadata-only commit);
+      - it adds no engine record for this view and the view is a flight plan
+        (the single-writer rule's documented exception), or the only change is
+        the `cross_links:` frontmatter block (compile Step 4).
+    Anything else stops the walk: a merge, an unresolved absorb, an engine
+    record whose bytes do not check out, an unclassified record kind, an
+    ordinary edit to a compiled article."""
+    res = {"graded_from": base_commit, "ungraded": [], "stop": None}
+    if not base_commit or not upto_commit or base_commit == upto_commit:
+        return res
+    rc, _out = _git_ok(repo, "merge-base", "--is-ancestor", base_commit,
+                       upto_commit)
+    if rc != 0:
+        res["stop"] = {"commit": base_commit,
+                       "reason": "the baseline commit is not an ancestor of "
+                                 "this run, so its history cannot be walked"}
+        return res
+    # Review round 3 (folded after the final round; it only adds a stop): a
+    # baseline that reached this branch through a merge's second parent is not
+    # walkable by --first-parent -- a merge that kept the first parent's view
+    # is path-filtered out, so text the baseline removed could return unseen.
+    rc, fp = _git_ok(repo, "rev-list", "--first-parent", upto_commit)
+    rc2, full = _git_ok(repo, "rev-parse", base_commit)
+    if rc != 0 or rc2 != 0 or full.strip() not in set(fp.split()):
+        res["stop"] = {"commit": base_commit,
+                       "reason": "the baseline commit is not on this branch's "
+                                 "first-parent line (it arrived through a "
+                                 "merge), so its history cannot be walked"}
+        return res
+    rc, out = _git_ok(repo, "rev-list", "--reverse", "--first-parent",
+                      "%s..%s" % (base_commit, upto_commit), "--", view)
+    commits = [c for c in out.split() if c] if rc == 0 else []
+    if not commits:
+        return res
+    order = {c: i for i, c in enumerate(commits)}
+    on_disk = dict(_iter_all_journal_records(repo))
+    reverted = {}
+    for seq, rec in on_disk.items():
+        dr = rec.get("driver_revert")
+        if isinstance(dr, dict) and dr.get("status") == "reverted" \
+                and isinstance(dr.get("reverts_seq"), int):
+            reverted[dr["reverts_seq"]] = seq
+    resolved = set()
+    for seq, rec in on_disk.items():
+        vs = rec.get("verifies_seq")
+        for av in rec.get("absorption_verified", []):
+            if isinstance(vs, int) and av.get("view") and vs not in reverted:
+                resolved.add((vs, av["view"]))
+        for aj in rec.get("absorption_adjudicated", []):
+            a_s = aj.get("adjudicates_seq")
+            if not aj.get("union_event") and isinstance(a_s, int) \
+                    and aj.get("view") and a_s not in reverted:
+                resolved.add((a_s, aj["view"]))
+    jrel = core.JOURNAL_DIR.replace(os.sep, "/").rstrip("/") + "/"
+    added = {}
+    for c in commits:
+        recs = []
+        rc, names = _git_ok(repo, "diff-tree", "--no-commit-id",
+                            "--name-status", "-r", c)
+        for ln in names.splitlines():
+            parts = ln.split("\t")
+            if len(parts) == 2 and parts[0] == "A" \
+                    and parts[1].startswith(jrel) and parts[1].endswith(".json"):
+                stem = parts[1][len(jrel):-len(".json")]
+                if stem.isdigit():
+                    try:
+                        recs.append((int(stem),
+                                     json.loads(_text_at(repo, c, parts[1]))))
+                    except (TypeError, ValueError):
+                        recs.append((int(stem), None))
+        added[c] = recs
+    revert_commit_of = {s: c for c in commits for s, r in added[c]
+                        if isinstance(r, dict)
+                        and r.get("run_type") == "driver-revert"}
+    # A reverted run and its revert are accounted for only as a PAIR
+    # (cross-vendor review round 1, v3.0.59): while a reverted run's commit is
+    # pending, nothing advances graded_from; when its revert proves it restored
+    # the exact pre-run blob, the whole span is released at once (the content
+    # there equals the content before the run, so nothing the run carried --
+    # bundled edits included -- can become the grading start). If the walk
+    # stops while a pair is open, it rolls back to the point before the run.
+    # Review round 2: overlapping pairs can each restore their own run's
+    # pre-run blob while together leaving an edit behind (run A carries X, run
+    # C builds on it, revert A then revert C restore B then B+X). So a span is
+    # released only when the view at the closing revert is byte-identical to
+    # the view before the FIRST held run -- the span's aggregate effect is nil.
+    pending = {}            # reverted run seq -> its run commit
+    safe = None             # (graded_from, len(ungraded)) when the first opened
+    span_start_blob = None  # the view's blob before the first held run
+
+    for c in commits:
+        rc, line = _git_ok(repo, "rev-list", "--parents", "-n", "1", c)
+        parents = line.split()[1:]
+        kind = seq = reason = revert_target = None
+        if len(parents) != 1:
+            reason = "a merge commit, which this check does not attribute"
+        else:
+            prev = parents[0]
+            pre_t, post_t = _text_at(repo, prev, view), _text_at(repo, c, view)
+            body_same = ((pre_t is None) == (post_t is None)
+                         and _strip_derivation_region(pre_t or "")
+                         == _strip_derivation_region(post_t or ""))
+            recs = [(s, r) for s, r in added[c] if isinstance(r, dict)]
+            naming = []
+            for s, r in recs:
+                rt = r.get("run_type")
+                if rt == "retire" and r.get("view") == view:
+                    naming.append((s, r))
+                elif rt == "compile" and view in _absorbed_views(r):
+                    naming.append((s, r))
+                elif rt == "driver-revert" and view in _absorbed_views(
+                        on_disk.get((r.get("driver_revert") or {})
+                                    .get("reverts_seq"))):
+                    naming.append((s, r))
+            unknown = [(s, r) for s, r in recs
+                       if r.get("run_type") not in _WALK_VIEW_CHANGING_RUN_TYPES
+                       + _WALK_BODY_NEUTRAL_RUN_TYPES]
+            if unknown and not body_same:
+                # review round 2: an unclassified record in a commit that
+                # changes the body stops the walk even beside a recognised one
+                s, r = unknown[0]
+                seq = s
+                reason = ("an engine record of a kind this check does not "
+                          "classify ('%s', journal seq %d) in a commit that "
+                          "changes the view" % (r.get("run_type"), s))
+            elif naming:
+                s, r = naming[0]
+                seq, rt = s, r.get("run_type")
+                if rt == "retire":
+                    if _blob_at(repo, c, view) == r.get("post_view_blob") \
+                            and _blob_at(repo, prev, view) \
+                            == r.get("pre_view_blob"):
+                        kind = "retirement"
+                    else:
+                        reason = ("a retirement record (journal seq %d) whose "
+                                  "committed view does not match the bytes it "
+                                  "recorded" % s)
+                elif rt == "driver-revert":
+                    dr = r.get("driver_revert") or {}
+                    rcm = dr.get("reverts_commit")
+                    revert_target = dr.get("reverts_seq")
+                    if not (rcm and pending.get(revert_target) == rcm):
+                        reason = ("a revert record (journal seq %d) of a run "
+                                  "whose own commit is not inside this history"
+                                  % s)
+                    elif dr.get("status") == "reverted" and \
+                            _blob_at(repo, c, view) == _blob_at(
+                                repo, rcm + "^", view):
+                        kind = "revert"
+                    else:
+                        reason = ("a revert record (journal seq %d) whose "
+                                  "commit does not restore this view's pre-run "
+                                  "state" % s)
+                else:   # compile
+                    if s in reverted:
+                        rcom = revert_commit_of.get(reverted[s])
+                        if rcom and order[rcom] > order[c]:
+                            kind = "reverted-absorb"
+                        else:
+                            reason = ("an absorb (journal seq %d) whose revert "
+                                      "is not inside this history" % s)
+                    elif (s, view) in resolved:
+                        posts = [a.get("post_blob") for a in r.get("absorbed", [])
+                                 if a.get("view") == view]
+                        if _blob_at(repo, c, view) in posts:
+                            kind = "verified-absorb"
+                        else:
+                            reason = ("a resolved absorb (journal seq %d) whose "
+                                      "committed view does not match its "
+                                      "recorded bytes" % s)
+                    else:
+                        reason = ("an earlier absorb into this view (journal "
+                                  "seq %d) with no verify or set-aside on "
+                                  "record yet" % s)
+            elif body_same:
+                kind = "no-body-change"
+            elif view.startswith(_WALK_FLIGHT_PLAN_PREFIX):
+                kind = "flight-plan-edit"
+            elif pre_t is not None and post_t is not None and \
+                    _strip_cross_links_block(_strip_derivation_region(pre_t)) \
+                    == _strip_cross_links_block(_strip_derivation_region(post_t)):
+                kind = "cross-link-edit"
+            else:
+                reason = "a change made outside the engine"
+        if kind == "revert" and not [k for k in pending if k != revert_target] \
+                and _blob_at(repo, c, view) != span_start_blob:
+            kind = None   # (pending is untouched, so the stop below rolls back)
+            reason = ("reverts that each restore their own run but together do "
+                      "not return the view to its state before the first "
+                      "reverted run")
+        if kind:
+            res["ungraded"].append({"commit": c, "kind": kind, "seq": seq})
+            if kind == "reverted-absorb":
+                if not pending:
+                    safe = (res["graded_from"], len(res["ungraded"]) - 1)
+                    span_start_blob = _blob_at(repo, c + "^", view)
+                pending[seq] = c
+            elif kind == "revert":
+                pending.pop(revert_target, None)
+                if not pending:
+                    res["graded_from"] = c   # the span closes at nil: release
+            elif not pending:
+                res["graded_from"] = c
+        else:
+            if pending:   # roll back to before the open pair
+                res["graded_from"], n = safe
+                del res["ungraded"][n:]
+            res["stop"] = {"commit": c, "reason": reason}
+            break
+    if pending and res["stop"] is None:
+        res["graded_from"], n = safe
+        del res["ungraded"][n:]
+        res["stop"] = {"commit": min(pending.values(), key=order.get),
+                       "reason": "a reverted run whose revert does not "
+                                 "complete inside this history"}
+    return res
+
+
+def _cumulative_diff(repo, view, current_body, state, upto_commit=None,
+                     attribution=None):
     """Unified diff of view's BODY (derivation region stripped on both
     sides -- see _strip_derivation_region) from its diff-BASE to CURRENT.
     Base = last-verified-or-adjudicated body, recovered via git-show against
@@ -1749,7 +2098,15 @@ def _cumulative_diff(repo, view, current_body, state):
     is. A genuinely NEW view says "NEW VIEW ... verifies from empty" out
     loud; an operator-adjudicated baseline says "adjudicated <date> by
     operator ruling, not machine-verified" out loud; an existing view can
-    never again silently diff from an empty file."""
+    never again silently diff from an empty file.
+
+    ATTRIBUTION (v3.0-191): given UPTO_COMMIT (the compile run's parent), a
+    stamped baseline is walked forward by _attribute_view_history and the diff
+    is taken from the graded-from state, with every accounted-for change named
+    under the baseline line and the walk's stop (if any) named in words; the
+    walk's result is copied into ATTRIBUTION for the journal. An empty diff
+    says so in words. Without UPTO_COMMIT (direct callers, older records) the
+    behavior is the pre-v3.0.59 one, byte for byte."""
     st = state.get(view) or {}
     lvs = st.get("last_verified_seq")
     if lvs is None:
@@ -1797,10 +2154,43 @@ def _cumulative_diff(repo, view, current_body, state):
     else:
         base_line = ("(baseline: last machine-verified state, journal seq "
                      "%d)" % lvs)
-    pre_blob = _blob_of_text(repo, _strip_derivation_region(base_body))
+    # v3.0-191: grade from after the history the engine can account for.
+    graded_body, notes = base_body, ""
+    if upto_commit and verify_commit:
+        walk = _attribute_view_history(repo, view, verify_commit, upto_commit)
+        if attribution is not None:
+            attribution.update(walk)
+        if walk["ungraded"]:
+            g_text = _text_at(repo, walk["graded_from"], view)
+            graded_body = g_text if g_text is not None else ""
+            notes += ("(graded from %s: the view as it stood after %d "
+                      "change(s) since that baseline which the engine recorded "
+                      "or a documented exception allows -- listed here, NOT "
+                      "part of this claim:)\n"
+                      % (walk["graded_from"][:12], len(walk["ungraded"])))
+            for u in walk["ungraded"]:
+                notes += "  - %s %s%s\n" % (
+                    u["commit"][:12], _WALK_LABELS.get(u["kind"], u["kind"]),
+                    "" if u.get("seq") is None else
+                    " (journal seq %d)" % u["seq"])
+            if g_text is None:
+                notes += ("(the view did not exist at that point -- an engine "
+                          "revert removed it -- so the diff below verifies "
+                          "it from empty)\n")
+        if walk["stop"]:
+            notes += ("(grading %s at %s: %s -- that change and everything "
+                      "after it are in the diff below and part of this "
+                      "claim)\n"
+                      % ("resumes" if walk["ungraded"] else "starts",
+                         (walk["stop"].get("commit") or "?")[:12],
+                         walk["stop"]["reason"]))
+    pre_blob = _blob_of_text(repo, _strip_derivation_region(graded_body))
     cur_blob = _blob_of_text(repo, _strip_derivation_region(current_body))
-    return base_line + "\n" + _git(repo, "diff", "--no-color", pre_blob,
-                                   cur_blob)
+    diff = _git(repo, "diff", "--no-color", pre_blob, cur_blob)
+    if upto_commit and not diff.strip():
+        notes +=("(the diff below is empty: the post-absorb body equals the "
+                  "graded-from body, byte for byte)\n")
+    return base_line + "\n" + notes + diff
 
 
 def _recover_verified_body(repo, view, verify_commit, expected_sha256):
@@ -2160,8 +2550,19 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
             absorption_checked += 1
             abs_events = _absorbed_events_for_view(rec, view)
             current_body = _body(view)
-            cumulative_diff = _cumulative_diff(repo, view, current_body,
-                                               trigger_state)
+            # v3.0-191: walk from the last verified state to this run's
+            # parent; what the engine accounts for is named, not graded.
+            attribution = {}
+            cumulative_diff = _cumulative_diff(
+                repo, view, current_body, trigger_state,
+                upto_commit=rec.get("parent_git_sha") or None,
+                attribution=attribution)
+            attr_fields = {}
+            if attribution.get("ungraded") or attribution.get("stop"):
+                attr_fields = {
+                    "graded_from_commit": attribution.get("graded_from"),
+                    "ungraded_history": attribution.get("ungraded", []),
+                    "graded_stop": attribution.get("stop")}
 
             # v3.0-63: when the compile record journaled a claim routing
             # covering this view's events, the charge is plan-scoped -- two
@@ -2349,6 +2750,9 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
                         # truth) -- it puts the record-time truth of the
                         # transition on the journal.
                         av_entry["consumed_status_advanced"] = True
+                    # v3.0-191: the audit trail a set-aside used to provide --
+                    # additive, present only when the walk found history.
+                    av_entry.update(attr_fields)
                     absorption_verified.append(av_entry)
                     absorption_confirmed += 1
 
@@ -2367,14 +2771,16 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
                 else:
                     v_label, r_classes, leg_disp = classify_reason_classes(
                         verdict)
-                absorption_verify_attempts.append({
+                attempt = {
                     "view": view, "events": abs_events,
                     "artifact": art_rel, "packet_sha256": packet_sha,
                     "reason": stamp_refusal_reason or verdict.get(
                         "reason", ""),
                     "verdict_label": v_label,
                     "reason_classes": r_classes,
-                    "disposition": leg_disp})
+                    "disposition": leg_disp}
+                attempt.update(attr_fields)   # v3.0-191, additive
+                absorption_verify_attempts.append(attempt)
 
         # F15: journal the standalone routing-census's input/output hashes for
         # this verify pass's own ledger slice (the events this pass checked) --
@@ -5335,6 +5741,463 @@ def self_test():
         except ValidationError as e:
             case("Release 3: output carrying BOTH new_text and sections refuses",
                  "BOTH" in str(e))
+        # ======== v3.0-191: the attribution walk + reverted approvals (v3.0.59)
+        # Five-pass run audits/2026-10-01-reason-verify-baseline-fix.md. End to
+        # end in the shared fixture: a promoted RETIREMENT between two absorbs
+        # is named, not graded; an ordinary out-of-engine edit after it stays
+        # graded (fail-safe); a correction-cycle REVERT never leaves its
+        # approval as the baseline. Then the walk's rules one by one on a
+        # private repo, and the run_type classification guard.
+        def _commit_all(msg):
+            subprocess.run(["git", "-C", base, "add", "-A"], capture_output=True)
+            subprocess.run(["git", "-C", base, "commit", "-qm", msg],
+                           capture_output=True)
+
+        class _AddSectionBackend:
+            def __init__(self, title, text):
+                self.title, self.text = title, text
+
+            def absorb(self, view_rel, view_text, events):
+                new = (view_text.rstrip("\n") + "\n\n## %s\n%s\n"
+                       % (self.title, self.text))
+                return {"new_text": new,
+                        "manifest": [{"event": e, "section": self.title}
+                                     for e in sorted(events)],
+                        "corpus_support": [], "noops": []}
+
+        def _diff_of(packet):
+            return packet.split("## CUMULATIVE DIFF SINCE LAST VERIFIED",
+                                1)[1].split("## FULL VIEW BODY", 1)[0]
+
+        def _plan_one(view, event):
+            return {"items": [{"view": view, "events": [event],
+                               "event_class": {event: {
+                                   "class": "t3", "origin": "explicit"}}}]}
+
+        rt_view = "wiki/scoped/rt.md"
+        rt_path = os.path.join(base, "wiki", "scoped", "rt.md")
+        open(rt_path, "w", newline="\n").write(_scoped_view(
+            "RT", "intro text\n\n## History\nold history line one\n"
+                  "old history line two"))
+        for nm, txt in (("rt1", "the first claim text"),
+                        ("rt2", "the second claim text"),
+                        ("rt3", "the third claim text")):
+            open(os.path.join(base, "raw", "scoped", nm + ".md"), "w",
+                 newline="\n").write("source: %s\n" % txt)
+        _commit_all("rt fixture")
+        res_rt1 = run(base, _plan_one(rt_view, "raw/scoped/rt1.md"),
+                      _AddSectionBackend("First", "the first claim text"))
+        verify_run(base, res_rt1["seq"], _GoodAttestBackend(confirm=True))
+        # a promoted retirement, shaped as retire.py commits one: the view
+        # edit and its journal record in ONE commit, the record carrying the
+        # pre/post blobs the walk checks against
+        rt_head = _git(base, "rev-parse", "HEAD").strip()
+        rt_before = open(rt_path, encoding="utf-8").read()
+        rt_after = rt_before.replace(
+            "old history line one\nold history line two",
+            "(retired to the cold store: wiki/cold/scoped/rt-history.md)")
+        os.makedirs(os.path.join(base, "wiki", "cold", "scoped"), exist_ok=True)
+        open(os.path.join(base, "wiki", "cold", "scoped", "rt-history.md"), "w",
+             newline="\n").write("old history line one\nold history line two\n")
+        open(rt_path, "w", encoding="utf-8", newline="\n").write(rt_after)
+        ret_rec = core.minimal_record("retire", rt_head)
+        ret_rec.update({"view": rt_view,
+                        "pre_view_blob": _blob_at(base, rt_head, rt_view),
+                        "post_view_blob": _blob_of_text(base, rt_after),
+                        "post_view_sha256": _sha256(rt_after),
+                        "run_window": {"start": "t0", "end": "t1"}})
+        ret_seq, _rp = core.append_record(base, ret_rec)
+        _commit_all("retire %d: rt history" % ret_seq)
+        case("v3.0-191 fixture: the retirement moved real lines",
+             rt_after != rt_before)
+        res_rt2 = run(base, _plan_one(rt_view, "raw/scoped/rt2.md"),
+                      _AddSectionBackend("Second", "the second claim text"))
+        be_rt2 = _GoodAttestBackend(confirm=True)
+        vres_rt2 = verify_run(base, res_rt2["seq"], be_rt2)
+        d_rt2 = _diff_of(be_rt2.calls[-1])
+        case("v3.0-191: a promoted retirement since the baseline is NAMED in "
+             "the packet (kind, journal seq) and declared not part of the claim",
+             "spans moved to the cold store" in d_rt2
+             and ("journal seq %d" % ret_seq) in d_rt2
+             and "NOT part of this claim" in d_rt2)
+        case("v3.0-191: the graded diff is the new absorb alone -- the retired "
+             "lines are not shown as removals, the new section is an addition",
+             "-old history line one" not in d_rt2
+             and "+the second claim text" in d_rt2
+             and vres_rt2.get("absorption_confirmed") == 1)
+        vrec_rt2 = json.load(open(os.path.join(
+            core.journal_dir(base), "%d.json" % vres_rt2["seq"]),
+            encoding="utf-8"))
+        av_rt2 = [a for a in vrec_rt2.get("absorption_verified", [])
+                  if a.get("view") == rt_view]
+        case("v3.0-191: the journal keeps the audit trail -- ungraded_history "
+             "names the retirement, graded_from_commit is the retirement commit",
+             bool(av_rt2) and any(u.get("kind") == "retirement"
+                                  and u.get("seq") == ret_seq
+                                  for u in av_rt2[0].get("ungraded_history", []))
+             and av_rt2[0].get("graded_from_commit")
+             == _git(base, "log", "-1", "--format=%H", "--diff-filter=A", "--",
+                     "receipts/journal/%d.json" % ret_seq).strip())
+        # fail-safe: an ordinary edit outside the engine stays graded
+        rt_now = open(rt_path, encoding="utf-8").read()
+        open(rt_path, "w", encoding="utf-8", newline="\n").write(
+            rt_now.rstrip("\n") + "\n\n## Sneaky\nthe hand-added claim text\n")
+        _commit_all("hand edit outside the engine")
+        res_rt3 = run(base, _plan_one(rt_view, "raw/scoped/rt3.md"),
+                      _AddSectionBackend("Third", "the third claim text"))
+        be_rt3 = _GoodAttestBackend(confirm=True)
+        verify_run(base, res_rt3["seq"], be_rt3)
+        d_rt3 = _diff_of(be_rt3.calls[-1])
+        case("v3.0-191 fail-safe: an ordinary edit made outside the engine "
+             "STAYS GRADED, and the packet says why in words",
+             "+the hand-added claim text" in d_rt3
+             and "a change made outside the engine" in d_rt3
+             and "grading starts at" in d_rt3)
+
+        # (d) a correction-cycle revert never leaves its approval as the base
+        for nm in ("rva", "rvb"):
+            open(os.path.join(base, "wiki", "scoped", nm + ".md"), "w",
+                 newline="\n").write(_scoped_view(nm.upper(),
+                                                  "original %s body" % nm))
+        open(os.path.join(base, "raw", "scoped", "rv.md"), "w",
+             newline="\n").write("source: the revert claim text\n")
+        _commit_all("rv fixture")
+        rv_plan = {"items": [
+            {"view": v, "events": ["raw/scoped/rv.md"],
+             "event_class": {"raw/scoped/rv.md": {"class": "t3",
+                                                  "origin": "explicit"}}}
+            for v in ("wiki/scoped/rva.md", "wiki/scoped/rvb.md")]}
+        res_rv1 = run(base, rv_plan,
+                      _AddSectionBackend("Rev", "the revert claim text"))
+
+        class _MixedByView(_GoodAttestBackend):
+            def verify(self, packet):
+                self.confirm = "view wiki/scoped/rva.md" in packet
+                return _GoodAttestBackend.verify(self, packet)
+
+        verify_run(base, res_rv1["seq"], _MixedByView())
+        rv1_rec = json.load(open(os.path.join(
+            core.journal_dir(base), "%d.json" % res_rv1["seq"]),
+            encoding="utf-8"))
+        rv1_commit = _git(base, "log", "-1", "--format=%H", "--diff-filter=A",
+                          "--", "receipts/journal/%d.json"
+                          % res_rv1["seq"]).strip()
+        for v in ("wiki/scoped/rva.md", "wiki/scoped/rvb.md"):
+            open(os.path.join(base, v.replace("/", os.sep)), "w",
+                 encoding="utf-8", newline="\n").write(
+                _text_at(base, rv1_rec["parent_git_sha"], v))
+        rv_rev = core.minimal_record("driver-revert",
+                                     _git(base, "rev-parse", "HEAD").strip())
+        rv_rev["run_window"] = {"start": "t0", "end": "t1"}
+        rv_rev["driver_revert"] = {"reverts_seq": res_rv1["seq"],
+                                   "reverts_commit": rv1_commit,
+                                   "status": "reverted",
+                                   "reason": "fixture correction cycle",
+                                   "at": "t1",
+                                   "driver": "deploy/compile-driver.py"}
+        core.append_record(base, rv_rev)
+        _commit_all("compile-driver: revert of run seq %d" % res_rv1["seq"])
+        res_rv2 = run(base, rv_plan,
+                      _AddSectionBackend("Rev", "the revert claim text"))
+        st_rv = _absorption_trigger_state(base, res_rv2["seq"])
+        case("v3.0-191 (d): the reverted run's confirmed approval is NOT the "
+             "re-ridden sibling's baseline (it certified an undone state)",
+             st_rv.get("wiki/scoped/rva.md", {}).get("last_verified_seq")
+             is None)
+        be_rv2 = _GoodAttestBackend(confirm=True)
+        vres_rv2 = verify_run(base, res_rv2["seq"], be_rv2)
+        d_rva = _diff_of([p for p in be_rv2.calls
+                          if "view wiki/scoped/rva.md" in p][0])
+        case("v3.0-191 (d): the re-ridden sibling diffs from its real pre-run "
+             "body -- the absorb is an addition, never an empty diff from a "
+             "baseline the checker cannot see",
+             "+the revert claim text" in d_rva
+             and "last machine-verified state" not in d_rva)
+        case("v3.0-191 (d): the correction-cycle re-ride confirms both views",
+             vres_rv2.get("absorption_confirmed") == 2)
+
+        # the walk's rules, one by one, on a private repo
+        wk = tempfile.mkdtemp(prefix="cv2-walk-")
+        try:
+            def wg(*a):
+                return subprocess.run(["git", "-C", wk] + list(a),
+                                      capture_output=True, text=True
+                                      ).stdout.strip()
+
+            for a in (["init", "-q"], ["config", "user.email", "t@t"],
+                      ["config", "user.name", "t"],
+                      ["config", "core.autocrlf", "false"]):
+                wg(*a)
+            os.makedirs(os.path.join(wk, "wiki", "flight-plans"))
+            os.makedirs(os.path.join(wk, "wiki", "t"))
+            os.makedirs(core.journal_dir(wk))
+            WX = "wiki/t/x.md"
+
+            def wput(rel, text):
+                with open(os.path.join(wk, rel.replace("/", os.sep)), "w",
+                          encoding="utf-8", newline="\n") as fh:
+                    fh.write(text)
+
+            def wread(rel):
+                return open(os.path.join(wk, rel.replace("/", os.sep)),
+                            encoding="utf-8").read()
+
+            def wcommit(msg):
+                wg("add", "-A")
+                wg("commit", "-qm", msg)
+                return wg("rev-parse", "HEAD")
+
+            def wjournal(seq, rec):
+                wput("receipts/journal/%d.json" % seq, json.dumps(rec))
+
+            wput(WX, "---\ntitle: T\ncross_links:\n  - wiki/t/a.md\n"
+                     "confidence: low\n---\n" + DERIV + "\n## Intro\nbody line\n")
+            wput("wiki/flight-plans/p.md", "---\ntitle: P\n---\n## Status\n"
+                                           "phase one\n")
+            w0 = wcommit("base")
+            wput(WX, wread(WX).replace("  - wiki/t/a.md\n",
+                                       "  - wiki/t/a.md\n  - wiki/t/b.md\n"))
+            w1 = wcommit("session work including a Step-4 cross-link")
+            wput("wiki/flight-plans/p.md",
+                 wread("wiki/flight-plans/p.md").replace("phase one",
+                                                         "phase two"))
+            wcommit("flight plan hand edit")
+            wput(WX, wread(WX).replace("status: active\n", "status: active2\n"))
+            w3 = wcommit("derivation-region metadata only")
+            walk_x = _attribute_view_history(wk, WX, w0, w3)
+            case("v3.0-191 walk: a cross_links-only change (Step 4) and a "
+                 "derivation-region-only change are accounted for",
+                 [u["kind"] for u in walk_x["ungraded"]]
+                 == ["cross-link-edit", "no-body-change"]
+                 and walk_x["stop"] is None and walk_x["graded_from"] == w3
+                 and walk_x["ungraded"][0]["commit"] == w1)
+            walk_fp = _attribute_view_history(wk, "wiki/flight-plans/p.md",
+                                              w0, w3)
+            case("v3.0-191 walk: a flight-plan hand edit is accounted for (the "
+                 "documented single-writer exception)",
+                 [u["kind"] for u in walk_fp["ungraded"]]
+                 == ["flight-plan-edit"] and walk_fp["stop"] is None)
+            wput(WX, wread(WX).replace(
+                "  - wiki/t/b.md\n", "  - wiki/t/b.md\n  - wiki/t/c.md\n"
+            ).replace("body line", "body line changed"))
+            w4 = wcommit("a cross-link bundled with a body edit")
+            walk4 = _attribute_view_history(wk, WX, w3, w4)
+            case("v3.0-191 walk: a cross-link change bundled with a body edit "
+                 "is NOT accounted for -- the walk stops there, named",
+                 not walk4["ungraded"] and walk4["stop"]
+                 and walk4["stop"]["commit"] == w4
+                 and "outside the engine" in walk4["stop"]["reason"])
+            new5 = wread(WX) + "\n## Absorbed\na new claim\n"
+            wput(WX, new5)
+            wjournal(10, dict(core.minimal_record("compile", w4), absorbed=[{
+                "view": WX, "events": ["raw/e.md"],
+                "pre_blob": _blob_at(wk, w4, WX),
+                "post_blob": _blob_of_text(wk, new5)}]))
+            w5 = wcommit("compile-v2 run seq 10")
+            walk5 = _attribute_view_history(wk, WX, w4, w5)
+            case("v3.0-191 walk: an earlier absorb with no verify or set-aside "
+                 "on record stops the walk (it stays graded)",
+                 walk5["stop"] and walk5["stop"]["commit"] == w5
+                 and "no verify or set-aside" in walk5["stop"]["reason"])
+            wjournal(11, dict(core.minimal_record("verify-adjudication", w5),
+                              absorption_adjudicated=[{
+                                  "view": WX, "adjudicates_seq": 10}]))
+            w6 = wcommit("set-aside of seq 10")
+            walk6 = _attribute_view_history(wk, WX, w4, w6)
+            case("v3.0-191 walk: once set aside, that absorb is accounted for, "
+                 "checked against its recorded bytes",
+                 [u["kind"] for u in walk6["ungraded"]] == ["verified-absorb"]
+                 and walk6["stop"] is None)
+            wput(WX, wread(WX) + "\n## Spliced\nx\n")
+            wjournal(12, core.minimal_record("splice", w6))
+            w7 = wcommit("a future engine verb")
+            walk7 = _attribute_view_history(wk, WX, w6, w7)
+            case("v3.0-191 walk: an engine record of an unclassified kind that "
+                 "changes the view stops the walk and is named",
+                 walk7["stop"] and "'splice'" in walk7["stop"]["reason"])
+            pre8 = _blob_at(wk, w7, WX)
+            wput(WX, wread(WX).replace("a new claim", "(retired: cold)"))
+            wjournal(13, dict(core.minimal_record("retire", w7), view=WX,
+                              pre_view_blob=pre8, post_view_blob="0" * 40))
+            w8 = wcommit("retire 13 with a wrong post blob")
+            walk8 = _attribute_view_history(wk, WX, w7, w8)
+            case("v3.0-191 walk: a retirement record whose committed bytes do "
+                 "not match it stops the walk",
+                 walk8["stop"]
+                 and "does not match the bytes it recorded"
+                 in walk8["stop"]["reason"])
+            wg("checkout", "-q", "-b", "side")
+            wput(WX, wread(WX) + "\n## Side\ny\n")
+            ws = wcommit("side edit")
+            wg("checkout", "-q", "-b", "trunk", w8)
+            wg("merge", "--no-ff", "-q", "-m", "merge side", "side")
+            wm = wg("rev-parse", "HEAD")
+            walk_m = _attribute_view_history(wk, WX, w8, wm)
+            case("v3.0-191 walk: a merge commit stops the walk",
+                 walk_m["stop"] and "merge" in walk_m["stop"]["reason"])
+            walk_na = _attribute_view_history(wk, WX, ws, w8)
+            case("v3.0-191 walk: a baseline that is not an ancestor of the run "
+                 "is named and nothing is walked",
+                 not walk_na["ungraded"] and walk_na["stop"]
+                 and "not an ancestor" in walk_na["stop"]["reason"])
+            t_m = _text_at(wk, wm, WX)
+            st_e = {WX: {"last_verified_seq": 1,
+                         "last_verified_view_sha256": _sha256(t_m),
+                         "last_verified_commit": wm,
+                         "last_verified_kind": "machine-verified"}}
+            case("v3.0-191: an empty graded diff says so in words",
+                 "the diff below is empty" in _cumulative_diff(
+                     wk, WX, t_m, st_e, upto_commit=wm))
+            case("v3.0-191: without a run commit the diff is the pre-v3.0.59 "
+                 "one (no walk, no empty-diff note)",
+                 "the diff below is empty" not in _cumulative_diff(
+                     wk, WX, t_m, st_e))
+            cur_x = t_m + "\n## Extra\nz\n"
+            case("v3.0-191 (review r1): with no run commit the output is "
+                 "byte-identical to the v3.0.58 formula (baseline line + diff)",
+                 _cumulative_diff(wk, WX, cur_x, st_e)
+                 == "(baseline: last machine-verified state, journal seq 1)\n"
+                 + _git(wk, "diff", "--no-color",
+                        _blob_of_text(wk, _strip_derivation_region(t_m)),
+                        _blob_of_text(wk, _strip_derivation_region(cur_x))))
+            # review r1 (packet A): a reverted run's commit carrying an
+            # unrecorded edit, then a revert that undoes only the absorb --
+            # the walk must not start grading inside the pair
+            pre_c = wread(WX)
+            wput(WX, pre_c + "\n## Run\nabsorbed text\n\n## Smuggled\n"
+                             "an unrecorded edit\n")
+            wjournal(20, dict(core.minimal_record("compile", wm), absorbed=[{
+                "view": WX, "events": ["raw/e.md"]}]))
+            wc = wcommit("compile-v2 run seq 20 (with a bundled edit)")
+            wput(WX, pre_c + "\n## Smuggled\nan unrecorded edit\n")
+            wjournal(21, dict(core.minimal_record("driver-revert", wc),
+                              driver_revert={"reverts_seq": 20,
+                                             "reverts_commit": wc,
+                                             "status": "reverted"}))
+            wr = wcommit("compile-driver: revert of run seq 20 (partial)")
+            walk_r = _attribute_view_history(wk, WX, wm, wr)
+            case("v3.0-191 (review r1): a revert that does not restore the "
+                 "pre-run bytes rolls the walk back to BEFORE the reverted run "
+                 "-- the run's commit never becomes the grading start, so the "
+                 "bundled edit stays graded",
+                 walk_r["graded_from"] == wm and not walk_r["ungraded"]
+                 and walk_r["stop"] and walk_r["stop"]["commit"] == wr
+                 and "does not restore" in walk_r["stop"]["reason"])
+            pre_c2 = wread(WX)
+            wput(WX, pre_c2 + "\n## Run2\nabsorbed text two\n")
+            wjournal(22, dict(core.minimal_record("compile", wr), absorbed=[{
+                "view": WX, "events": ["raw/e.md"]}]))
+            wc2 = wcommit("compile-v2 run seq 22")
+            wput(WX, pre_c2)
+            wjournal(23, dict(core.minimal_record("driver-revert", wc2),
+                              driver_revert={"reverts_seq": 22,
+                                             "reverts_commit": wc2,
+                                             "status": "reverted"}))
+            wr2 = wcommit("compile-driver: revert of run seq 22")
+            walk_p = _attribute_view_history(wk, WX, wr, wr2)
+            case("v3.0-191 (review r1): a reverted run and its exact revert "
+                 "are accounted for as a pair, released at the revert",
+                 [u["kind"] for u in walk_p["ungraded"]]
+                 == ["reverted-absorb", "revert"]
+                 and walk_p["graded_from"] == wr2 and walk_p["stop"] is None)
+            # review r2 (packet A): overlapping pairs that each restore their
+            # own run but together leave an unrecorded edit behind
+            sb = wread(WX)
+            sa = sb + "\n## RunA\na\n\n## X\nan unrecorded edit\n"
+            wput(WX, sa)
+            wjournal(30, dict(core.minimal_record("compile", wr2), absorbed=[{
+                "view": WX, "events": ["raw/e.md"]}]))
+            wa = wcommit("compile-v2 run seq 30 (carrying X)")
+            wput(WX, sa + "\n## RunC\nc\n")
+            wjournal(31, dict(core.minimal_record("compile", wa), absorbed=[{
+                "view": WX, "events": ["raw/e.md"]}]))
+            wcc = wcommit("compile-v2 run seq 31")
+            wput(WX, sb)
+            wjournal(32, dict(core.minimal_record("driver-revert", wcc),
+                              driver_revert={"reverts_seq": 30,
+                                             "reverts_commit": wa,
+                                             "status": "reverted"}))
+            wcommit("compile-driver: revert of run seq 30")
+            wput(WX, sa)
+            wjournal(33, dict(core.minimal_record("driver-revert", wcc),
+                              driver_revert={"reverts_seq": 31,
+                                             "reverts_commit": wcc,
+                                             "status": "reverted"}))
+            wrc = wcommit("compile-driver: revert of run seq 31")
+            walk_o = _attribute_view_history(wk, WX, wr2, wrc)
+            case("v3.0-191 (review r2): overlapping reverts that do not "
+                 "together restore the state before the first run stop the "
+                 "walk and roll it back -- the unrecorded edit stays graded",
+                 walk_o["graded_from"] == wr2 and not walk_o["ungraded"]
+                 and walk_o["stop"] and walk_o["stop"]["commit"] == wrc
+                 and "together do not return" in walk_o["stop"]["reason"])
+            # review r2 (packet B): an unclassified record beside a valid
+            # retirement in a body-changing commit still stops the walk
+            s0 = wread(WX)
+            s1 = s0.replace("## X\nan unrecorded edit\n", "(retired)\n")
+            wput(WX, s1)
+            wjournal(40, dict(core.minimal_record("retire", wrc), view=WX,
+                              pre_view_blob=_blob_at(wk, wrc, WX),
+                              post_view_blob=_blob_of_text(wk, s1)))
+            wjournal(41, core.minimal_record("splice", wrc))
+            w40 = wcommit("retire 40 beside an unclassified record")
+            walk_u = _attribute_view_history(wk, WX, wrc, w40)
+            case("v3.0-191 (review r2): an unclassified record stops the walk "
+                 "even beside a valid retirement in the same commit",
+                 not walk_u["ungraded"] and walk_u["stop"]
+                 and "'splice'" in walk_u["stop"]["reason"])
+            # review r3 (packet A): a baseline that arrived through a merge's
+            # second parent; the merge keeps the first parent's view, which
+            # still carries text the baseline removed
+            t0 = wread(WX)
+            wput(WX, t0 + "\n## Kept\nline X\n")
+            m0 = wcommit("main: carries line X")
+            wg("checkout", "-q", "-b", "side2")
+            wput(WX, t0)
+            mb = wcommit("side: the verified baseline, without line X")
+            wg("checkout", "-q", "trunk")
+            wput(WX, wread(WX).replace("  - wiki/t/c.md\n",
+                                       "  - wiki/t/c.md\n  - wiki/t/d.md\n"))
+            wcommit("main: a cross_links-only edit")
+            wg("merge", "-q", "-s", "ours", "-m", "merge side2", "side2")
+            mm = wg("rev-parse", "HEAD")
+            walk_mb = _attribute_view_history(wk, WX, mb, mm)
+            case("v3.0-191 (review r3): a baseline on a merged-in second parent "
+                 "is not walked -- grading starts at the baseline, so text the "
+                 "merge brought back stays graded",
+                 walk_mb["graded_from"] == mb and not walk_mb["ungraded"]
+                 and walk_mb["stop"]
+                 and "first-parent line" in walk_mb["stop"]["reason"]
+                 and m0 != mb)
+        finally:
+            shutil.rmtree(wk, ignore_errors=True)
+
+        # the guard: a new engine verb cannot slip past the walk unclassified
+        here = os.path.dirname(os.path.abspath(__file__))
+        found_rt = set()
+        for fn in os.listdir(here):
+            if fn.endswith(".py"):
+                src = open(os.path.join(here, fn), encoding="utf-8").read()
+                # both quote styles (review r1); a run_type COMPUTED at run
+                # time cannot be seen here -- the walk's fail-safe stop names
+                # it in the packet instead (a stated residual)
+                for pat in (r'minimal_record\(\s*["\']([A-Za-z0-9_.-]+)["\']',
+                            r'["\']run_type["\']\s*:\s*["\']([A-Za-z0-9_.-]+)["\']',
+                            r'run_type\s*=\s*["\']([A-Za-z0-9_.-]+)["\']',
+                            r'\[\s*["\']run_type["\']\s*\]\s*=\s*'
+                            r'["\']([A-Za-z0-9_.-]+)["\']'):
+                    found_rt.update(re.findall(pat, src))
+        fixture_rt = {"crashed", "crashed-run", "lock-race", "racer", "x",
+                      "live", "live-run4", "unparseable-lock", "compile-run1",
+                      "verify-drill", "verify-drill-verify", "splice"}
+        unclassified_rt = sorted(found_rt - set(_WALK_VIEW_CHANGING_RUN_TYPES)
+                                 - set(_WALK_BODY_NEUTRAL_RUN_TYPES)
+                                 - fixture_rt)
+        case("v3.0-191 guard: every run_type a deploy script writes is "
+             "classified by the walk or is a named test fixture (unclassified: "
+             "%s)" % (", ".join(unclassified_rt) or "none"),
+             not unclassified_rt and "retire" in found_rt)
+
         r3root = tempfile.mkdtemp(prefix="cv2-release3-")
         dbt = _debt()
         try:

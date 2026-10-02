@@ -51,8 +51,9 @@ for deliberate overrides only) → the provider CLI's OWN current default (`~/.c
 `grok models`; `~/.claude/settings.json` `model`) → a shipped fallback (for Anthropic the alias `fable`,
 which the claude CLI maps to its newest top-tier model). So when a provider ships a new model and its app
 or CLI moves its default, every leg follows with no harness change. See what each provider resolves to:
-`node .claude/skills/bridge/models.js` (the doctor's check 18 shows the same, and WARNs when a registry
-override lags the CLI's own default). The CLI binary is resolved the same way: the NEWEST installed
+`node .claude/skills/bridge/models.js` — each line names its SOURCE: `explicit`, `env:<NAME>`, `registry`,
+`live` (the provider CLI's own current default), or `fallback` (the doctor's check 18 shows the same, and WARNs
+on a weak tier, on a registry override that differs from the CLI's own default, or on an OpenAI fallback). The CLI binary is resolved the same way: the NEWEST installed
 codex / claude CLI wins (the desktop apps keep bundled, current copies under `%LOCALAPPDATA%\OpenAI\Codex\bin\`
 and `%APPDATA%\Claude\claude-code\`), because a new model usually needs a new CLI.
 

@@ -57,6 +57,20 @@ on a weak tier, on a registry override that differs from the CLI's own default, 
 codex / claude CLI wins (the desktop apps keep bundled, current copies under `%LOCALAPPDATA%\OpenAI\Codex\bin\`
 and `%APPDATA%\Claude\claude-code\`), because a new model usually needs a new CLI.
 
+## What a verdict carries (v3.0.60, backlog v3.0-184 / -185)
+
+Every verdict JSON has `verdict`, `reason`, `uncertainty`, `citations`, and two structured
+lists: `reason_classes` (the defect classes the verifier found,
+from the packet's REASON CLASS vocabulary; `[]` on a confirm or when the evidence defines none)
+and `missing_claims` (on a routing-completeness packet, each load-bearing claim no routing line
+accounts for, as `{event, quote, claim}` with the sentence quoted verbatim; `[]` otherwise). The
+compile engine classifies from `reason_classes` alone and never searches the reason prose for
+class words. The GPT-direction server (`codex-verify-server.js`) enforces both lists through its
+strict output schema; the Claude-direction server (`verify-server.js`) has no output schema, asks
+for both in its instructions and passes its answer through as given, so a verdict from it can
+lack them -- the engine then reads the missing class list as unclassified and blocking. An
+ordinary `/cross-check` gets both lists empty and can ignore them.
+
 ## Security posture (do not regress)
 - **Both verifiers run CONTAINED + tool-less + on a resolved frontier model** (see above). The Claude
   verifier runs with an EMPTY tool allow-list (`--tools ""` — zero built-in tools on any CLI version; the

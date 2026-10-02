@@ -267,12 +267,65 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.59 → v3.0.60 (the routing fix: routing completeness is judged once per run and its gaps become a to-do list the next compile clears; the verifier's defect classes are read from a structured list, never from its prose)
+
+**Both lanes in ONE sitting, and this time the OPERATOR lane FIRST.** The new engine no longer
+guesses a verdict's class from its prose; the class travels in a structured list that
+`deploy/compile-backends.py` must carry through. With the new engine but the old backend, every
+non-confirm verdict would arrive without its list and block the run as unclassified. The new
+backend works with the old engine, so copying it first is safe. Do not run a compile between the
+two lanes.
+
+**Step 1 — OPERATOR-COPY lane (trust surface; you copy and commit it yourself — under `required`,
+`git commit -S`):** `deploy/compile-backends.py` (carries the verifier's `reason_classes` and
+`missing_claims` through to the engine and names routing packets; 188/188 —
+`py deploy/compile-backends.py --self-test`).
+
+**Step 2 — SESSION lane (copy, commit together):**
+- `deploy/compile-v2.py` (the routing leg, coverage debt, scoped and legacy events, the
+  structured-only classifier, `--coverage-debt`; 315/315).
+- `deploy/decision-inbox.py` (the coverage-debt line and the aged-debt item; 130/130), together with
+  `manifests/decision-inbox/format-MANIFEST.md` (its pin re-hashed to this release's
+  `decision-inbox.py`). If your instance carries a local patch to `decision-inbox.py`, three-way merge
+  it and re-stamp the pin to the merged bytes.
+- `.claude/skills/bridge/codex-verify-server.js` and `.claude/skills/bridge/verify-server.js` (the
+  verifier's answer carries the two structured lists; the codex server's own self-test is 7/7 --
+  `node .claude/skills/bridge/codex-verify-server.js --self-test`; `verify-server.js` has none), and
+  `.claude/skills/bridge/README.md`.
+- Your compile skill (in an instance, .claude/skills/compile/SKILL.md). Its source is the template tree's
+  `capabilities/knowledge-os/extracted/compile/SKILL.md.template` (init substitutes it and removes
+  `capabilities/`, so take it from the release you are adopting, not from your instance). Four
+  places change; apply each over your substituted copy: the `claim_routing` paragraph in Step 2
+  (the shared load-bearing definition, word for word, and route EVERY load-bearing claim); a new
+  paragraph after it, "Clear outstanding coverage debt as part of planning"; the Step 3b paragraph
+  on routing completeness (no longer a per-article verdict); and Step 3c (the routing leg's findings
+  become coverage debt, not REVIEW entries). `py deploy/compile-v2.py --self-test` checks that your
+  skill carries the definition word for word.
+- `docs/engine/OPERATIONS.md` (§7).
+- `.claude/skills/doctor/doctor.py` (the per-sensor self-test budget 300 s -> 600 s: compile-v2's
+  battery now takes about 5-6 minutes and the doctor FAILed it at 300 s on a fresh instance; doctor
+  117/117).
+
+**What changes in your day.**
+- **The routing rejections ("enumeration-incomplete") stop coming to you.** Each compile run asks once
+  whether its routing table gives every load-bearing claim of its source notes a home. Each claim it
+  finds without one is recorded, quoted from the note, as a coverage-debt row, and the next compile
+  clears it by routing the claim.
+- **The inbox shows outstanding debt as one information line.** Only rows older than your observation
+  window (7 days by default) become a question.
+- **Article checks grade content only,** so a routing gap no longer leaves an article unverified.
+- **A verifier finding that says "this is not fabrication" can no longer be recorded as fabrication.**
+
+Findings already in your inbox from older runs stay as they are; accept or redo them as before.
+Nothing else migrates: no re-freeze, no new `project.yaml` keys (the aged-debt question reads
+`observation_window_days` if you set it).
+
 ## v3.0.58 → v3.0.59 (the verify packet stops grading what the engine itself did: a retirement, a revert, a cross-link edit or a flight-plan edit no longer makes an article's next absorb reject)
 
 **Session lane only; there is no operator command.** Nothing here is a trust surface.
 
 **Step 1 — copy, commit together:** `deploy/compile-v2.py` (backlog v3.0-191: the attribution walk
-and the reverted-approval rule; 278/278) and `docs/engine/OPERATIONS.md` (§7, "Grading starts after
+and the reverted-approval rule; 279/279) and `docs/engine/OPERATIONS.md` (§7, "Grading starts after
 what the engine itself recorded"; §9 points to it). Then `py deploy/compile-v2.py --self-test`.
 Also copy `.claude/skills/bridge/README.md` (text only: its "Which model verifies" section now names the
 source labels `models.js` prints, `live` among them — the v3.0.58 stranger test's one finding).
@@ -290,7 +343,7 @@ packet says where grading starts and why.
 was judged faithful), or redo them through the correction cycle (`--revert`, then re-run), and the re-run
 is graded the new way. Nothing else migrates: no re-freeze, no new `project.yaml` keys. The verify
 journal gains two additive fields per leg where history was found (`graded_from_commit`,
-`ungraded_history`, with `graded_stop` when the walk stopped).
+`ungraded_history`, and `graded_stop`, which is null unless the walk stopped).
 
 ## v3.0.57 → v3.0.58 (the verifiers follow the frontier: every cross-vendor leg resolves its model at run time, picks the newest installed CLI, and the Claude-direction verifier is finally tool-less)
 

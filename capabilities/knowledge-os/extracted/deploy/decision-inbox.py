@@ -220,8 +220,15 @@ _SECTIONS = (
     ("sweep", "From the last sweep"),
     ("flight_plan", "Flight-plan blockers"),
     ("marker", "Flagged in a document"),
+    # v3.0.60 (backlog v3.0-184): coverage debt is the system's job; only debt
+    # stuck past the observation window becomes something to decide. A
+    # decision, so it renders before the consented chores (A2's rule).
+    ("coverage_debt", "Claims waiting too long for a home in the wiki"),
     ("sweep_fix", "Fixes the system can do on your yes (from the last sweep)"),
 )
+
+_COVERAGE_FYI_TITLE = ("Claims waiting for a home in the wiki " + _EM_DASH +
+                       " the next compile routes them (nothing needs you yet)")
 
 
 def _first_sentence(text):
@@ -629,6 +636,65 @@ _HANDOFF_STATUS_ANSWERED_RE = re.compile(r"(?m)^status:\s*answered\b")
 _HANDOFF_CLOSE_PENDING_RE = re.compile(r"(?m)^close:\s*pending\b")
 
 
+def _observation_window_days(root):
+    try:
+        with open(os.path.join(root, "project.yaml"), encoding="utf-8") as fh:
+            m = re.search(r"(?m)^observation_window_days:\s*(\d+)", fh.read())
+    except OSError:
+        m = None
+    return int(m.group(1)) if m else 7
+
+
+def scan_coverage_debt(root, notes, date_str):
+    """v3.0.60 (backlog v3.0-184): outstanding coverage debt -- the claims a
+    compile run's routing leg named as having no home, not yet routed by a
+    later plan (compile-v2's outstanding_coverage_debt). Returns (decisions,
+    fyi): one information line whenever debt is outstanding (the system
+    clears it; nothing is asked), and one decision item only when some rows
+    are older than the observation window, because then something is stuck.
+    The sensor degrades to a NOTE, never blocks the inbox."""
+    try:
+        cv2 = _load("compile-v2.py", "compile_v2_coverage_debt")
+        rows = cv2.outstanding_coverage_debt(root)
+    except Exception as e:   # noqa: BLE001 -- a sensor must not take the inbox down
+        notes.append("NOTE: coverage debt not read (%s: %s)"
+                     % (type(e).__name__, e))
+        return [], []
+    if not rows:
+        return [], []
+    window = _observation_window_days(root)
+    today = datetime.date.fromisoformat(date_str)
+
+    def age(r):
+        try:
+            return (today - datetime.date.fromisoformat(
+                str(r.get("recorded_at") or "")[:10])).days
+        except ValueError:
+            return 0
+
+    events = sorted({r.get("event") for r in rows})
+    ids = [r["id"] for r in rows]
+    fyi = [("%d claim(s) from %d source note(s) are waiting for a home in the "
+            "wiki; the next compile that touches those notes routes them"
+            % (len(rows), len(events)),
+            "outstanding coverage debt: %s%s"
+            % (", ".join(ids[:8]), " ..." if len(ids) > 8 else ""))]
+    aged = [r for r in rows if age(r) > window]
+    decisions = []
+    if aged:
+        oldest = max(aged, key=age)
+        decisions.append((
+            "%d claim(s) have waited more than %d days for a home in the wiki "
+            "(the oldest: \"%s\"). Say so and a session routes them in its "
+            "next compile; if you do nothing they stay listed here."
+            % (len(aged), window, str(oldest.get("claim") or "")[:160]),
+            "coverage debt %s, from %s"
+            % (", ".join(r["id"] for r in aged[:8]),
+               ", ".join(sorted({r.get("event") for r in aged})[:4])),
+            "coverage-debt-aged"))
+    return decisions, fyi
+
+
 def scan_handoff_closes(root, notes):
     """[(line_text, detail_rel_path)] for every handoff folder whose meta.yaml
     carries both `status: answered` and `close: pending`. Checks the two
@@ -798,8 +864,10 @@ def generate_content(root, date_str):
         notes.append("NOTE: root path not found: %s" % root)
         by_class = {key: [] for key, _ in _SECTIONS}
         fyi_items = []
+        debt_fyi = []
     else:
         sweep_decisions, sweep_fixes = scan_sweep(root, notes)
+        debt_decisions, debt_fyi = scan_coverage_debt(root, notes, date_str)
         by_class = {
             "candidate": scan_candidates(root, notes),
             "backlog": scan_backlog(root, notes),
@@ -807,6 +875,7 @@ def generate_content(root, date_str):
             "flight_plan": scan_flight_plans(root, notes),
             "marker": scan_markers(root, notes),
             "sweep_fix": sweep_fixes,
+            "coverage_debt": debt_decisions,
         }
         fyi_items = scan_handoff_closes(root, notes)
 
@@ -857,6 +926,11 @@ def generate_content(root, date_str):
         lines.append("")
         lines.append("## %s" % _FYI_SECTION_TITLE)
         for line_text, detail in fyi_items:
+            lines.append("- %s *(details: %s)*" % (line_text, detail))
+    if debt_fyi:   # v3.0.60: information, never counted as waiting on you
+        lines.append("")
+        lines.append("## %s" % _COVERAGE_FYI_TITLE)
+        for line_text, detail in debt_fyi:
             lines.append("- %s *(details: %s)*" % (line_text, detail))
     content = "\n".join(lines) + "\n"
     return content, notes, sidecar_update
@@ -1262,6 +1336,41 @@ def self_test():
         content2, _, _ = gen(root)
         case("(8e) verify-signal: regeneration stays ONE row (no accretion)",
              content2.count("The second AI checker thinks") == 1, content2)
+
+        # --- (8f) v3.0.60 coverage debt: fresh debt is information, never a
+        # question; debt older than the observation window is one decision;
+        # a later plan's `clears` removes it.
+        def debt_root(recorded_at, clear=False):
+            r = mkroot()
+            write(os.path.join(r, "receipts", "journal", "1.json"), json.dumps({
+                "seq": 1, "run_type": "verify", "routing_verify": {
+                    "verifies_seq": 0, "verified_at": recorded_at,
+                    "missing_claims": [{"id": "D0.1", "event": "raw/a.md",
+                                        "quote": "Returns need a receipt.",
+                                        "claim": "Returns need a receipt."}]}}))
+            if clear:
+                write(os.path.join(r, "receipts", "journal", "2.json"),
+                      json.dumps({"seq": 2, "run_type": "compile",
+                                  "claim_routing": {"raw/a.md": {"claims": [{
+                                      "id": "c1", "text": "Returns need a receipt",
+                                      "owner": "wiki/a.md",
+                                      "clears": ["D0.1"]}]}}}))
+            return r
+        content, _n, _ = gen(debt_root("2026-07-19T09:00:00"))
+        case("(8f) fresh coverage debt is one information line -- nothing is "
+             "waiting on you",
+             _ALL_CLEAR_LINE in content and "waiting for a home in the wiki"
+             in content and "waited more than" not in content, content)
+        content, _n, _ = gen(debt_root("2026-07-01T09:00:00"))
+        case("(8f) debt older than the observation window is ONE decision, "
+             "quoting the claim",
+             "waited more than 7 days" in content
+             and "Returns need a receipt." in content
+             and _ALL_CLEAR_LINE not in content, content)
+        content, _n, _ = gen(debt_root("2026-07-01T09:00:00", clear=True))
+        case("(8f) debt a later plan cleared is gone from the inbox",
+             "waiting for a home" not in content
+             and "waited more than" not in content, content)
         flagged_text = sig[len(_MARKER_TOKEN):].strip()
         do_generate(root, "2026-07-20")
         sidecar_p = os.path.join(root, "receipts", "desk",

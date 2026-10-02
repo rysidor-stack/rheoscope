@@ -277,7 +277,39 @@ def check_plan_precedence(plan, registrations_map):
 
 
 # --------------------------------------------------------------- claim routing (v3.0-63)
-def check_claim_routing(plan):
+def _check_clears(erel, item_id, clears, outstanding, seen_clears):
+    """v3.0.60: a routing item may clear earlier coverage debt by naming the
+    row ids it routes. Each id must be a non-empty string, outstanding (not
+    cleared before), recorded for THIS event, and cleared once per plan."""
+    if clears is None:
+        return
+    if not isinstance(clears, list) or not all(
+            isinstance(d, str) and d.strip() for d in clears):
+        raise ValidationError(
+            "claim_routing[%r]: %r's `clears` must be a list of coverage-debt "
+            "row ids" % (erel, item_id))
+    for d in clears:
+        if d in seen_clears:
+            raise ValidationError(
+                "claim_routing: coverage-debt row %r is cleared twice in one "
+                "plan" % d)
+        seen_clears.add(d)
+        if outstanding is None:
+            continue
+        row = outstanding.get(d)
+        if row is None:
+            raise ValidationError(
+                "claim_routing[%r]: %r clears coverage-debt row %r, which is "
+                "not outstanding (unknown, or already cleared)" % (erel, item_id,
+                                                                  d))
+        if row.get("event") != erel:
+            raise ValidationError(
+                "claim_routing[%r]: %r clears coverage-debt row %r, which was "
+                "recorded for %r -- route a debt claim under its own event"
+                % (erel, item_id, d, row.get("event")))
+
+
+def check_claim_routing(plan, repo=None):
     """Plan-scoped totality, mechanical half (backlog v3.0-63), at plan-intake
     time, pre-journal -- same refusal discipline as check_plan_precedence.
 
@@ -310,13 +342,38 @@ def check_claim_routing(plan):
     grades them against total event coverage (backward compatibility for
     staged runs and re-rides authored before v3.0.29). Nothing here loosens:
     routing is opt-in per event, and opting in only ADDS refusal surface and
-    verifier scope, never removes any."""
+    verifier scope, never removes any.
+
+    COVERAGE DEBT (v3.0.60): a claim or deferral may carry `"clears":
+    ["<row id>", ...]`, naming earlier coverage-debt rows (the run routing
+    leg's missing claims) it routes. Given REPO, every id must be
+    outstanding and recorded for the same event; without REPO only the shape
+    is checked. An event's routing entry may instead carry `"clears_all":
+    true`: the plan re-routes the event in full and clears every row
+    recorded for it before this run (the run's own routing leg then judges
+    the new table); given REPO, the event must have outstanding debt."""
     routing = plan.get("claim_routing")
     if routing is None:
         return
+    outstanding = None
+    if repo is not None:
+        outstanding = {r["id"]: r for r in outstanding_coverage_debt(repo)}
+    seen_clears = set()
     if not isinstance(routing, dict):
         raise ValidationError("claim_routing must be an object keyed by "
                               "event path")
+    for erel, entry in routing.items():
+        if not isinstance(entry, dict) or "clears_all" not in entry:
+            continue
+        if entry["clears_all"] is not True:
+            raise ValidationError(
+                "claim_routing[%r]: `clears_all` must be true when present (it "
+                "declares a full re-route of the event)" % erel)
+        if outstanding is not None and not any(
+                r.get("event") == erel for r in outstanding.values()):
+            raise ValidationError(
+                "claim_routing[%r]: `clears_all` but this event has no "
+                "outstanding coverage debt to clear" % erel)
     plan_events = set()
     views_by_event = {}
     for item in plan.get("items", []):
@@ -361,6 +418,7 @@ def check_claim_routing(plan):
                     "plan item routes this event to that view -- an owner "
                     "that never receives the event cannot absorb its claim"
                     % (erel, cid, owner))
+            _check_clears(erel, cid, c.get("clears"), outstanding, seen_clears)
         for d in entry.get("deferred") or []:
             did = str(d.get("id") or "").strip()
             text = str(d.get("text") or "").strip()
@@ -382,23 +440,50 @@ def check_claim_routing(plan):
                     "view(s) -- a deferral to nowhere is a claim declared "
                     "away; name where it will land, and the receipt's "
                     "pending_cascade carries it there" % (erel, did))
+            _check_clears(erel, did, d.get("clears"), outstanding, seen_clears)
+
+
+# v3.0.60 (backlog v3.0-184): ONE definition of "load-bearing", shared word for
+# word by the compile skill's routing step (the author) and every packet that
+# asks about routing (the verifier) -- so the two judge against the same bar
+# instead of two private ones. Changing it changes both.
+LOAD_BEARING_DEFINITION = (
+    "A claim is LOAD-BEARING when a future reader would decide or act "
+    "differently without it: a decision or ruling; a requirement, constraint "
+    "or rule; a measured result or observed state; a correction of something "
+    "previously believed; a commitment or a date with consequences; a "
+    "definition other claims depend on. Narration of how a session went, a "
+    "restatement of a claim already listed, and an example of a listed claim "
+    "are not load-bearing.")
 
 
 def _view_claim_scope(routing, view, events):
     """Derive one view's declared claim scope from the per-event routing
     block: {"owned": [(event, id, text)], "elsewhere": [(event, id, owner)],
-    "deferred": [(event, id, targets)]} over exactly `events`. Returns None
-    when routing is absent or covers none of these events (the legacy-path
-    signal: callers must then change NOTHING about today's behavior)."""
+    "deferred": [(event, id, targets)], "scoped_events": [...],
+    "legacy_events": [...]} over exactly `events`. Returns None when routing
+    is absent or covers none of these events (the legacy-path signal: callers
+    must then change NOTHING about today's behavior).
+
+    SCOPED vs LEGACY (v3.0.60, backlog v3.0-184): when a run declares routing
+    for some of a view's events and not others, the events WITH a routing
+    table are scoped (the view is graded against their declared scope) and
+    the events WITHOUT one are legacy (every load-bearing claim of them must
+    be represented or implied in the view, as before routing existed). Before
+    v3.0.60 the packet held the undeclared events to the routing table too,
+    so every claim of theirs counted as missing from it."""
     if not isinstance(routing, dict):
         return None
     owned, elsewhere, deferred = [], [], []
+    scoped, legacy = [], []
     covered = False
     for erel in events:
         entry = routing.get(erel)
         if not isinstance(entry, dict):
+            legacy.append(erel)
             continue
         covered = True
+        scoped.append(erel)
         for c in entry.get("claims") or []:
             if c.get("owner") == view:
                 owned.append((erel, c.get("id"), c.get("text")))
@@ -408,7 +493,8 @@ def _view_claim_scope(routing, view, events):
             deferred.append((erel, d.get("id"), d.get("targets") or []))
     if not covered:
         return None
-    return {"owned": owned, "elsewhere": elsewhere, "deferred": deferred}
+    return {"owned": owned, "elsewhere": elsewhere, "deferred": deferred,
+            "scoped_events": scoped, "legacy_events": legacy}
 
 
 def _render_claim_routing_section(scope, view):
@@ -422,9 +508,19 @@ def _render_claim_routing_section(scope, view):
         "claims across the run's views. This view is graded against the "
         "scope declared below -- a claim listed as owned by a SIBLING view "
         "or as deferred is declared scope, NOT an omission from this view. "
-        "A load-bearing claim of the events missing from this table "
-        "entirely IS a defect: reject with reason class "
-        "'enumeration-incomplete', naming the claim.")
+        "Whether this table accounts for EVERY load-bearing claim of its "
+        "events is judged once for the whole run, in a separate routing "
+        "leg (v3.0.60) -- do not grade that here.")
+    lines.append("")
+    lines.append("SCOPED EVENTS (graded against the declared scope below):")
+    lines.extend("- " + e for e in scope.get("scoped_events") or [])
+    legacy = scope.get("legacy_events") or []
+    lines.append("LEGACY EVENTS (absorbed this run WITHOUT a routing table: "
+                 "every load-bearing claim of these must be represented or "
+                 "implied in this view; a missing one is scope-omission):")
+    lines.extend("- " + e for e in legacy)
+    if not legacy:
+        lines.append("- (none)")
     lines.append("")
     lines.append("Claims THIS VIEW OWNS (each must be represented or "
                  "implied in the view; a missing one is a rejection):")
@@ -454,6 +550,408 @@ def _render_claim_routing_section(scope, view):
     return "\n".join(lines)
 
 
+# --------------------------------------------- v3.0.60: the routing leg + coverage debt
+# Five-pass run audits/2026-10-01-reason-routing-fix.md (and its addendum, the
+# operator's "reason on the optimal solution"). Routing completeness -- does a
+# run's claim routing account for every load-bearing claim of its scoped
+# events? -- was asked inside EVERY view leg: an event feeding k views got k
+# independent judgments, the target moved between rounds, and each finding
+# went to the operator to accept, which recorded nothing about the gap. Now it
+# is asked ONCE per run, in its own leg; each missing claim the verifier names
+# (quoting its event verbatim) becomes a COVERAGE-DEBT row on the verify
+# record; a later plan clears a row by routing the claim with
+# `"clears": ["<row id>"]`, which check_claim_routing validates. The operator
+# is not asked per finding; debt older than the observation window surfaces
+# once, in the decision inbox, because something is stuck.
+
+def _norm_ws(text):
+    return " ".join(str(text or "").split())
+
+
+def _routing_scoped_events(rec):
+    """Events of this compile record that the plan declared routing for and
+    that the run actually carried (absorbed into a view or named by a no-op
+    candidate), in plan order of first appearance."""
+    routing = rec.get("claim_routing")
+    if not isinstance(routing, dict):
+        return []
+    carried = []
+    for a in rec.get("absorbed", []):
+        for e in a.get("events") or []:
+            if e not in carried:
+                carried.append(e)
+    for nc in rec.get("noop_candidates", []):
+        e = nc.get("event")
+        if e and e not in carried:
+            carried.append(e)
+    return [e for e in carried if isinstance(routing.get(e), dict)]
+
+
+def _reverted_run_seqs(repo):
+    out = set()
+    for _seq, rec in _iter_all_journal_records(repo):
+        dr = rec.get("driver_revert")
+        if isinstance(dr, dict) and dr.get("status") == "reverted" \
+                and isinstance(dr.get("reverts_seq"), int):
+            out.add(dr["reverts_seq"])
+    return out
+
+
+def coverage_debt_rows(repo):
+    """Every coverage-debt row recorded, oldest first: dicts with id, event,
+    quote, claim, verifies_seq, recorded_at (from routing_verify entries on
+    verify records), and run_reverted when the run whose routing leg recorded
+    the row was later REVERTED (see outstanding_coverage_debt)."""
+    reverted = _reverted_run_seqs(repo)
+    rows = []
+    for _seq, rec in _iter_all_journal_records(repo):
+        rv = rec.get("routing_verify")
+        if not isinstance(rv, dict):
+            continue
+        for m in rv.get("missing_claims") or []:
+            if isinstance(m, dict) and m.get("id"):
+                rows.append(dict(m, verifies_seq=rv.get("verifies_seq"),
+                                 recorded_at=rv.get("verified_at"),
+                                 record_seq=_seq,
+                                 run_reverted=rv.get("verifies_seq")
+                                 in reverted))
+    return rows
+
+
+def _rejudged_events(repo):
+    """{event: [compile seq, ...]}: runs, not reverted, whose routing leg
+    ANSWERED over that event -- confirmed, debt or anomalous. An incomplete
+    leg (unanswered, gated, unattested) judged nothing, so it never retires a
+    reverted run's rows (cross-vendor review round 3, v3.0.60)."""
+    reverted = _reverted_run_seqs(repo)
+    out = {}
+    for _seq, rec in _iter_all_journal_records(repo):
+        rv = rec.get("routing_verify")
+        if isinstance(rv, dict) and isinstance(rv.get("verifies_seq"), int) \
+                and rv["verifies_seq"] not in reverted \
+                and rv.get("disposition") in ("confirmed", "debt",
+                                              "anomalous"):
+            for e in rv.get("events") or []:
+                out.setdefault(e, []).append(rv["verifies_seq"])
+    return out
+
+
+def clears_all_seqs(repo):
+    """{event: [compile seq, ...]} for every non-reverted compile record whose
+    routing entry for that event carries `"clears_all": true` -- a plan that
+    re-routes the event in full, clearing every debt row recorded for it
+    before that run (its own routing leg then judges the new table)."""
+    reverted = _reverted_run_seqs(repo)
+    out = {}
+    for seq, rec in _iter_all_journal_records(repo):
+        if seq in reverted:
+            continue
+        routing = rec.get("claim_routing")
+        if not isinstance(routing, dict):
+            continue
+        for erel, entry in routing.items():
+            if isinstance(entry, dict) and entry.get("clears_all") is True:
+                out.setdefault(erel, []).append(seq)
+    return out
+
+
+def cleared_debt_ids(repo, before_seq=None):
+    """Debt ids a compile record's claim routing has cleared (claims[] or
+    deferred[] entries carrying `clears`), optionally only in records with
+    seq < before_seq. A plan whose run was later REVERTED clears nothing: the
+    routing that would have homed the claim was undone with it."""
+    reverted = _reverted_run_seqs(repo)
+    cleared = set()
+    for seq, rec in _iter_all_journal_records(repo):
+        if before_seq is not None and seq >= before_seq:
+            break
+        if seq in reverted:
+            continue
+        routing = rec.get("claim_routing")
+        if not isinstance(routing, dict):
+            continue
+        for entry in routing.values():
+            if not isinstance(entry, dict):
+                continue
+            for item in (entry.get("claims") or []) + (entry.get("deferred")
+                                                         or []):
+                for d in item.get("clears") or []:
+                    cleared.add(str(d))
+    return cleared
+
+
+def outstanding_coverage_debt(repo):
+    """Coverage-debt rows no later plan has cleared, oldest first -- cleared
+    by id (`clears`) or by a later full re-route of the event
+    (`clears_all`). A row recorded by a run that was later REVERTED also
+    leaves once a later run (not reverted) has had its routing leg judge that
+    event: the revert undid the absorption the row judged, and the later
+    leg judged the event afresh, recording its own rows for whatever is
+    still missing (cross-vendor review round 1, v3.0.60). Until then the
+    row stays outstanding -- a revert alone clears nothing."""
+    cleared = cleared_debt_ids(repo)
+    bulk = clears_all_seqs(repo)
+    rejudged = _rejudged_events(repo)
+    return [r for r in coverage_debt_rows(repo) if r["id"] not in cleared
+            and not any(s > (r.get("record_seq") or 0)
+                        for s in bulk.get(r.get("event"), []))
+            and not (r.get("run_reverted") and any(
+                s > (r.get("verifies_seq") or 0)
+                for s in rejudged.get(r.get("event"), [])))]
+
+
+def _routing_leg_done(repo, compile_seq):
+    for _seq, rec in _iter_all_journal_records(repo):
+        rv = rec.get("routing_verify")
+        if isinstance(rv, dict) and rv.get("verifies_seq") == compile_seq \
+                and rv.get("disposition") in ("confirmed", "debt",
+                                              "anomalous", "incomplete"):
+            return True
+    return False
+
+
+def _render_routing_packet(compile_seq, rec, scoped, read_event, clears_by):
+    routing = rec.get("claim_routing") or {}
+    views = sorted({a.get("view") for a in rec.get("absorbed", [])
+                    if a.get("view")}
+                   | {nc.get("view") for nc in rec.get("noop_candidates", [])
+                      if nc.get("view")})
+    lines = ["# ROUTING COMPLETENESS PACKET seq%d" % compile_seq, "",
+             "CLAIM: the claim routing journaled by compile run seq %d "
+             "accounts for every load-bearing claim of its scoped events "
+             "(%s): each one is owned by a view of this run, routed to a "
+             "sibling view, or deferred to a named target view."
+             % (compile_seq, ", ".join(scoped)), "",
+             "## WHAT COUNTS AS LOAD-BEARING", LOAD_BEARING_DEFINITION, "",
+             "## THE RUN'S VIEWS"]
+    lines.extend("- " + v for v in views)
+    for e in scoped:
+        entry = routing.get(e) or {}
+        lines += ["", "## SCOPED EVENT: %s" % e, read_event(e).rstrip("\n"),
+                  "", "### Its declared routing", "Owned by a view this run:"]
+        claims = entry.get("claims") or []
+        lines.extend("- [%s] -> %s | %s" % (c.get("id"), c.get("owner"),
+                                            c.get("text")) for c in claims)
+        if not claims:
+            lines.append("- (none)")
+        lines.append("Deferred to a later run (target views named):")
+        deferred = entry.get("deferred") or []
+        lines.extend("- [%s] -> %s | %s" % (d.get("id"),
+                                            ", ".join(d.get("targets") or []),
+                                            d.get("text")) for d in deferred)
+        if not deferred:
+            lines.append("- (none)")
+        if entry.get("clears_all") is True:
+            lines.append("(this run re-routes this event in full; it clears "
+                         "every earlier coverage-debt row recorded for it)")
+        for row in clears_by.get(e, []):
+            lines.append("(this run clears earlier coverage debt %s: %s)"
+                         % (row["id"], row.get("claim")))
+    lines += ["", "## WHAT TO RETURN",
+              "Judge ONLY whether each scoped event's routing accounts for every "
+              "load-bearing claim of that event, by the definition above. A claim "
+              "a routing line carries in other words IS accounted for. How the "
+              "work was done, test procedure and housekeeping detail are not "
+              "load-bearing unless they impose a constraint or requirement on "
+              "future work. List the most load-bearing first. Do not grade the "
+              "views' content: that is graded per view, elsewhere. If "
+              "every load-bearing claim is accounted for, return confirmed, with "
+              "reason_classes [] and missing_claims []. Otherwise return revised, "
+              "with reason_classes [\"enumeration-incomplete\"] and one "
+              "missing_claims entry per load-bearing claim no line accounts for: "
+              "the event path, the exact sentence copied from that event (it is "
+              "checked against the event text), and the claim in one sentence."]
+    return "\n".join(lines)
+
+
+def _routing_leg(repo, compile_seq, rec, verify_backend, read_event):
+    """Run the routing leg for compile record REC once; return the
+    routing_verify entry and the artifact paths it wrote, or (None, []) when
+    the plan declared no routing for any carried event or the leg already
+    ran for this compile seq."""
+    scoped = _routing_scoped_events(rec)
+    if not scoped or _routing_leg_done(repo, compile_seq):
+        return None, []
+    # every recorded row by id (this run's own plan already counts as clearing
+    # them by the time its verify runs, so look them up among all rows)
+    all_rows = coverage_debt_rows(repo)
+    by_id = {r["id"]: r for r in all_rows}
+    clears_by = {}
+    for e in scoped:
+        entry = (rec.get("claim_routing") or {}).get(e) or {}
+        for item in (entry.get("claims") or []) + (entry.get("deferred")
+                                                     or []):
+            for d in item.get("clears") or []:
+                if d in by_id:
+                    clears_by.setdefault(e, []).append(by_id[d])
+        if entry.get("clears_all") is True:
+            for r in all_rows:
+                if r.get("event") == e and (r.get("record_seq") or 0) \
+                        < compile_seq and r not in clears_by.get(e, []):
+                    clears_by.setdefault(e, []).append(r)
+    packet = _render_routing_packet(compile_seq, rec, scoped, read_event,
+                                    clears_by)
+    texts = {e: _norm_ws(read_event(e)) for e in scoped}
+
+    def sort_findings(v):
+        """(anchored, unanchored) rows from a verdict's missing_claims. A
+        finding is ANCHORED when its quote is found verbatim (whitespace-
+        normalised) in the scoped event it names. Every other finding is KEPT
+        as an unanchored row in the verifier's own words -- never dropped
+        (cross-vendor review round 1, v3.0.60): on an event it does not name
+        among the scoped ones it lands on the first scoped event, with the
+        name it gave kept beside it."""
+        anchored, unanchored = [], []
+        raw = v.get("missing_claims") if isinstance(v, dict) else None
+        if raw in (None, [], "", {}):
+            raw = []
+        elif not isinstance(raw, list):
+            raw = [raw]        # a malformed list is one finding, never split
+        for m in raw:
+            if isinstance(m, dict):
+                ev, quote, claim = (m.get("event"), _norm_ws(m.get("quote")),
+                                    _norm_ws(m.get("claim")))
+            else:
+                ev, quote, claim = None, "", _norm_ws(m)
+            if ev in texts and quote and claim and quote in texts[ev]:
+                anchored.append({"event": ev, "quote": quote, "claim": claim})
+            else:
+                row = {"event": ev if ev in texts else scoped[0],
+                       "quote": quote[:600],
+                       "claim": (claim or quote)[:600]
+                       or "(a finding with no quote or claim)",
+                       "unanchored": True}
+                if ev not in texts and ev is not None:
+                    row["named_event"] = str(ev)[:300]
+                unanchored.append(row)
+        return anchored, unanchored
+
+    def inner(v):
+        if isinstance(v, dict) and str(v.get("verdict", "")).lower() \
+                == "substrate-gated" and isinstance(v.get("bridge_verdict"),
+                                                     dict):
+            return v["bridge_verdict"]
+        return v
+
+    verdict = verify_backend.verify(packet)
+    label = str((inner(verdict) or {}).get("verdict", "")).lower()
+    rows, loose = sort_findings(inner(verdict))
+    retried = False
+    first = None
+    if label in ("revised", "rejected") and not rows:
+        # protocol defect, asked again ONCE: a non-confirm must name its gaps
+        retried = True
+        first = verdict
+        first_loose = loose
+        first_reason = _norm_ws((inner(first) or {}).get("reason"))[:600]
+        verdict = verify_backend.verify(
+            packet + "\n\n## YOUR PREVIOUS ANSWER\nIt returned a non-confirm "
+            "without a missing_claims entry whose quote is found verbatim in "
+            "its event. Answer again: list each missing claim with its exact "
+            "quote, or confirm.")
+        label = str((inner(verdict) or {}).get("verdict", "")).lower()
+        rows, loose = sort_findings(inner(verdict))
+        # the first answer's gaps survive the retry (cross-vendor review
+        # rounds 2-3, v3.0.60): a retry that confirms, or names other gaps,
+        # never erases what the first answer named; a first answer that
+        # named no gap at all is kept as its reason, whatever the retry says
+        seen = {(r["event"], r["quote"], r["claim"]) for r in rows + loose}
+        for r in first_loose:
+            if (r["event"], r["quote"], r["claim"]) not in seen:
+                seen.add((r["event"], r["quote"], r["claim"]))
+                loose.append(dict(r, from_first_answer=True))
+        if not first_loose and (first_reason or not (rows or loose)):
+            again = _norm_ws((inner(verdict) or {}).get("reason"))[:600] \
+                if label in ("revised", "rejected") else ""
+            words = first_reason or again or "(no reason given)"
+            if again and first_reason and again != first_reason:
+                words += " || on retry: " + again
+            loose.append({"event": scoped[0], "quote": "", "claim": words,
+                          "unanchored": True, "from_first_answer": True})
+    art_rel = "receipts/verify/routing-seq%d.json" % compile_seq
+    pk_rel = "receipts/verify/packets/packet-routing-seq%d.md" % compile_seq
+    first_rel = "receipts/verify/routing-seq%d-first-answer.json" % compile_seq
+    outputs = [(art_rel, json.dumps(verdict, indent=1, sort_keys=True)),
+               (pk_rel, packet)]
+    if first is not None:
+        outputs.append((first_rel, json.dumps(first, indent=1,
+                                              sort_keys=True)))
+    for rel, content in outputs:
+        p = os.path.join(repo, rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(content)
+    artifacts = [rel for rel, _c in outputs]
+    for v in (verdict, first) if first is not None else (verdict,):
+        for ev_path in _harvest_verdict_evidence_paths(repo, v):
+            if ev_path not in artifacts:
+                artifacts.append(ev_path)
+    entry = {"verifies_seq": compile_seq, "events": scoped,
+             "artifact": art_rel, "packet_sha256": _sha256(packet),
+             "verdict_label": label or "no-verdict-field",
+             "verified_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+             "retried": retried, "missing_claims": [],
+             "first_answer_artifact": first_rel if first is not None
+             else None,
+             "substrate": verdict.get("substrate")
+             if isinstance(verdict, dict) else None}
+    outer = str((verdict or {}).get("verdict", "")).lower() \
+        if isinstance(verdict, dict) else ""
+    used = {r["id"] for r in coverage_debt_rows(repo)}
+
+    def add_rows(new_rows):
+        n = 0
+        for r in new_rows:
+            n += 1
+            while "D%d.%d" % (compile_seq, n) in used:
+                n += 1
+            used.add("D%d.%d" % (compile_seq, n))
+            entry["missing_claims"].append(dict(r, id="D%d.%d"
+                                                % (compile_seq, n)))
+
+    if outer == "substrate-gated" or \
+            _absorb_substrate_fields(verdict) is None:
+        # a verdict that cannot be attributed to a different substrate does
+        # not count, whatever its label (the absorption legs' F17 rule):
+        # an unattested confirm would pass events no other substrate judged,
+        # and an unattested non-confirm judged only the events it names
+        label = "incomplete"
+    if label == "confirmed" and not (rows or loose):
+        entry["disposition"] = "confirmed"
+        entry["reason_classes"] = []
+    elif label in ("confirmed", "revised", "rejected"):
+        # a confirm that still lists gaps is read by its gaps, not its label
+        entry["reason_classes"] = classify_reason_classes(verdict)[1] \
+            if label != "confirmed" else ["unclassified"]
+        if label == "confirmed":
+            entry["confirm_with_findings"] = True
+        if rows:
+            entry["disposition"] = "debt"
+        else:
+            # still no anchored gap after the retry: the unanchored findings
+            # as given, or one row carrying the verifier's own words -- the
+            # gap is tracked, never dropped
+            entry["disposition"] = "anomalous"
+            if not loose:
+                loose = [{"event": scoped[0], "quote": "",
+                          "claim": _norm_ws((inner(verdict) or {}).get(
+                              "reason"))[:600] or "(no reason given)",
+                          "unanchored": True}]
+        add_rows(rows + loose)
+    else:
+        # unanswered (transport failure, a gated or unattested verdict): one
+        # row per scoped event, so a later plan routes each afresh and its
+        # routing leg judges it -- never silently skipped; any gaps the
+        # unattested answer named are kept beside them
+        entry["disposition"] = "incomplete"
+        entry["reason_classes"] = ["unclassified"]
+        add_rows(rows + loose + [
+            {"event": e, "quote": "", "unanchored": True,
+             "claim": "the routing check did not complete for this event; "
+                      "route its load-bearing claims again"} for e in scoped])
+    return entry, artifacts
+
+
 # --------------------------------------------- verifier demotion (2026-08-09 design)
 # Reason-class vocabulary, CLOSED. The boundary principle (operator-ratified):
 # RECORDED = absence-shaped ("the article may say too little" -- missing
@@ -472,20 +970,23 @@ REASON_CLASSES_RECORDED = ("scope-omission", "enumeration-incomplete")
 REASON_CLASSES_BLOCKING = ("fabrication", "contradiction", "over-certainty")
 
 _REASON_CLASS_SECTION = """## REASON CLASS (verifier demotion, 2026-08-09)
-On a NON-CONFIRM verdict, include a `reason_classes` field (JSON list) naming
-every defect found, from exactly this vocabulary:
-- `scope-omission` -- a claim this view owns (or, absent a declared routing,
-  a load-bearing claim of the events) is absent from the view
-- `enumeration-incomplete` -- a load-bearing claim of the events is missing
-  from the declared claim routing altogether
+On a NON-CONFIRM verdict, list every defect you found in the `reason_classes`
+field (a JSON list), from exactly this vocabulary:
+- `scope-omission` -- a claim this view owns (or, for an event absorbed
+  without a routing table, a load-bearing claim of that event) is absent
+  from the view
+- `enumeration-incomplete` -- a load-bearing claim is missing from a claim
+  routing that this packet asks you to judge for completeness
 - `fabrication` -- the view asserts content the events do not support
   (including any diff change unaccounted for by the events)
 - `contradiction` -- the view contradicts the events or retains stale
   content the events supersede
 - `over-certainty` -- the view states a claim with materially more
   confidence than the events carry
-Also name the token(s) in your reason sentence. A verdict without a
-recognizable class is treated as blocking."""
+The classification is read from that list alone; the reason sentence is
+never searched for class names, so name only defects you actually found. A
+non-confirm verdict without a valid non-empty list is unclassified and
+blocking."""
 
 _COMPLETED_VERDICTS = ("confirmed", "revised", "rejected")
 
@@ -501,12 +1002,13 @@ def classify_reason_classes(verdict):
         ['unclassified'];
       * disposition -- 'recorded' iff every named class is in the recorded
         vocabulary, else 'blocking' (mixed verdicts: strictest wins).
-    Resolution order (fail-closed at every step): the structured
-    `reason_classes` list if present and EVERY member is recognized (one
-    unrecognized member poisons the whole list -- no cherry-picking a
-    parseable subset); else an exact-token scan of the reason sentence
-    (the v3.0.29 'reason class: enumeration-incomplete' prose convention,
-    generalized); else unclassified. On a substrate-gated outer verdict the
+    Only a non-empty structured `reason_classes` list whose EVERY member is
+    recognized classifies a completed non-confirm verdict (one unrecognized
+    member poisons the whole list -- no cherry-picking a parseable subset);
+    a missing, empty or malformed list is unclassified and blocking. The
+    reason prose is never searched for class words (v3.0.60, backlog
+    v3.0-185), and historical journal rows are never re-derived. On a
+    substrate-gated outer verdict the
     label AND the classes are read from the same object the usable inner
     verdict came from (mirrors compile-driver's classify_verdict)."""
     known = set(REASON_CLASSES_RECORDED) | set(REASON_CLASSES_BLOCKING)
@@ -537,16 +1039,17 @@ def classify_reason_classes(verdict):
         # ledger can still name the leg.
         return label, ["unclassified"], "blocking"
 
-    classes = None
+    # v3.0.60 (backlog v3.0-185): the structured list is the ONLY channel. The
+    # reason sentence is prose and is never searched for class words: the old
+    # fallback read "the defect is not fabrication or contradiction" as
+    # fabrication + contradiction (blocking), and a finding phrased without a
+    # token as unclassified (also blocking).
     raw = src.get("reason_classes")
     if isinstance(raw, list) and raw:
-        norm = [str(c).strip().lower() for c in raw]
+        norm = [c.strip().lower() if isinstance(c, str) else "" for c in raw]
         classes = norm if all(c in known for c in norm) else ["unclassified"]
-    if classes is None:
-        reason = str(src.get("reason") or "")
-        found = [t for t in REASON_CLASSES_RECORDED + REASON_CLASSES_BLOCKING
-                 if t in reason]
-        classes = found or ["unclassified"]
+    else:
+        classes = ["unclassified"]
     recorded = set(REASON_CLASSES_RECORDED)
     disposition = ("recorded"
                    if all(c in recorded for c in classes) else "blocking")
@@ -1209,7 +1712,7 @@ def run(repo, plan, absorb_backend, run_type="compile", break_stale=False,
         # routing is validated pre-journal (exactly-one-owner, owner in
         # plan, deferrals carry named targets). Plans without the block
         # behave exactly as before this check existed.
-        check_claim_routing(plan)
+        check_claim_routing(plan, repo)
         # v3.0-22 structural refusal, plan-intake time, pre-journal (same
         # discipline as check_plan_precedence above): two plan items
         # resolving to the SAME view path would make the later item absorb
@@ -2529,6 +3032,15 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
             if confirm:
                 events_confirmed += 1
 
+        # ---------------------------------------------- routing leg (v3.0.60)
+        # Routing completeness, asked ONCE for the run (before the per-view
+        # legs, which no longer ask it). Its gaps become coverage-debt rows.
+        routing_entry, routing_artifacts = _routing_leg(
+            repo, compile_seq, rec, verify_backend, _body)
+        for rel in routing_artifacts:
+            if rel not in artifacts:
+                artifacts.append(rel)
+
         # ---------------------------------------------- absorption-verify
         # (spec sec.7 full VERIFY; amendment 2026-07-05). Assembled AFTER the
         # no-op union packets above, same run, same journal record. One
@@ -2581,14 +3093,16 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
                     "view OWNS is represented or implied in the view "
                     "(compression and paraphrase are permitted -- the "
                     "represent-or-imply bar of the F13 precision "
-                    "amendment, NOT verbatim reproduction); the cumulative "
-                    "diff shown contains no change unaccounted for by "
-                    "these events; and no load-bearing claim of the events "
-                    "is absent from the declared routing altogether -- a "
-                    "claim routed to a sibling view or deferred is "
-                    "declared scope, not an omission from this view; a "
-                    "load-bearing claim missing from the routing entirely "
-                    "is a rejection (reason class: enumeration-incomplete)."
+                    "amendment, NOT verbatim reproduction); every "
+                    "load-bearing claim of any LEGACY EVENT listed below "
+                    "(absorbed without a routing table) is represented or "
+                    "implied in the view; and the cumulative diff shown "
+                    "contains no change unaccounted for by these events. A "
+                    "claim routed to a sibling view or deferred is declared "
+                    "scope, not an omission from this view. Whether the "
+                    "routing accounts for every load-bearing claim of the "
+                    "scoped events is NOT part of this claim: it is judged "
+                    "once for the whole run, in a separate routing leg."
                     % (view, ", ".join(abs_events)))
             else:
                 claim = ("CLAIM: view %s at post-absorb state faithfully "
@@ -2800,6 +3314,8 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
             vrec["absorption_verified"] = absorption_verified
         if absorption_verify_attempts:
             vrec["absorption_verify_attempts"] = absorption_verify_attempts
+        if routing_entry is not None:
+            vrec["routing_verify"] = routing_entry   # v3.0.60, additive
         seq, jpath = core.append_record(repo, vrec)
         jrel = os.path.relpath(jpath, repo).replace(os.sep, "/")
         sha = core.stage_only_commit(
@@ -2858,6 +3374,10 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
                 "census_output_hash": census_output_hash,
                 "absorption_checked": absorption_checked,
                 "absorption_confirmed": absorption_confirmed,
+                # v3.0.60: the run's routing leg, if it ran (None otherwise)
+                "routing_disposition": (routing_entry or {}).get("disposition"),
+                "coverage_debt_added": len((routing_entry or {}).get(
+                    "missing_claims") or []),
                 # v3.0-84: per-view non-confirm reasons, surfaced so the driver
                 # can say WHICH failure class each leg hit -- a verifier
                 # rejection and a confirmed-verdict-whose-stamp-refused (e.g. a
@@ -4861,6 +5381,14 @@ def self_test():
                                "absorb_vendor": "anthropic",
                                "absorb_model_id": "claude-fable-5",
                                "substrate_source": "invocation-metadata"}}
+                if packet.startswith("# ROUTING COMPLETENESS PACKET"):
+                    # v3.0.60: the run's routing leg -- this grader judges
+                    # owned-claim fidelity only; the fixture routings are
+                    # complete by construction
+                    verdict["verdict"] = "confirmed"
+                    verdict["reason_classes"] = []
+                    verdict["missing_claims"] = []
+                    return verdict
                 if "## DECLARED CLAIM ROUTING" not in packet:
                     verdict["verdict"] = "rejected"
                     verdict["reason"] = "no declared claim routing section"
@@ -5310,12 +5838,18 @@ def self_test():
              crc({"verdict": "rejected", "reason": "x",
                   "reason_classes": ["scope-omission", "probably-fine"]})
              == ("rejected", ["unclassified"], "blocking"))
-        case("demotion: prose-token fallback (the v3.0.29 convention, "
-             "generalized) -> enumeration-incomplete records",
+        case("v3.0-185: prose is never searched for classes -- a reason that "
+             "names a class but carries no structured list is unclassified",
              crc({"verdict": "rejected",
                   "reason": "reason class: enumeration-incomplete, claim "
                             "c3 missing from the routing"})
-             == ("rejected", ["enumeration-incomplete"], "recorded"))
+             == ("rejected", ["unclassified"], "blocking"))
+        case("v3.0-185: a negation in the prose mints nothing -- the "
+             "structured list alone decides (recorded, not fabrication)",
+             crc({"verdict": "rejected",
+                  "reason": "the defect is not fabrication or contradiction",
+                  "reason_classes": ["scope-omission"]})
+             == ("rejected", ["scope-omission"], "recorded"))
         case("demotion: no parseable class anywhere -> unclassified/"
              "blocking (fail-closed)",
              crc({"verdict": "revised", "reason": "omission in section 2"})
@@ -5331,11 +5865,11 @@ def self_test():
                   "bridge_verdict": {"verdict": "rejected", "reason": "y",
                                      "reason_classes": ["scope-omission"]}})
              == ("rejected", ["scope-omission"], "recorded"))
-        case("demotion: an empty structured list falls through to the "
-             "prose scan",
+        case("v3.0-185: an empty structured list stays unclassified (no "
+             "fallback to the prose)",
              crc({"verdict": "rejected", "reason": "fabrication found",
                   "reason_classes": []})
-             == ("rejected", ["fabrication"], "blocking"))
+             == ("rejected", ["unclassified"], "blocking"))
         case("demotion: a transport-class verdict is unclassified/blocking "
              "(run completeness stays the driver's call, untouched)",
              crc({"verdict": "bridge-error", "reason": "exit 7"})
@@ -5388,7 +5922,7 @@ def self_test():
         pk_r = rj_backend.calls[-1]
         case("demotion: the absorption packet carries the REASON CLASS "
              "instruction, strictly last",
-             pk_r.rstrip().endswith("treated as blocking.")
+             pk_r.rstrip().endswith("unclassified and\nblocking.")
              and "## REASON CLASS (verifier demotion, 2026-08-09)" in pk_r)
 
         # ===================================== v3.0-69: derivation minting
@@ -6198,6 +6732,488 @@ def self_test():
              "%s)" % (", ".join(unclassified_rt) or "none"),
              not unclassified_rt and "retire" in found_rt)
 
+        # ===== v3.0.60: the routing leg, coverage debt, scoped/legacy events
+        # Five-pass run audits/2026-10-01-reason-routing-fix.md. Completeness
+        # is asked ONCE per run; a named gap must quote its event verbatim and
+        # becomes a debt row; view legs grade content only and stamp; a later
+        # plan clears a row through a validated `clears`.
+        class _RoutingFixtureBackend(_GoodAttestBackend):
+            def __init__(self, answers):
+                _GoodAttestBackend.__init__(self, confirm=True)
+                self.answers = list(answers)
+                self.routing_calls = []
+
+            def verify(self, packet):
+                if not packet.startswith("# ROUTING COMPLETENESS PACKET"):
+                    return _GoodAttestBackend.verify(self, packet)
+                self.routing_calls.append(packet)
+                ans = self.answers.pop(0) if self.answers else {
+                    "verdict": "confirmed"}
+                if "_raw" in ans:
+                    return ans["_raw"]
+                v = _GoodAttestBackend.verify(self, packet)
+                v.update(ans)
+                v.setdefault("reason_classes", [])
+                v.setdefault("missing_claims", [])
+                return v
+
+        class _AddR60:
+            def __init__(self, adds):
+                self.adds = adds
+
+            def absorb(self, view_rel, view_text, events):
+                new = view_text.rstrip("\n") + "\n\n## R60\n" + \
+                    self.adds[view_rel] + "\n"
+                return {"new_text": new,
+                        "manifest": [{"event": e, "section": "R60"}
+                                     for e in sorted(events)],
+                        "corpus_support": [], "noops": []}
+
+        def _plan60(items, routing):
+            return {"items": [{"view": v, "events": evs, "event_class": {
+                e: {"class": "t3", "origin": "explicit"} for e in evs}}
+                for v, evs in items], "claim_routing": routing}
+
+        def _vrec(seq):
+            return json.load(open(os.path.join(core.journal_dir(base),
+                                               "%d.json" % seq),
+                                  encoding="utf-8"))
+
+        for nm in ("r60a", "r60b", "r60c", "r60d"):
+            open(os.path.join(base, "wiki", "scoped", nm + ".md"), "w",
+                 newline="\n").write(_scoped_view(nm.upper(),
+                                                  "original %s body" % nm))
+        RT60 = "raw/scoped/rt60.md"
+        RT60L = "raw/scoped/rt60L.md"
+        open(os.path.join(base, "raw", "scoped", "rt60.md"), "w",
+             newline="\n").write("The shop closes at six on Sundays. "
+                                 "Deliveries arrive on Tuesdays. Returns "
+                                 "need a receipt.\n")
+        open(os.path.join(base, "raw", "scoped", "rt60L.md"), "w",
+             newline="\n").write("legacy source: the legacy claim text\n")
+        for nm, txt in (("rt60c", "Stock counts happen monthly."),
+                        ("rt60d", "Prices change in January.")):
+            open(os.path.join(base, "raw", "scoped", nm + ".md"), "w",
+                 newline="\n").write(txt + "\n")
+        _commit_all("r60 fixture")
+        routing60 = {RT60: {"claims": [
+            {"id": "c1", "text": "The shop closes at six on Sundays",
+             "owner": "wiki/scoped/r60a.md"},
+            {"id": "c2", "text": "Deliveries arrive on Tuesdays",
+             "owner": "wiki/scoped/r60b.md"}]}}
+        res60 = run(base, _plan60(
+            [("wiki/scoped/r60a.md", [RT60, RT60L]),
+             ("wiki/scoped/r60b.md", [RT60])], routing60),
+            _AddR60({"wiki/scoped/r60a.md": "The shop closes at six on "
+                                            "Sundays. the legacy claim text",
+                     "wiki/scoped/r60b.md": "Deliveries arrive on Tuesdays."}))
+        be60 = _RoutingFixtureBackend([{
+            "verdict": "revised", "reason_classes": ["enumeration-incomplete"],
+            "missing_claims": [
+                {"event": RT60, "quote": "Returns  need a receipt.",
+                 "claim": "Returns need a receipt."},
+                {"event": RT60, "quote": "A sentence the event never says.",
+                 "claim": "invented"}]}])
+        v60 = verify_run(base, res60["seq"], be60)
+        rp = be60.routing_calls[0] if be60.routing_calls else ""
+        case("v3.0.60: routing completeness is asked ONCE for the run, not "
+             "once per view (two views, one routing leg)",
+             len(be60.routing_calls) == 1)
+        case("v3.0.60: the routing packet carries the shared load-bearing "
+             "definition, the scoped event's text and its routing lines",
+             LOAD_BEARING_DEFINITION in rp and "## SCOPED EVENT: " + RT60 in rp
+             and "[c1] -> wiki/scoped/r60a.md" in rp
+             and "## SCOPED EVENT: " + RT60L not in rp)
+        pa = [p for p in be60.calls if "view wiki/scoped/r60a.md" in p][0]
+        case("v3.0-184: a view absorbing a routed and an unrouted event "
+             "lists them as SCOPED and LEGACY, and the claim holds the legacy "
+             "event to represent-or-imply coverage",
+             "SCOPED EVENTS" in pa and "- " + RT60L in pa.split(
+                 "LEGACY EVENTS", 1)[1] and "LEGACY EVENT" in
+             pa.split("\n## ", 1)[0])
+        case("v3.0.60: a view leg no longer asks routing completeness (it is "
+             "judged once for the run)",
+             "judged once for the whole run" in pa
+             and "(reason class: enumeration-incomplete)" not in pa)
+        rv60 = _vrec(v60["seq"]).get("routing_verify") or {}
+        did = "D%d.1" % res60["seq"]
+        case("v3.0.60: a named gap quoting its event (whitespace-normalised) "
+             "becomes a debt row; one quoting nothing in the event is KEPT as "
+             "an unanchored row, never dropped (review round 1)",
+             v60.get("routing_disposition") == "debt"
+             and v60.get("coverage_debt_added") == 2
+             and [m.get("id") for m in rv60.get("missing_claims", [])]
+             == [did, "D%d.2" % res60["seq"]]
+             and rv60["missing_claims"][0]["quote"] == "Returns need a receipt."
+             and not rv60["missing_claims"][0].get("unanchored")
+             and rv60["missing_claims"][1].get("unanchored") is True
+             and rv60["missing_claims"][1]["claim"] == "invented")
+        case("v3.0.60: routing debt never holds back a view -- both content "
+             "legs confirm and stamp",
+             v60.get("absorption_confirmed") == 2)
+        case("v3.0.60: the row is outstanding coverage debt",
+             did in [r["id"] for r in outstanding_coverage_debt(base)])
+        # clearing: refusals first (validated against the journal)
+        for bad, msg in (
+                ({RT60: {"claims": [{"id": "c3", "text": "x",
+                                     "owner": "wiki/scoped/r60b.md",
+                                     "clears": ["D999.9"]}]}},
+                 "not outstanding"),
+                ({RT60L: {"claims": [{"id": "c3", "text": "x",
+                                      "owner": "wiki/scoped/r60b.md",
+                                      "clears": [did]}]}}, "recorded for"),
+                ({RT60: {"claims": [{"id": "c3", "text": "x",
+                                     "owner": "wiki/scoped/r60b.md",
+                                     "clears": [did]}],
+                         "deferred": [{"id": "c4", "text": "y",
+                                       "targets": ["wiki/scoped/r60d.md"],
+                                       "clears": [did]}]}}, "cleared twice")):
+            try:
+                ev = list(bad)[0]
+                check_claim_routing(_plan60([("wiki/scoped/r60b.md", [ev])],
+                                            bad), base)
+                case("v3.0.60: an invalid `clears` is refused (%s)" % msg, False)
+            except ValidationError as e:
+                case("v3.0.60: an invalid `clears` is refused (%s)" % msg,
+                     msg in str(e))
+        res60c = run(base, _plan60([("wiki/scoped/r60b.md", [RT60])], {RT60: {
+            "claims": [{"id": "c3", "text": "Returns need a receipt",
+                        "owner": "wiki/scoped/r60b.md", "clears": [did]}]}}),
+            _AddR60({"wiki/scoped/r60b.md": "Returns need a receipt."}))
+        be60c = _RoutingFixtureBackend([{"verdict": "confirmed"}])
+        v60c = verify_run(base, res60c["seq"], be60c)
+        case("v3.0.60: a later plan clears the row by routing the claim with "
+             "`clears`; the routing packet names the debt it clears",
+             did not in [r["id"] for r in outstanding_coverage_debt(base)]
+             and v60c.get("routing_disposition") == "confirmed"
+             and ("clears earlier coverage debt %s" % did)
+             in be60c.routing_calls[0])
+        n_before = len(be60c.routing_calls)
+        verify_run(base, res60c["seq"], be60c)
+        case("v3.0.60: the routing leg runs once per compile seq (a second "
+             "verify over the same seq does not ask again)",
+             len(be60c.routing_calls) == n_before)
+        # retry, then anomalous; and incomplete
+        res60d = run(base, _plan60([("wiki/scoped/r60c.md",
+                                     ["raw/scoped/rt60c.md"])],
+                                   {"raw/scoped/rt60c.md": {"claims": [
+                                       {"id": "k1", "text": "counts monthly",
+                                        "owner": "wiki/scoped/r60c.md"}]}}),
+                     _AddR60({"wiki/scoped/r60c.md": "Stock counts happen "
+                                                     "monthly."}))
+        be60d = _RoutingFixtureBackend([
+            {"verdict": "revised", "reason_classes": ["enumeration-incomplete"]},
+            {"verdict": "revised", "reason": "a gap it would not quote",
+             "reason_classes": ["enumeration-incomplete"]}])
+        v60d = verify_run(base, res60d["seq"], be60d)
+        rv60d = _vrec(v60d["seq"]).get("routing_verify") or {}
+        case("v3.0.60: a non-confirm naming no anchored gap is asked again "
+             "ONCE, then recorded as one unanchored row carrying its words",
+             len(be60d.routing_calls) == 2 and rv60d.get("retried") is True
+             and rv60d.get("disposition") == "anomalous"
+             and rv60d["missing_claims"][0].get("unanchored") is True
+             and "would not quote" in rv60d["missing_claims"][0]["claim"])
+        res60e = run(base, _plan60([("wiki/scoped/r60d.md",
+                                     ["raw/scoped/rt60d.md"])],
+                                   {"raw/scoped/rt60d.md": {"claims": [
+                                       {"id": "p1", "text": "prices change",
+                                        "owner": "wiki/scoped/r60d.md"}]}}),
+                     _AddR60({"wiki/scoped/r60d.md": "Prices change in "
+                                                     "January."}))
+        be60e = _RoutingFixtureBackend([{"_raw": {"verdict": "bridge-error",
+                                                  "reason": "exit 7"}}])
+        v60e = verify_run(base, res60e["seq"], be60e)
+        rv60e = _vrec(v60e["seq"]).get("routing_verify") or {}
+        case("v3.0.60: an unanswered routing leg (transport failure) leaves a "
+             "row per scoped event -- never a silent skip",
+             rv60e.get("disposition") == "incomplete"
+             and [m.get("event") for m in rv60e.get("missing_claims", [])]
+             == ["raw/scoped/rt60d.md"])
+        noroute = run(base, {"items": [{"view": "wiki/scoped/r60d.md",
+                                        "events": ["raw/scoped/rt60c.md"],
+                                        "event_class": {"raw/scoped/rt60c.md": {
+                                            "class": "t3",
+                                            "origin": "explicit"}}}]},
+                      _AddR60({"wiki/scoped/r60d.md": "Stock counts happen "
+                                                      "monthly."}))
+        be60n = _RoutingFixtureBackend([])
+        v60n = verify_run(base, noroute["seq"], be60n)
+        case("v3.0.60: a plan without claim routing runs no routing leg",
+             not be60n.routing_calls and v60n.get("routing_disposition") is None)
+        listed = []
+        print_coverage_debt(base, out=listed.append)
+        out_ids = [m["id"] for m in rv60d.get("missing_claims", [])
+                   + rv60e.get("missing_claims", [])]
+        case("v3.0.60: --coverage-debt lists each outstanding row (the "
+             "unanchored ones say so) and not the row a later plan cleared",
+             out_ids and all(any(i in ln for ln in listed) for i in out_ids)
+             and any("unanchored" in ln for ln in listed)
+             and not any(did in ln for ln in listed))
+        here_dir = os.path.dirname(os.path.abspath(__file__))
+        skill_paths = [p for p in (
+            os.path.join(here_dir, "..", "compile", "SKILL.md.template"),
+            os.path.join(here_dir, "..", ".claude", "skills", "compile",
+                         "SKILL.md")) if os.path.isfile(p)]
+        case("v3.0.60: the compile skill carries LOAD_BEARING_DEFINITION word "
+             "for word, so the author and the checker judge against one bar%s"
+             % ("" if skill_paths else " (no skill beside this engine: skipped)"),
+             all(LOAD_BEARING_DEFINITION in open(p, encoding="utf-8").read()
+                 for p in skill_paths))
+        # clears_all: a full re-route of an event clears all its earlier rows
+        for bad, msg in (({"raw/scoped/rt60c.md": {"clears_all": "yes",
+                                                   "claims": []}},
+                          "must be true"),
+                         ({RT60L: {"clears_all": True, "claims": []}},
+                          "no outstanding coverage debt")):
+            try:
+                check_claim_routing(_plan60([("wiki/scoped/r60c.md",
+                                              [list(bad)[0]])], bad), base)
+                case("v3.0.60: an invalid `clears_all` is refused (%s)" % msg,
+                     False)
+            except ValidationError as e:
+                case("v3.0.60: an invalid `clears_all` is refused (%s)" % msg,
+                     msg in str(e))
+        rows_c = [r["id"] for r in outstanding_coverage_debt(base)
+                  if r["event"] == "raw/scoped/rt60c.md"]
+        res60f = run(base, _plan60([("wiki/scoped/r60c.md",
+                                     ["raw/scoped/rt60c.md"])],
+                                   {"raw/scoped/rt60c.md": {
+                                       "clears_all": True, "claims": [
+                                           {"id": "k2", "text": "counts are "
+                                            "monthly, every month",
+                                            "owner": "wiki/scoped/r60c.md"}]}}),
+                     _AddR60({"wiki/scoped/r60c.md": "Counts run every month."}))
+        be60f = _RoutingFixtureBackend([{"verdict": "confirmed"}])
+        verify_run(base, res60f["seq"], be60f)
+        left = [r["id"] for r in outstanding_coverage_debt(base)]
+        case("v3.0.60: `clears_all` (a full re-route of the event) clears every "
+             "earlier row for that event and none for any other; the routing "
+             "packet says so",
+             rows_c and not any(i in left for i in rows_c)
+             and any(m["id"] in left for m in rv60e.get("missing_claims", []))
+             and "re-routes this event in full" in be60f.routing_calls[0])
+
+        # fault injection (cross-vendor review round 1): every shape of answer
+        # leaves its findings on the persisted journal and outstanding
+        for nm, txt in (("rt60g", "Gift cards never expire. Refunds take "
+                                  "five days."),
+                        ("rt60h", "Staff meet on Mondays. Keys stay in the "
+                                  "safe.")):
+            open(os.path.join(base, "raw", "scoped", nm + ".md"), "w",
+                 newline="\n").write(txt + "\n")
+        _commit_all("r60 fault-injection fixture")
+        G60, H60 = "raw/scoped/rt60g.md", "raw/scoped/rt60h.md"
+        route_gh = {G60: {"claims": [{"id": "g1", "text": "gift cards never "
+                                      "expire", "owner": "wiki/scoped/r60c.md"}]},
+                    H60: {"claims": [{"id": "h1", "text": "staff meet on "
+                                      "Mondays", "owner": "wiki/scoped/r60d.md"}]}}
+        GAP_G = {"event": G60, "quote": "Refunds take five days.",
+                 "claim": "Refunds take five days."}
+
+        def _fi(answers):
+            r = run(base, _plan60([("wiki/scoped/r60c.md", [G60]),
+                                   ("wiki/scoped/r60d.md", [H60])], route_gh),
+                    _AddR60({"wiki/scoped/r60c.md": "Gift cards never expire.",
+                             "wiki/scoped/r60d.md": "Staff meet on Mondays."}))
+            be = _RoutingFixtureBackend(answers)
+            v = verify_run(base, r["seq"], be)
+            rv = _vrec(v["seq"]).get("routing_verify") or {}
+            m = rv.get("missing_claims", [])
+            live = [x["id"] for x in outstanding_coverage_debt(base)]
+            return (be, v, rv, [(x["event"], bool(x.get("unanchored")))
+                                for x in m], m and all(x["id"] in live
+                                                       for x in m))
+
+        be_m, v_m, rv_m, shape_m, live_m = _fi([{
+            "verdict": "revised", "reason_classes": ["enumeration-incomplete"],
+            "missing_claims": [
+                GAP_G,
+                {"event": H60, "quote": "Keys are kept in the safe.",
+                 "claim": "Keys stay in the safe."},
+                {"event": "raw/scoped/nowhere.md", "quote": "x",
+                 "claim": "a claim on an event outside this run"}]}])
+        listed_m = []
+        print_coverage_debt(base, out=listed_m.append)
+        case("v3.0.60 fault injection: a MIXED answer keeps every finding -- "
+             "the anchored one, a misquoted one and one naming an event outside "
+             "the run (on the first scoped event, the name it gave kept) -- all "
+             "journaled and outstanding, and the listing says which quotes were "
+             "not found",
+             len(be_m.routing_calls) == 1 and rv_m.get("disposition") == "debt"
+             and shape_m == [(G60, False), (H60, True), (G60, True)]
+             and rv_m["missing_claims"][2].get("named_event")
+             == "raw/scoped/nowhere.md"
+             and v_m.get("coverage_debt_added") == 3 and live_m
+             and any("quote (not found in the event): Keys are kept in the safe."
+                     in ln for ln in listed_m)
+             and any("the verifier named: raw/scoped/nowhere.md" in ln
+                     for ln in listed_m))
+        _be, v_u, rv_u, shape_u, live_u = _fi([{"_raw": {
+            "verdict": "revised", "reason": "one gap",
+            "reason_classes": ["enumeration-incomplete"],
+            "missing_claims": [GAP_G]}}])
+        case("v3.0.60 fault injection: an UNATTESTED non-confirm (no substrate "
+             "block) over two events does not count as judging them -- "
+             "incomplete, its named gap kept, plus one row per scoped event",
+             rv_u.get("disposition") == "incomplete"
+             and shape_u == [(G60, False), (G60, True), (H60, True)] and live_u)
+        _be, v_g, rv_g, shape_g, live_g = _fi([{"_raw": {
+            "verdict": "substrate-gated", "reason": "gate failed",
+            "substrate": {"gate_ok": False},
+            "bridge_verdict": {"verdict": "revised",
+                               "reason_classes": ["enumeration-incomplete"],
+                               "missing_claims": [GAP_G]}}}])
+        case("v3.0.60 fault injection: a SUBSTRATE-GATED non-confirm is "
+             "incomplete the same way, keeping the gap its inner verdict named",
+             rv_g.get("disposition") == "incomplete"
+             and shape_g == [(G60, False), (G60, True), (H60, True)] and live_g)
+        _be, v_c, rv_c, shape_c, live_c = _fi([{
+            "verdict": "confirmed", "missing_claims": [
+                {"event": H60, "quote": "Keys stay in the safe.",
+                 "claim": "Keys stay in the safe."}]}])
+        case("v3.0.60 fault injection: a confirm that still lists a gap is read "
+             "by its gap -- debt, flagged, never a clean confirm",
+             rv_c.get("disposition") == "debt"
+             and rv_c.get("confirm_with_findings") is True
+             and shape_c == [(H60, False)] and live_c)
+        LOOSE_H = {"event": H60, "quote": "Keys are in a safe.",
+                   "claim": "Keys stay in the safe."}
+        be_a, v_a, rv_a, shape_a, live_a = _fi([
+            {"verdict": "revised", "reason_classes": ["enumeration-incomplete"],
+             "missing_claims": [LOOSE_H]},
+            {"verdict": "revised", "reason_classes": ["enumeration-incomplete"],
+             "missing_claims": [LOOSE_H]}])
+        case("v3.0.60 fault injection: findings that never anchor, even after "
+             "the one retry, are kept as given (anomalous), not replaced by the "
+             "reason line",
+             len(be_a.routing_calls) == 2 and rv_a.get("disposition")
+             == "anomalous" and shape_a == [(H60, True)]
+             and rv_a["missing_claims"][0]["quote"] == "Keys are in a safe."
+             and live_a)
+
+        # review round 2: the retry never erases the first answer's gaps
+        be_r1, v_r1, rv_r1, shape_r1, live_r1 = _fi([
+            {"verdict": "revised", "reason_classes": ["enumeration-incomplete"],
+             "missing_claims": [LOOSE_H]},
+            {"verdict": "confirmed"}])
+        case("v3.0.60 fault injection: a first answer naming an unanchored gap "
+             "then a CLEAN attested confirm on the retry is not a clean confirm "
+             "-- the first gap stays journaled and outstanding, and the first "
+             "answer is kept as its own artifact",
+             len(be_r1.routing_calls) == 2 and rv_r1.get("retried") is True
+             and rv_r1.get("disposition") == "anomalous"
+             and rv_r1.get("confirm_with_findings") is True
+             and shape_r1 == [(H60, True)]
+             and rv_r1["missing_claims"][0].get("from_first_answer") is True
+             and rv_r1["missing_claims"][0]["quote"] == "Keys are in a safe."
+             and live_r1 and os.path.isfile(os.path.join(
+                 base, rv_r1.get("first_answer_artifact") or "-")))
+        _be, v_r2, rv_r2, shape_r2, live_r2 = _fi([
+            {"verdict": "revised", "reason_classes": ["enumeration-incomplete"],
+             "missing_claims": [LOOSE_H]},
+            {"verdict": "revised", "reason_classes": ["enumeration-incomplete"],
+             "missing_claims": [GAP_G]}])
+        case("v3.0.60 fault injection: a retry naming a DIFFERENT gap keeps both "
+             "-- its anchored gap and the first answer's unanchored one",
+             rv_r2.get("disposition") == "debt"
+             and shape_r2 == [(G60, False), (H60, True)] and live_r2)
+        _be, v_r3, rv_r3, shape_r3, live_r3 = _fi([
+            {"verdict": "revised", "reason": "a gap named only in prose",
+             "reason_classes": ["enumeration-incomplete"]},
+            {"verdict": "confirmed"}])
+        case("v3.0.60 fault injection: a first non-confirm naming no gap at all, "
+             "then a clean confirm, keeps the first answer's reason as a row",
+             rv_r3.get("disposition") == "anomalous"
+             and shape_r3 == [(G60, True)]
+             and "named only in prose" in rv_r3["missing_claims"][0]["claim"]
+             and live_r3)
+
+        _be, v_q, rv_q, shape_q, live_q = _fi([
+            {"verdict": "revised", "reason": "a gap named only in prose, again",
+             "reason_classes": ["enumeration-incomplete"]},
+            {"verdict": "revised", "reason_classes": ["enumeration-incomplete"],
+             "missing_claims": [GAP_G]}])
+        case("v3.0.60 fault injection: a first non-confirm naming no gap, then a "
+             "retry naming an anchored gap, keeps BOTH -- the retry's gap and "
+             "the first answer's reason (review round 3)",
+             rv_q.get("disposition") == "debt"
+             and shape_q == [(G60, False), (G60, True)]
+             and "named only in prose, again" in rv_q["missing_claims"][1]["claim"]
+             and live_q)
+        _be, v_e, rv_e, shape_e, live_e = _fi([{
+            "verdict": "revised", "reason_classes": ["enumeration-incomplete"],
+            "missing_claims": [{"event": H60}, GAP_G]}])
+        case("v3.0.60 fault injection: a finding with no quote and no claim is "
+             "still kept as a row, never skipped",
+             shape_e == [(G60, False), (H60, True)] and live_e
+             and rv_e["missing_claims"][1]["claim"]
+             == "(a finding with no quote or claim)")
+        _be, v_s, rv_s, shape_s, live_s = _fi([
+            {"verdict": "revised", "reason_classes": ["enumeration-incomplete"],
+             "missing_claims": "Keys stay in the safe."},
+            {"verdict": "confirmed"}])
+        case("v3.0.60 fault injection: a malformed missing_claims (a string, not "
+             "a list) is one unanchored finding, never split into characters, "
+             "and survives a clean retry",
+             shape_s == [(G60, True)] and live_s
+             and rv_s["missing_claims"][0]["claim"] == "Keys stay in the safe."
+             and "named_event" not in rv_s["missing_claims"][0])
+
+        # reverts: a reverted run's clears and its own debt rows are void
+        for s_rev in (res60c["seq"], res60["seq"]):
+            rr = core.minimal_record("driver-revert",
+                                     _git(base, "rev-parse", "HEAD").strip())
+            rr["run_window"] = {"start": "t0", "end": "t1"}
+            rr["driver_revert"] = {"reverts_seq": s_rev, "status": "reverted",
+                                   "reverts_commit": "0" * 40, "at": "t1",
+                                   "reason": "fixture",
+                                   "driver": "deploy/compile-driver.py"}
+            core.append_record(base, rr)
+            if s_rev == res60c["seq"]:
+                case("v3.0.60: a REVERTED plan clears nothing -- its row is "
+                     "outstanding again",
+                     did in [r["id"] for r in outstanding_coverage_debt(base)])
+        case("v3.0.60: reverting the run that RECORDED a row clears nothing "
+             "by itself -- the row stays outstanding, marked, until a later "
+             "run's routing leg judges its event (review round 1)",
+             did in [r["id"] for r in outstanding_coverage_debt(base)]
+             and [r for r in coverage_debt_rows(base) if r["id"] == did][0]
+             .get("run_reverted") is True)
+        rerun = run(base, _plan60([("wiki/scoped/r60a.md", [RT60])], {RT60: {
+            "claims": [{"id": "c9", "text": "The shop closes at six on Sundays",
+                        "owner": "wiki/scoped/r60a.md"}]}}),
+            _AddR60({"wiki/scoped/r60a.md": "The shop closes at six on "
+                                            "Sundays."}))
+        be_rr = _RoutingFixtureBackend([{
+            "verdict": "revised", "reason_classes": ["enumeration-incomplete"],
+            "missing_claims": [{"event": RT60, "quote": "Returns need a "
+                                "receipt.", "claim": "Returns need a receipt."}]}])
+        verify_run(base, rerun["seq"], be_rr)
+        live_rr = [r["id"] for r in outstanding_coverage_debt(base)]
+        case("v3.0.60: once a later run's routing leg judges the event, the "
+             "reverted run's row leaves and the later leg's own row carries the "
+             "still-missing claim",
+             did not in live_rr and "D%d.1" % rerun["seq"] in live_rr)
+        # review round 3: an UNANSWERED later leg judged nothing
+        _be, v_k, rv_k, _sh, _lv = _fi([{
+            "verdict": "revised", "reason_classes": ["enumeration-incomplete"],
+            "missing_claims": [GAP_G]}])
+        kid = rv_k["missing_claims"][0]["id"]
+        rk = core.minimal_record("driver-revert",
+                                 _git(base, "rev-parse", "HEAD").strip())
+        rk["run_window"] = {"start": "t0", "end": "t1"}
+        rk["driver_revert"] = {"reverts_seq": rv_k["verifies_seq"],
+                               "status": "reverted", "reverts_commit": "0" * 40,
+                               "at": "t1", "reason": "fixture",
+                               "driver": "deploy/compile-driver.py"}
+        core.append_record(base, rk)
+        _be, v_k2, rv_k2, _sh, _lv = _fi([{"_raw": {"verdict": "bridge-error",
+                                                    "reason": "exit 7"}}])
+        live_k = [r["id"] for r in outstanding_coverage_debt(base)]
+        case("v3.0.60: an UNANSWERED later routing leg over the event does not "
+             "retire a reverted run's row -- it judged nothing (review round 3)",
+             rv_k2.get("disposition") == "incomplete" and kid in live_k)
+
         r3root = tempfile.mkdtemp(prefix="cv2-release3-")
         dbt = _debt()
         try:
@@ -6318,9 +7334,38 @@ def self_test():
     return 0
 
 
+def print_coverage_debt(root, out=print):
+    """v3.0.60: list outstanding coverage debt -- the claims a run's routing
+    leg found without a home, not yet routed by a later plan's `clears`."""
+    rows = outstanding_coverage_debt(root)
+    if not rows:
+        out("coverage debt: none outstanding")
+        return 0
+    out("coverage debt: %d outstanding row(s) -- route each in a plan that "
+        "carries its event, naming it in that entry's \"clears\"" % len(rows))
+    for r in rows:
+        out("- %s  %s  (recorded %s%s)%s" % (
+            r["id"], r.get("event"), str(r.get("recorded_at") or "?")[:10],
+            ", unanchored: route the event's claims afresh"
+            if r.get("unanchored") else "",
+            " [its run was reverted: it clears when a later run's routing "
+            "leg judges this event]" if r.get("run_reverted") else ""))
+        out("    claim: %s" % r.get("claim"))
+        if r.get("quote"):
+            out("    quote%s: %s" % (" (not found in the event)"
+                                     if r.get("unanchored") else "",
+                                     r.get("quote")))
+        if r.get("named_event"):
+            out("    the verifier named: %s" % r.get("named_event"))
+    return 0
+
+
 def main(argv):
     if "--self-test" in argv:
         return self_test()
+    if "--coverage-debt" in argv:
+        root = argv[argv.index("--root") + 1] if "--root" in argv else "."
+        return print_coverage_debt(root)
     if "--run" in argv:
         root = argv[argv.index("--root") + 1]
         plan = json.load(open(argv[argv.index("--plan") + 1], encoding="utf-8"))

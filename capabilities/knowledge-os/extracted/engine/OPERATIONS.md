@@ -175,6 +175,7 @@ level, one BLOCKED leg makes the whole run exit 1.
 | **VERIFIED** | `absorption_verified[]` entry — the only path to a `verified:` stamp; the baseline advances | nobody | terminal. A confirmed absorption later proven wrong is a NEW raw event, never a disposition rewrite |
 | **BLOCKED** | `absorption_verify_attempts[]` entry, completed verdict, `disposition: blocking` — `fabrication` / `contradiction` / `over-certainty`, `unclassified` (no parseable class, fail-closed), `stamp-refused`, and every pre-demotion record (no disposition field) | the session (correction) or the operator (ruling) — never the session ruling the verdict wrong | run exits 1, branch unmergeable. `--revert` → RUN-REVERTED (correct + re-ride, §7a); operator `--set-aside` → ADJUDICATED; plus — stamp-refused-only runs (a verifier approval the engine recorded no stamp for; v3.0-74) — `--reverify` re-fires the legs (its fresh verdict decides; not a disposition). Union no-op legs (subject `union:<event>`) take the same two verbs, addressed by run seq + event: operator `--set-aside --union-event` → ADJUDICATED (no baseline movement — a union leg absorbed nothing; v3.0-105). There is no third disposition |
 | **RECORDED** | same entry shape, `disposition: recorded` — `scope-omission` / `enumeration-incomplete` (verifier demotion 2026-08-09) | the operator, at their own pace (inbox item, compile skill Step 3c) | the run COMPLETES (exit 0 + RECORDED SIGNALS band); the article stays live, unverified-and-named-so, baseline unmoved. Same two verbs, operator-paced: *redo* = `--revert` → RUN-REVERTED; *accept* = `--set-aside` → ADJUDICATED (a union no-op leg journaled `verify_disposition: recorded` is addressed the same way: accept = `--set-aside --union-event`) |
+| **COVERAGE DEBT** *(the run's routing leg, v3.0.60)* | `routing_verify` on the verify record, `disposition: debt` / `anomalous` / `incomplete`, one `missing_claims[]` row per gap (`D<seq>.<n>`) | the session, in a later plan (`"clears"`); the operator only for rows older than the observation window | never blocks the run or a view's stamp; a row leaves the outstanding list when a later, non-reverted plan clears it (`clears`, or `clears_all` for the event) — or, for a row whose own run was reverted, once a later run's routing leg has answered over its event |
 | **ADJUDICATED** | `absorption_adjudicated[]` entry, view-path or `union:<event>` subject — the operator's verbatim ruling journaled beside the kept verdict | nobody (one ruling per verdict) | terminal for this verdict; the baseline advances as "adjudicated \<date\> by operator ruling, not machine-verified" (view subjects only — a union adjudication moves no baseline) |
 | **RUN-REVERTED** | `driver_revert{status: reverted}` — the rejection stays on the record | the session | corrected answers re-ride a fresh `--run` (full validate/absorb/verify road) → new legs, new record. On a collision (the run is no longer the last word on its articles) `--revert` refuses and writes nothing: correct FORWARD instead (v3.0.30) |
 | **RUN-AUTO-REVERTED** | transport-shaped legs (`bridge-error` / timeout / unparseable / gated-bare — judged by verdict VALUE, `classify_verdict`, never by verify_run() returning) + `driver_revert` | the session | diagnose the transport failure, re-run the same staging dir; `--reverify` covers the transport-failed-but-absorption-stands case |
@@ -183,20 +184,44 @@ level, one BLOCKED leg makes the whole run exit 1.
 #### Rationale and grading doctrine (the table above is the lifecycle authority)
 
 **The verifier's charge is plan-scoped (v3.0.29, closing backlog v3.0-63).** When the compile
-record carries a claim routing, the packet embeds it (DECLARED CLAIM ROUTING section) and the
-checker grades **two questions**: (1) does this view faithfully carry every claim it OWNS under
-the declared routing — per-view fidelity to declared scope; (2) is any load-bearing claim of the
-event absent from the declared routing altogether — enumeration completeness, rejected with
-reason class `enumeration-incomplete`. A claim owned by a sibling view or deferred is declared
-scope, never an omission, so a correctly-narrowed view confirms even while siblings carry the
-rest. The run-level union — every claim owned by exactly one view or named in `pending_cascade`
-— is checked mechanically, pre-write, by the engine (`check_claim_routing`): a claim routed to
-nobody refuses the whole run before anything is written. One verdict per leg, the same enum as
-always; the reason sentence names which question failed. Records without a routing (older plans,
-staged re-rides) keep the total-coverage charge unchanged — nothing is loosened either way.
-**When every leg of a run rejects with the enumeration-incomplete reason, that is ONE plan
-defect — fix the claim table and re-ride the run — never N article defects; an all-reject wave
-of this shape is a plan-level correction, not grounds to doubt the verifiers or the articles.**
+record carries a claim routing, the packet embeds it (DECLARED CLAIM ROUTING section) and each
+view leg grades whether this view faithfully carries every claim it OWNS under the declared
+routing. A claim owned by a sibling view or deferred is declared scope, never an omission, so a
+correctly-narrowed view confirms even while siblings carry the rest. An event the run absorbed
+WITHOUT a routing table is listed as a LEGACY event and its view must represent or imply every
+load-bearing claim of it (v3.0.60, backlog v3.0-184; before, a partly declared run held the
+undeclared events to the table too). The run-level union, every claim owned by exactly one view
+or named in `pending_cascade`, is checked mechanically, pre-write (`check_claim_routing`): a
+claim routed to nobody refuses the whole run before anything is written. Records without a
+routing (older plans, staged re-rides) keep the total-coverage charge unchanged.
+
+**Routing completeness is judged once per run, and its gaps are tracked, not decided (v3.0.60,
+closing backlog v3.0-184; the template repository's five-pass design run of 2026-10-01).** Whether the
+routing accounts for EVERY load-bearing claim of its events used to be asked inside every view
+leg: an event feeding k views got k independent judgments, the target moved between rounds, and
+each finding went to the operator to accept, which recorded nothing about the gap. Now one
+**routing leg** per run reads each scoped event beside its routing table, against one shared
+definition of "load-bearing" (`LOAD_BEARING_DEFINITION`, the same words the compile skill uses).
+Each claim it finds without a home, quoting its event verbatim (checked), becomes a
+**coverage-debt row** on the verify record (`routing_verify`). View legs no longer ask the
+question, so plan bookkeeping never holds back an article's verified stamp. A later plan clears
+a row by routing its claim (owned, or deferred to a named target) with `"clears": ["<row id>"]`,
+which `check_claim_routing` validates, or re-routes a heavily indebted event in full with
+`"clears_all": true` on its routing entry (every earlier row for that event clears; the run's own
+routing leg judges the new table). `py deploy/compile-v2.py --coverage-debt --root .` lists
+what is outstanding; the decision inbox shows it as one information line, and only rows older
+than the observation window become a question for the operator. Every gap the verifier names
+is kept: one whose quote is not found in its event (or that names an event outside the run) is
+recorded as an **unanchored** row in the verifier's words beside the anchored ones; a
+non-confirm that names no anchored gap is asked again once first, and whatever the retry says,
+the first answer's gaps (or, if it named none, its reason) are kept as rows; a confirm that still lists
+a gap is read by the gap. A verdict that cannot be attributed to a different substrate (gated or
+unattested, whatever its label) and an unanswered leg both count as unjudged: one row per
+scoped event, plus any gaps the answer named. Reverting the run that recorded a row clears
+nothing by itself: the row stays outstanding, marked, until a later run's routing leg has
+answered over its event afresh (and recorded its own rows for whatever is still missing); an
+unanswered or gated leg judged nothing and retires nothing. Nothing is
+dropped silently, and nothing about completeness waits on the operator.
 
 **The packet's "before" is always the view's real baseline, named (v3.0.29, closing backlog
 v3.0-67).** The diff base is, in order: the last machine-verified state; else the last
@@ -210,7 +235,7 @@ machine-verification, on an operator set-aside ruling, or on an operator baselin
 (packet text: "reset to imported snapshot by operator ruling, not machine-verified"), and
 **never on a bare rejection, never on a union adjudication (pin-less by design), never by an
 agent's own decision**. A verify or set-aside of a run that was later reverted never counts:
-it certified a state the revert undid (v3.0.59, backlog v3.0-191 (d)).
+it certified a state the revert undid (v3.0.59, backlog v3.0-191).
 
 **Grading starts after what the engine itself recorded (v3.0.59, closing backlog v3.0-191).**
 The baseline above says what the checker last approved; it does not have to grade everything
@@ -282,8 +307,17 @@ the other side. The split:
   the run COMPLETES, and the decision rides the compile skill's Step 3c into the decision
   inbox, where the operator answers at their own pace with the same two verbs as ever —
   **redo** (the `--revert` correction cycle) or **accept** (`--set-aside`, ruling recorded).
-  An all-legs `enumeration-incomplete` wave stays ONE plan defect and lands as ONE inbox item
-  (fix the claim table, re-ride), never N article items.
+  Since v3.0.60 `enumeration-incomplete` belongs to the run's routing leg, whose gaps become
+  coverage debt (above), so in practice an article leg's recorded signal is `scope-omission`.
+
+**The class is read from a structured list only (v3.0.60, closing backlog v3.0-185).** The
+verifier returns `reason_classes` as a list (the GPT-direction bridge's output schema requires
+it; the Claude-direction bridge asks for it in its instructions only; `compile-backends.py`
+carries it through); the engine classifies from that list alone and never
+searches the reason prose for class words. Before, "the defect is not fabrication or
+contradiction" was journaled as fabrication + contradiction (blocking), and a finding phrased
+without a class word as unclassified (also blocking). A missing, empty or partly unrecognized
+list is unclassified and blocking, as before; historical journal rows are never re-derived.
 
 Builder–verifier agreement is measurable from the journal alone —
 `compile-driver.py --verify-ledger --root . [--since YYYY-MM-DD]` — and the demotion carries a

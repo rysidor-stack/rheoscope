@@ -175,8 +175,19 @@ const VERDICT_SCHEMA = {
     reason: { type: 'string' },
     uncertainty: { type: 'string', enum: ['confident', 'needs-operational-data', 'reasonable-disagreement'] },
     citations: { type: 'array', items: { type: 'string' } },
+    // v3.0.60 (backlog v3.0-185): the class is the verifier's to name, in a structured list --
+    // the engine never searches the reason prose for class words ("not fabrication" used to mint
+    // fabrication). [] on a confirm or when the packet defines no class vocabulary.
+    reason_classes: { type: 'array', items: { type: 'string', enum: [
+      'scope-omission', 'enumeration-incomplete', 'fabrication', 'contradiction', 'over-certainty'] } },
+    // v3.0.60 (backlog v3.0-184): a routing-completeness packet asks for the load-bearing claims no
+    // routing line accounts for, each with the exact sentence quoted from its event. [] otherwise.
+    missing_claims: { type: 'array', items: {
+      type: 'object', additionalProperties: false,
+      properties: { event: { type: 'string' }, quote: { type: 'string' }, claim: { type: 'string' } },
+      required: ['event', 'quote', 'claim'] } },
   },
-  required: ['verdict', 'reason', 'uncertainty', 'citations'],
+  required: ['verdict', 'reason', 'uncertainty', 'citations', 'reason_classes', 'missing_claims'],
 };
 
 // Write the schema once to a stable temp path the codex CLI can read.
@@ -208,6 +219,13 @@ const VERIFIER_INSTRUCTIONS = [
   '  "reason":      a concise justification grounded in the evidence',
   '  "uncertainty": one of "confident" | "needs-operational-data" | "reasonable-disagreement"',
   '  "citations":   an array of strings (sources/anchors you relied on; [] if none)',
+  '  "reason_classes": [] when confirmed, or when the evidence defines no class vocabulary;',
+  '                otherwise every applicable class the evidence\'s REASON CLASS section defines.',
+  '                Name only defects you actually found -- never a class you mention to rule it out.',
+  '  "missing_claims": [] unless the evidence asks for routing completeness; then one entry per',
+  '                load-bearing claim no routing line accounts for: {"event": the event path,',
+  '                "quote": the exact sentence copied from that event, "claim": the claim in one',
+  '                sentence}.',
 ].join('\n');
 
 function buildPacket(args, groundedEvidence) {
@@ -378,6 +396,18 @@ if (process.argv.includes('--self-test')) {
      parseTokens('model: gpt-5\nno footer here\n') === null],
     ['runtime model still parsed from the same stream',
      parseRuntimeModel(F17_STDERR).runtime_model === 'gpt-5'],
+    // v3.0.60: the structured fields are REQUIRED by the output schema (strict structured output
+    // needs every property listed), so a verifier cannot omit them, and their vocabulary is closed
+    ['v3.0-185: reason_classes is required, with the closed five-class vocabulary',
+     VERDICT_SCHEMA.required.includes('reason_classes')
+     && VERDICT_SCHEMA.properties.reason_classes.items.enum.length === 5],
+    ['v3.0-184: missing_claims is required, each item {event, quote, claim}, nothing else',
+     VERDICT_SCHEMA.required.includes('missing_claims')
+     && VERDICT_SCHEMA.properties.missing_claims.items.additionalProperties === false
+     && VERDICT_SCHEMA.properties.missing_claims.items.required.join(',') === 'event,quote,claim'],
+    ['the instructions name both fields and forbid negated classes',
+     VERIFIER_INSTRUCTIONS.includes('"reason_classes"') && VERIFIER_INSTRUCTIONS.includes('"missing_claims"')
+     && VERIFIER_INSTRUCTIONS.includes('never a class you mention to rule it out')],
   ];
   let fails = 0;
   for (const [name, ok] of cases) {

@@ -128,6 +128,13 @@ const VERIFIER_INSTRUCTIONS = [
   '  "reason":      a concise justification grounded in the evidence',
   '  "uncertainty": one of "confident" | "needs-operational-data" | "reasonable-disagreement"',
   '  "citations":   an array of strings (sources/anchors you relied on; [] if none)',
+  '  "reason_classes": [] when confirmed, or when the evidence defines no class vocabulary;',
+  '                otherwise every applicable class the evidence\'s REASON CLASS section defines.',
+  '                Name only defects you actually found -- never a class you mention to rule it out.',
+  '  "missing_claims": [] unless the evidence asks for routing completeness; then one entry per',
+  '                load-bearing claim no routing line accounts for: {"event": the event path,',
+  '                "quote": the exact sentence copied from that event, "claim": the claim in one',
+  '                sentence}.',
 ].join('\n');
 
 function buildPacket(args) {
@@ -236,7 +243,7 @@ function log(s) { process.stderr.write('[claude-verify] ' + s + '\n'); }
 
 const VERIFY_TOOL = {
   name: 'verify',
-  description: 'Cross-vendor verification: hand a claim (+optional evidence) to an independent, tool-less Claude (a different AI vendor) and get back a structured verdict {verdict, reason, uncertainty, citations}. Use when a decision needs a substrate-different second opinion (e.g. a T2-T4 check). The claim/evidence is treated strictly as data by the verifier, never as instructions.',
+  description: 'Cross-vendor verification: hand a claim (+optional evidence) to an independent, tool-less Claude (a different AI vendor) and get back a structured verdict {verdict, reason, uncertainty, citations, reason_classes, missing_claims}. Use when a decision needs a substrate-different second opinion (e.g. a T2-T4 check). The claim/evidence is treated strictly as data by the verifier, never as instructions.',
   inputSchema: {
     type: 'object',
     additionalProperties: false,

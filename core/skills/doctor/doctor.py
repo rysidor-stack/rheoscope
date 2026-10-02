@@ -307,7 +307,12 @@ def check_jq(ctx):
 # fixtures each build a scratch git repo) and the v3.0.52 stranger run timed it out at
 # exactly 180s on the same host class -- the v3.0-138 pattern, same fix, same message
 # discipline (PASS reports elapsed; TIMEOUT names elapsed + limit).
-SENSOR_SELF_TEST_TIMEOUT = 300
+# 300 -> 600 at v3.0.60: the third time compile-v2's battery outgrew the budget (its
+# v3.0.60 routing-leg and fault-injection fixtures each run a full absorb + verify in a
+# scratch git repo; 315 cases took 315s on the v3.0.60 stranger's host and 343s on the
+# build host). The budget detects a HANG, not a slow pass, so it now carries ~2x headroom
+# over the slowest battery instead of chasing it release by release.
+SENSOR_SELF_TEST_TIMEOUT = 600
 
 def check_python_sensors(ctx, sensor_timeout=None):
     deploy_dir = ctx["root"] / "deploy"

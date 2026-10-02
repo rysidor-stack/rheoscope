@@ -893,6 +893,10 @@ class BridgeVerifyBackend:
                       re.M)
         if m:
             return m.group(1)
+        # v3.0.60: the run's routing-completeness leg
+        m = re.search(r"^# ROUTING COMPLETENESS PACKET (seq\d+)", packet, re.M)
+        if m:
+            return "routing-" + m.group(1)
         return _sha256(packet)[:12]
 
     def _write_attest_record(self, pid, attestation, wrapper_verifier_claim,
@@ -1142,8 +1146,14 @@ class BridgeVerifyBackend:
                     "bridge_verdict": bridge_verdict,
                     "gated_inner_verdict": bridge_verdict.get("verdict")}
 
+        # v3.0.60 (backlog v3.0-185 / -184): the verifier's structured class
+        # list and missing-claim list are carried through untouched -- the
+        # engine classifies from the list alone and never searches the prose
+        # (a substrate-gated verdict carries them inside bridge_verdict).
         return {"verdict": bridge_verdict.get("verdict"),
                 "reason": bridge_verdict.get("reason"),
+                "reason_classes": bridge_verdict.get("reason_classes"),
+                "missing_claims": bridge_verdict.get("missing_claims"),
                 "uncertainty": bridge_verdict.get("uncertainty"),
                 "verifier": verifier, "substrate": substrate_info,
                 "evidence_file": evidence_rel}
@@ -1549,6 +1559,34 @@ def self_test():
                     payload["attestation"] = att
                 return 0, json.dumps(payload), ""
             return runner
+
+        # v3.0.60 (v3.0-185 / -184): the structured lists survive the backend
+        # exactly as the verifier returned them, and the engine's classifier
+        # reads the list alone -- prose that NAMES a class to deny it no longer
+        # mints that class.
+        def classified_runner(classes, missing):
+            def runner(args):
+                return 0, json.dumps({
+                    "verdict": "rejected",
+                    "reason": "Missing coverage, not fabrication or contradiction.",
+                    "reason_classes": classes, "missing_claims": missing,
+                    "uncertainty": "confident",
+                    "verifier": {"vendor": "openai", "model": "gpt-5.5"},
+                    "attestation": _good_attestation("gpt-5.5")}), ""
+            return runner
+
+        mc = [{"event": "raw/e1.md", "quote": "Deliveries arrive Tuesdays.",
+               "claim": "Deliveries arrive on Tuesdays."}]
+        for classes, expected in ((["scope-omission"], "recorded"),
+                                  (["scope-omission", "fabrication"], "blocking"),
+                                  ([], "blocking"), (None, "blocking"),
+                                  (["unrecognized"], "blocking")):
+            got = make_backend(classified_runner(classes, mc)).verify(good_packet)
+            case("v3.0-185: the backend preserves the verifier's class list %r "
+                 "and the classifier reads it alone (-> %s)" % (classes, expected),
+                 got.get("reason_classes") == classes
+                 and got.get("missing_claims") == mc
+                 and compile_v2.classify_reason_classes(got)[2] == expected)
 
         b1 = make_backend(confirmed_runner())
         v1 = b1.verify(good_packet)

@@ -106,6 +106,11 @@ function appBundledExesUnder(localRoot) {
   } catch (e) { return []; }
 }
 
+function standaloneExeUnder(localRoot) {
+  // v3.0-206: the official standalone install, <LOCALAPPDATA>\Programs\OpenAI\Codex\bin\codex.exe
+  return localRoot ? path.join(localRoot, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe') : null;
+}
+
 function resolveCodexBin() {
   // An explicit CODEX_BIN is an operator pin (compile-driver.py exports the binary its
   // pre-write probe accepted); honored as-is, not re-gated.
@@ -113,13 +118,16 @@ function resolveCodexBin() {
   // Candidates (history: v3.0-68 -- APPDATA can be scrubbed in headless runs, so the
   // homedir-derived paths survive `env -i`; a below-floor candidate is skipped, never returned):
   // APPDATA npm exe, homedir npm exe, the desktop app's bundled CLIs (LOCALAPPDATA and
-  // homedir-derived), then where/which. Among those that exist and meet the floor, the
+  // homedir-derived), the official standalone install (LOCALAPPDATA and homedir-derived;
+  // v3.0.61, backlog v3.0-206 -- reachable before only through PATH), then where/which. Among those that exist and meet the floor, the
   // HIGHEST version wins; a tie keeps the earlier candidate.
   const candidates = [
     npmVendorExeUnder(process.env.APPDATA),
     npmVendorExeUnder(path.join(os.homedir() || '', 'AppData', 'Roaming')),
     ...appBundledExesUnder(process.env.LOCALAPPDATA),
     ...appBundledExesUnder(path.join(os.homedir() || '', 'AppData', 'Local')),
+    standaloneExeUnder(process.env.LOCALAPPDATA),
+    standaloneExeUnder(path.join(os.homedir() || '', 'AppData', 'Local')),
   ];
   const finder = process.platform === 'win32' ? 'where' : 'which';
   try {

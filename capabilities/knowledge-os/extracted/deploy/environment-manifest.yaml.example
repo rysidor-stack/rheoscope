@@ -21,8 +21,13 @@
 #   date              -- ISO date (YYYY-MM-DD) version_verified was captured.
 #
 # LIFECYCLE: when doctor WARNs "version drift" for a row, that's a prompt for a human to
-# re-verify the new version still works, then hand-update version_verified/date -- doctor
-# never edits this file itself.
+# re-verify the new version still works, then update version_verified/date. Since v3.0.61
+# (v3.0-222), where the same doctor run's live checks already exercised the new version
+# (codex: codex-auth + bridge-cli + verifier-models; node: bridge-cli; python: the sensor
+# self-tests on that interpreter), the row reports PASS naming both versions instead of
+# WARN, and `python .claude/skills/doctor/doctor.py --restamp <tool>` records the probe's
+# output and today's date in that row (its two lines only). The check itself never edits
+# this file; the restamp is a command you run.
 #
 # This is a TEMPLATE EXAMPLE -- copy to deploy/environment-manifest.yaml in an instantiated
 # project and replace the rows below with that project's real, freshly-probed toolchain.

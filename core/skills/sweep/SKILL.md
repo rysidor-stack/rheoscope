@@ -145,7 +145,10 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     production branch every run, never read from a file a session could edit: a deleted
     journal record still appears, a removed acknowledgement reopens its item. The deltas
     go in the same receipt file: for each pending trust-surface item the added and
-    removed lines verbatim (`git diff <parent>..<commit> -- <path>`), and for each
+    removed lines verbatim (`git diff <parent>..<commit> -- <path>`; a commit with no
+    parent -- a new project's first commit -- has nothing to diff against, so record
+    `git show --stat <commit> -- <path>` for it, the files it added and their sizes, not
+    their full text: v3.0-201), and for each
     pending retirement the span title(s), bytes moved, and the destination (the full
     preimage is `python deploy/retire.py --show <digest>`). BATCH members render grouped
     (v3.0.52: each row names its batch id and member position; a `ROLLBACK of seq N` row
@@ -211,7 +214,10 @@ never enabled), skip it and say so — that's a NOTE, not a finding:
     become history — nothing is ever deleted from the ledger. An UNATTENDED sweep (the
     scheduled wrapper sets `RHEOSCOPE_UNATTENDED=1`) runs (a) and (b) and the closing
     heartbeat but `--ack` REFUSES — the items persist until a sweep you actually read,
-    which is what makes "unread item persists" true rather than claimed. These
+    which is what makes "unread item persists" true rather than claimed. An unattended
+    run never defers its briefing to a later check: whatever is still running is reported
+    as still running, and the run writes its briefing and its closing heartbeat before it
+    exits (v3.0-215). These
     receipt-class artifacts (`receipts/pending/*.jsonl`, append-only, plus the step-(b)
     `receipts/pending/render-<date>.txt` table) are the ONE documented exception to this
     skill's read-only rule: the sweep records that it ran and what it showed, nothing
@@ -340,12 +346,27 @@ health, report spot-check, and roadmap-vs-evidence all healthy.
 ## Scheduling (recipe, not activation)
 
 A nightly scheduled run is a recipe, not something this skill turns on by itself: a scheduled
-task or cron entry invokes a headless session whose entire prompt is "run /sweep and save the
-briefing to SWEEP-BRIEFING.md, overwriting."
+task or cron entry runs a wrapper script that sets the unattended marker and then invokes a
+headless session. The recipe has three parts (v3.0.61, backlog v3.0-215 — the old one-line
+prompt, "the briefing file is the only thing you may write", forbade the heartbeat, so a
+wrapper built from it could never clear the missed-sweep alarm):
 
-That's the whole recipe — /sweep itself needs no changes to support it. The briefing save
-belongs to the WRITE-SIDE scheduled session, never to `/sweep` itself: a direct, manual
-`/sweep` invocation still performs zero writes — the read-only rule above stands unchanged.
+1. **The wrapper sets `RHEOSCOPE_UNATTENDED=1` before the line that launches the agent**
+   (`set` in a `.cmd`, `export` in a `.sh`; in a `.ps1`, `$env:RHEOSCOPE_UNATTENDED = '1'`
+   goes immediately AFTER the script's `param()` block, never above it — PowerShell binds
+   parameters only when `param()` is the first statement). `/doctor` checks both
+   (`hooks-wired`).
+2. **The prompt names exactly the writes an unattended sweep makes:** step 17's heartbeat
+   rows (`receipts/pending/*.jsonl`, append-only), its `receipts/pending/render-<date>.txt`
+   table, and the briefing, saved to `SWEEP-BRIEFING.md` (overwriting). Nothing else. If
+   the session runs with an allowed-tools list, it permits exactly those writes.
+3. **The prompt says the run never defers its briefing.** A headless run cannot wait: a
+   sensor still running is reported in the briefing as still running, and the briefing is
+   written before the session exits — never handed to a later check.
+
+/sweep itself needs no changes to support it. The briefing save belongs to the scheduled
+session, never to `/sweep` itself: a direct, manual `/sweep` writes only step 17's
+receipt-class rows and table — the read-only rule above stands unchanged.
 
 **Wrapper hygiene (v3.0.55, backlog v3.0-180 — learned when the first production wrapper
 silently stopped for a week):** (a) never append the session transcript to the log unbounded:

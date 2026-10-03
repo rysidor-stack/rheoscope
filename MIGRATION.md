@@ -267,6 +267,71 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.60 → v3.0.61 (the papercut release: the doctor stops crying wolf on a fresh project and on helper scripts, a session in the wrong folder is warned, the retirement tool's recovery no longer crashes, and the operator reports get "short by default")
+
+**Two lanes, in either order** — nothing in one depends on the other.
+
+**Step 1 — OPERATOR-COPY lane (trust surfaces; you copy and commit them yourself — under
+`required`, `git commit -S`):**
+- `deploy/retire.py` (backlog v3.0-224: `--recover` no longer crashes reporting a discarded
+  batch; new `--discard <seq|batch/ID>` drops a prepared retirement's refs, nothing published or
+  journaled touched; each prepared member reports its measured size after retirement and warns
+  when it stays over its cap; 119/119 — `py deploy/retire.py --self-test`).
+- `deploy/pending.py` (v3.0-196/-201: the render table lists every path of a trust item in full;
+  a redirected render writes LF; the never-closed alarm text no longer reads "in the last ?
+  day(s)"; 82/82).
+- `deploy/compile-driver.py` (v3.0-206: the official standalone Codex install is a candidate
+  even with PATH scrubbed; v3.0-227: its comments name no instance; 283/283 in the template
+  tree).
+- `core/security/hooks/README.md` and the new `core/security/hooks/warn-wrong-folder.sh`
+  (v3.0-217: § When the hooks are not loaded at all — the user-level start-up warning recipe;
+  stale battery counts corrected). The script is a hook you install YOURSELF in your user-level
+  Claude settings, outside every repo; the README section says how (three steps). Its board:
+  `bash core/security/hooks/warn-wrong-folder.sh --self-test` (6/6).
+
+**Step 2 — SESSION lane (copy, commit together):**
+- `.claude/skills/doctor/doctor.py` and `.claude/skills/doctor/SKILL.md` (v3.0-207: only a
+  script under `.claude/` that launches an agent needs the unattended marker, and a `.ps1` with
+  a statement above its `param()` block WARNs — the old "first line" advice unbound a
+  post-check's parameters; v3.0-222: a CLI update the same run's live checks exercised PASSes
+  with `--restamp <tool>` to record it; v3.0-201: a never-swept new project's alarm says so in
+  plain words; v3.0-196: how long a full run takes; 133/133 —
+  `python .claude/skills/doctor/doctor.py --self-test`).
+- `.claude/skills/bridge/codex-verify-server.js` and `.claude/skills/bridge/handoff-leg.js`
+  (v3.0-206, lockstep with the driver; 7/7 and 4/4 — each with `--self-test`).
+- `deploy/retire-manifest.py` (v3.0-224: its size predictions say they are estimates; 36/36).
+- `deploy/environment-manifest.yaml.example` (v3.0-222: the lifecycle comment names the restamp)
+  and `deploy/verify-routing-register.yaml.example` (v3.0-227: names no instance).
+- `.claude/skills/sweep/SKILL.md` (v3.0-215: the Scheduling recipe names the unattended writes,
+  the marker placement, and that an unattended run never defers its briefing; v3.0-201: what to
+  record for a parentless first commit), together with
+  `manifests/sweep-briefing/format-MANIFEST.md` (its pin re-hashed, A4).
+- Your flight-plan skill (in an instance, .claude/skills/flight-plan/SKILL.md), from the template
+  tree's `core/skills/flight-plan/SKILL.md.template`: Step 0 now first confirms the session
+  opened in the project folder (v3.0-217). Apply that one paragraph over your substituted copy.
+- Your governance contract (in an instance, core/governance/CLAUDE.md), from
+  `core/governance/CLAUDE.md.template`: two bullets join § Reporting to the operator, "Short by
+  default" and "Answer it yourself before asking" (v3.0-218). Apply them over your substituted
+  copy; an instance that already added its own versions keeps them.
+- `TEMPLATE-README.md` and `INIT.md` (text: what a fresh project's doctor shows after the first
+  commit, how long init and the doctor take, `init.ps1 -DryRun`).
+- `deploy/drill-replay-bench.py` no longer ships (v3.0-201: nothing in an instance runs it, so
+  every fresh doctor WARNed it as unreachable). Delete your copy, or leave it and keep the WARN.
+- `./init.sh` and `./init.ps1` changed too (they now generate `.agents/skills/` and print `git init`
+  only when they could not run it), but init is one-shot: changed, no action needed on an existing
+  instance.
+
+**What changes in your day.**
+- **The nightly-sweep alarm stops firing on healthy runs** if a helper script tripped the old
+  advice; the doctor now names any `.ps1` whose parameters cannot bind.
+- **A session opened in the wrong folder tells you so**, once you install the start-up warning.
+- **A CLI update no longer leaves a yellow line** when the doctor's own live checks already ran
+  on the new version; `--restamp` records it in one command.
+- **Replies lead with five plain lines at most**, and sessions answer what they can look up
+  before asking you.
+
+Nothing else migrates: no re-freeze, no new `project.yaml` keys.
+
 ## v3.0.59 → v3.0.60 (the routing fix: routing completeness is judged once per run and its gaps become a to-do list the next compile clears; the verifier's defect classes are read from a structured list, never from its prose)
 
 **Both lanes in ONE sitting, and this time the OPERATOR lane FIRST.** The new engine no longer
@@ -303,8 +368,8 @@ two lanes.
   skill carries the definition word for word.
 - `docs/engine/OPERATIONS.md` (§7).
 - `.claude/skills/doctor/doctor.py` (the per-sensor self-test budget 300 s -> 600 s: compile-v2's
-  battery now takes about 5-6 minutes and the doctor FAILed it at 300 s on a fresh instance; doctor
-  117/117).
+  battery now takes about 4.5-6 minutes, depending on the host, and the doctor FAILed it at 300 s on
+  a fresh instance; 117/117 -- `python .claude/skills/doctor/doctor.py --self-test`).
 
 **What changes in your day.**
 - **The routing rejections ("enumeration-incomplete") stop coming to you.** Each compile run asks once

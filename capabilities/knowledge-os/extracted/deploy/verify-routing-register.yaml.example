@@ -1,7 +1,7 @@
 # verify-routing-register.yaml -- declared tier anchors for every verify-leg routing
 # surface (backlog v3.0-77; the router-side backstop for the 2026-07-29 tier-promotion
 # incident). check-substrate.py's anti-promotion pin protects the POLICY
-# (substrate_gate_ok); the pickler instance's promotion never touched the policy -- it
+# (substrate_gate_ok); a downstream instance's promotion never touched the policy -- it
 # edited the ROUTING (driver dispatch, backend passthrough, bridge direction) so a
 # routine leg could only ever reach a vendor-pinned verifier. These rows declare, per
 # routing surface, the one short semantic source line that EMBODIES its tier declaration;
@@ -41,5 +41,5 @@ rows:
   - id: bridge-direction-doc
     file: .claude/skills/bridge/verify-cli.js
     marker: "routes to an OpenAI Codex/GPT verifier"
-    means: the Claude-side bridge's declared direction; a vendor-pin rewrite of the bridge (the pickler edit's surface) removes or contradicts this line
+    means: the Claude-side bridge's declared direction; a vendor-pin rewrite of the bridge (the surface a downstream instance's edit touched) removes or contradicts this line
     decision-ref: v3.0-77

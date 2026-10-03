@@ -888,6 +888,17 @@ if [[ -f "$DOCTOR_PY" ]]; then
         PY_BIN="python"
     fi
     if [[ -n "$PY_BIN" ]]; then
+        # v3.0-201: the skill-discovery adapters for non-Claude agents are generated here, so a
+        # fresh project's doctor does not WARN "skill-adapters: 14 missing" (commit them with the
+        # rest of the birth commit)
+        GEN_ADAPTERS="$SCRIPT_ROOT/deploy/gen-skill-adapters.py"
+        if [[ -f "$GEN_ADAPTERS" ]]; then
+            if "$PY_BIN" "$GEN_ADAPTERS" --root "$SCRIPT_ROOT" >/dev/null 2>&1; then
+                info "skill adapters generated (.agents/skills/) for non-Claude agents"
+            else
+                echo "WARNING: could not generate .agents/skills/ -- run: $PY_BIN deploy/gen-skill-adapters.py"
+            fi
+        fi
         echo "Running /doctor ($PY_BIN .claude/skills/doctor/doctor.py)..."
         # Pass the project root explicitly: init may be invoked from outside the project
         # root, and doctor.py defaults to cwd — --root pins it to the right directory.
@@ -908,7 +919,10 @@ echo "answers cite the installed docs."
 echo ""
 
 echo "Recommended next steps:"
-echo "  git init"
+# v3.0-201: init already ran `git init` above when it could; name it only when it could not
+if [[ ! -d "$SCRIPT_ROOT/.git" ]]; then
+    echo "  git init"
+fi
 echo "  git config core.longpaths true"
 echo "  git add -A"
 echo "  git commit -m \"instantiated rheoscope-harness v$TEMPLATE_VERSION\""

@@ -98,6 +98,7 @@ Exit codes: 0 = all PASS/SKIP (WARNs alone still exit 0) | 1 = self-test failure
 import argparse
 import datetime as _dt
 import json
+import os
 import re
 import shlex
 import shutil
@@ -363,11 +364,11 @@ def check_python_sensors(ctx, sensor_timeout=None):
             continue  # doesn't advertise a self-test; not this check's business
         if f not in run_set:
             continue  # fast-mode rotation: not this file's day (stated in the note below)
-        # Per-sensor budget: 180s (v3.0.48, backlog v3.0-138, fleet inbox #3). The old
-        # 60s default false-FAILed the v3.0.46 batteries on a slow-spawn Windows host
-        # (compile-driver 76s, trust.py 60s, both PASSing standalone) -- a battery that
+        # Per-sensor budget: SENSOR_SELF_TEST_TIMEOUT (600s since v3.0.60; history at the
+        # constant -- v3.0.48, backlog v3.0-138, fleet inbox #3). The old 60s default
+        # false-FAILed the v3.0.46 batteries on a slow-spawn Windows host -- a battery that
         # grew without its budget. A real hang still surfaces: the message carries the
-        # elapsed time and the limit, so "hit 180s" reads differently from "took 76s".
+        # elapsed time and the limit, so "hit the limit" reads differently from "took 76s".
         if sensor_timeout is None:
             sensor_timeout = SENSOR_SELF_TEST_TIMEOUT
         t0 = time.monotonic()
@@ -424,6 +425,61 @@ def _matcher_tokens_for_script(hooks_cfg, script_name):
                 break
     return out
 
+_AGENT_CMD_RE = re.compile(r"(?<![\w.$])(claude|codex|grok)(?![\w\\/])", re.IGNORECASE)
+_AGENT_TOKEN_END_RE = re.compile(r"(claude|codex|grok)(\.exe|\.cmd|\.ps1)?\s*$", re.IGNORECASE)
+_AGENT_TOKEN_START_RE = re.compile(r"^\s*(claude|codex|grok)(\.exe|\.cmd)?(\s|$)")
+_QUOTED_RE = re.compile(r"([\"'])(.*?)\1")
+_PS1_ATTRIBUTE_RE = re.compile(r"\[[A-Za-z_][\w.]*\s*\(.*\)\]$")
+
+
+def _code_lines(body, ps1=False):
+    """Non-blank lines that are not whole-line comments (cmd REM/::, sh/ps1 #); for a .ps1
+    only, PowerShell <# ... #> block comments removed too (review round 1, v3.0.61: in a
+    shell script `<#` is ordinary text, and stripping it could hide a launch line)."""
+    if ps1:
+        body = re.sub(r"<#.*?#>", "", body, flags=re.DOTALL)
+    out = []
+    for line in body.splitlines():
+        t = line.strip()
+        if not t or t.startswith("#") or t.startswith("::") or t.lower().startswith("rem ") \
+                or t.lower() == "rem":
+            continue
+        out.append(t)
+    return out
+
+
+def _launches_agent(body, ps1=False):
+    """v3.0-207: does this script start an agent run? An agent CLI named as a word -- not a
+    `.claude` directory, a path segment, or part of a longer name -- on any code line, in
+    any letter case (Windows commands are case-insensitive: `CLAUDE -p` launches; review
+    round 1). A quoted string counts only when it ENDS with the command (a quoted path such
+    as "C:\\Tools\\claude.exe"); any other quoted text is a message, not a launch ('Claude
+    was signed out'). Comment-blind otherwise: a doubtful script is checked, never skipped."""
+    # review round 2 (v3.0.61), folded after the final round: block comments are NOT stripped
+    # here (a quoted '<#' must never hide the launch line after it -- a comment line that
+    # names an agent now WARNs, the safe side), and a quoted string that STARTS with a
+    # lowercase agent command counts (`sh -c 'claude -p /sweep'`), as does one that ends with it
+    for t in _code_lines(body, ps1=False):
+        bare = _QUOTED_RE.sub(lambda m: m.group(0) if (_AGENT_TOKEN_END_RE.search(m.group(2))
+                                                       or _AGENT_TOKEN_START_RE.match(m.group(2)))
+                              else " ", t)
+        if _AGENT_CMD_RE.search(bare):
+            return True
+    return False
+
+
+def _ps1_statement_above_param(body):
+    """v3.0-207: True when a .ps1 has a param( block and a statement before it. Only an
+    attribute -- a bracketed name with an argument list, such as [CmdletBinding()] -- and
+    comments may legally precede it; a bare type literal such as [int] is an expression
+    statement and counts (review round 1)."""
+    lines = _code_lines(body, ps1=True)
+    for i, t in enumerate(lines):
+        if re.match(r"param\s*\(", t, re.IGNORECASE):
+            return any(not _PS1_ATTRIBUTE_RE.match(p) for p in lines[:i])
+    return False
+
+
 def check_hooks_wired(ctx):
     path = ctx["root"] / ".claude" / "settings.local.json"
     if not path.is_file():
@@ -468,24 +524,45 @@ def check_hooks_wired(ctx):
                        "core/security/settings.local.json.example." % "; ".join(problems))
 
     # v3.0.47 (v3.0-134, cross-vendor round-2 catch): a scheduled wrapper that does not set
-    # the unattended marker runs with ATTENDED egress permissions (allow + log). Every
-    # .cmd/.ps1/.sh wrapper under .claude/ must carry RHEOSCOPE_UNATTENDED.
+    # the unattended marker runs with ATTENDED egress permissions (allow + log).
+    # v3.0.61 (v3.0-207, fleet inbox #41): only a script that LAUNCHES an agent is a wrapper
+    # (a helper such as a post-check launches none and inherits the marker from the wrapper
+    # that runs it), and the FIX names where the marker goes per script type: the old "first
+    # line" advice, followed on a .ps1 with a param() block, unbound its parameters and made
+    # a nightly alarm fire on every healthy run. A .ps1 with any statement above its param()
+    # block WARNs on its own, marker or not.
     unmarked = []
+    misplaced_param = []
     for w in sorted((ctx["root"] / ".claude").glob("*")):
         if w.suffix.lower() in (".cmd", ".bat", ".ps1", ".sh") and w.is_file():
             try:
-                if "RHEOSCOPE_UNATTENDED" not in w.read_text(encoding="utf-8", errors="replace"):
-                    unmarked.append(w.name)
+                body = w.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 unmarked.append(w.name + " (unreadable)")
+                continue
+            if w.suffix.lower() == ".ps1" and _ps1_statement_above_param(body):
+                misplaced_param.append(w.name)
+            if _launches_agent(body, ps1=w.suffix.lower() == ".ps1") \
+                    and "RHEOSCOPE_UNATTENDED" not in body:
+                unmarked.append(w.name)
+    if misplaced_param:
+        return Result("WARN", "hooks-wired",
+                       "PowerShell script(s) under .claude/ have a statement above their param() "
+                       "block: %s -- PowerShell binds parameters only when param() is the first "
+                       "statement, so every parameter silently arrives empty (an exit-code check "
+                       "reads a healthy run as failed). FIX: move the statement(s) below the "
+                       "param() block; a `$env:RHEOSCOPE_UNATTENDED = '1'` line goes immediately "
+                       "after it." % ", ".join(misplaced_param))
     if unmarked:
         return Result("WARN", "hooks-wired",
-                       "hooks wired, but scheduled wrapper(s) under .claude/ do not set the "
-                       "unattended marker: %s -- a run they launch would allow-and-log egress as "
-                       "if you were present instead of asking/failing closed. FIX: add "
-                       "`set RHEOSCOPE_UNATTENDED=1` (cmd) / `$env:RHEOSCOPE_UNATTENDED=1` (ps1) / "
-                       "`export RHEOSCOPE_UNATTENDED=1` (sh) as the wrapper's first line."
-                       % ", ".join(unmarked))
+                       "hooks wired, but scheduled wrapper(s) under .claude/ that launch an agent "
+                       "do not set the unattended marker: %s -- a run they launch would "
+                       "allow-and-log egress as if you were present instead of asking/failing "
+                       "closed. FIX: set it before the line that launches the agent: "
+                       "`set RHEOSCOPE_UNATTENDED=1` (cmd) / `export RHEOSCOPE_UNATTENDED=1` (sh) / "
+                       "`$env:RHEOSCOPE_UNATTENDED = '1'` (ps1: immediately AFTER the script's "
+                       "param() block, or as its first line when it has none -- never above "
+                       "param())." % ", ".join(unmarked))
 
     return Result("PASS", "hooks-wired",
                    "settings.local.json present, valid JSON, both hooks wired with correct "
@@ -1008,7 +1085,15 @@ def check_trust_surfaces(ctx):
                                   "item in history, dated after it" % len(pst.get("acked") or [])))
             obs = pst.get("observation") or {}
             problems = []
-            if obs.get("missed"):
+            if obs.get("missed") and not obs.get("last_attended_ok") \
+                    and not obs.get("overdue_items") and not obs.get("failed_cycles") \
+                    and not obs.get("alarms_outstanding"):
+                # v3.0-201: a new project's first state, not a lapse -- its birth commit is a
+                # trust item nobody has been shown yet; one attended /sweep clears it
+                problems.append("no attended sweep has run on this project yet, so %s item(s) "
+                                "are waiting to be shown to you (a new project starts with one: "
+                                "its first commit)" % len(pend))
+            elif obs.get("missed"):
                 problems.append("observation window MISSED (window %s day(s); last attended "
                                 "sweep that closed ok: %s; %s pending)" % (
                                     obs.get("window_days"), obs.get("last_attended_ok") or "never",
@@ -1219,6 +1304,119 @@ def _versions_match(probe_output, verified):
         return False
     return a in b or b in a
 
+# v3.0.61 (v3.0-222): a CLI update used to WARN "version drift" in every instance until each
+# environment-manifest row was hand-edited -- even when the same doctor run's live checks had
+# just exercised the new binary. Where those checks cover a tool and all of them passed in
+# THIS run, the newer version is reported as verified by this run (PASS, both versions named)
+# with a one-command restamp; a tool no live check covers still WARNs.
+_LIVE_COVER = {"codex": ("codex-auth", "bridge-cli", "verifier-models"),
+               "node": ("bridge-cli",),
+               "python": ("python-sensors",)}
+
+
+def _version_tuple(text):
+    m = re.search(r"(\d+(?:\.\d+)+)", text or "")
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def _checked_binary(tool):
+    """The binary the covering live checks actually ran: the one PATH resolves for codex and
+    node (codex-auth, bridge-cli), this interpreter for python (the sensor self-tests)."""
+    t = tool.lower()
+    if t == "python":
+        return sys.executable
+    return shutil.which(t)
+
+
+def _same_file(a, b):
+    try:
+        return bool(a and b) and os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _live_cover_passed(tool, prior, probe_line, probe_argv=None, verified=None):
+    """The live checks covering TOOL, when ALL of these hold; else None (review round 1,
+    v3.0.61): every covering check ran in this run and passed (a family such as
+    python-sensors only when all its members passed); the probe reports a version NEWER
+    than the recorded one (an older or unparseable one is never covered); and the probe
+    runs the very binary those checks ran (the same file, not merely the same version)."""
+    names = _LIVE_COVER.get(tool.lower())
+    if not names:
+        return None
+    for n in names:
+        rs = [r for r in prior if r.name == n or r.name.startswith(n + ":")]
+        if not rs or any(r.status != "PASS" for r in rs):
+            return None
+    new, old = _version_tuple(probe_line), _version_tuple(verified)
+    if not new or not old or new <= old:
+        return None
+    if probe_argv:
+        probed = probe_argv[0] if os.path.isabs(probe_argv[0]) else shutil.which(probe_argv[0])
+        if not _same_file(probed, _checked_binary(tool)):
+            return None
+    return names
+
+
+def restamp_version(root, tool):
+    """`doctor.py --restamp TOOL`: re-run TOOL's probe and record its output and today's date
+    as the row's version_verified/date in deploy/environment-manifest.yaml, editing only
+    those two lines of that row (comments and every other row untouched). The operator runs
+    it; the check itself never edits the file."""
+    path = Path(root) / "deploy" / "environment-manifest.yaml"
+    if not path.is_file():
+        print("restamp: no deploy/environment-manifest.yaml")
+        return 2
+    raw = path.read_bytes()
+    bom = raw.startswith(b"\xef\xbb\xbf")   # review round 1: kept, as are line endings
+    lines = raw.decode("utf-8-sig").splitlines(True)
+    start = next((i for i, l in enumerate(lines)
+                  if re.match(r"\s*-\s*tool:\s*[\"']?%s[\"']?\s*$" % re.escape(tool), l)), None)
+    if start is None:
+        print("restamp: no row for tool %r" % tool)
+        return 2
+    end = next((i for i in range(start + 1, len(lines))
+                if re.match(r"\s*-\s*tool:", lines[i]) or re.match(r"\S", lines[i])), len(lines))
+    if yaml is None:
+        print("restamp: PyYAML is not installed (pip install pyyaml)")
+        return 2
+    try:
+        rows = (yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}).get("tools") or []
+    except yaml.YAMLError as e:
+        print("restamp: deploy/environment-manifest.yaml does not parse: %s" % e)
+        return 2
+    probe = next((r.get("probe") for r in rows
+                  if isinstance(r, dict) and str(r.get("tool")) == tool), None)
+    if not probe:
+        print("restamp: the %s row has no probe" % tool)
+        return 2
+    rc, out = _run(shlex.split(probe), timeout=_VERSION_PROBE_TIMEOUT, cwd=str(root))
+    if rc != 0:
+        print("restamp: probe `%s` did not run cleanly (%s); nothing written" % (probe, _tail(out)))
+        return 2
+    first = next(iter((out or "").strip().splitlines()), "")
+    today = _dt.date.today().isoformat()
+    done = set()
+    # review round 2, folded after the final round: only the ROW's own keys -- those at the
+    # column of its `tool:` key -- never a nested key of the same name deeper in the row
+    key_col = len(re.match(r"(\s*-\s*)", lines[start]).group(1))
+    for i in range(start, end):
+        m = re.match(r"(\s*)(version_verified|date):", lines[i])
+        if m and len(m.group(1)) != key_col:
+            m = None
+        if m:
+            val = first if m.group(2) == "version_verified" else today
+            eol = lines[i][len(lines[i].rstrip("\r\n")):] or "\n"
+            lines[i] = "%s%s: %s%s" % (m.group(1), m.group(2), json.dumps(val), eol)
+            done.add(m.group(2))
+    if done != {"version_verified", "date"}:
+        print("restamp: the %s row lacks a version_verified or date line; add both first" % tool)
+        return 2
+    path.write_bytes((b"\xef\xbb\xbf" if bom else b"") + "".join(lines).encode("utf-8"))
+    print("restamp: %s version_verified = %r, date = %s" % (tool, first, today))
+    return 0
+
+
 def check_version_drift(ctx):
     manifest_path = ctx["root"] / "deploy" / "environment-manifest.yaml"
     if not manifest_path.is_file():
@@ -1292,6 +1490,16 @@ def check_version_drift(ctx):
             results.append(Result("PASS", name,
                                    "%s matches verified %r (verified %s)"
                                    % (first_line, verified, date)))
+        elif _live_cover_passed(tool, ctx.get("prior_results") or [], first_line, argv,
+                                str(verified)):
+            cover = _live_cover_passed(tool, ctx.get("prior_results") or [], first_line, argv,
+                                       str(verified))
+            results.append(Result("PASS", name,
+                                   "probe now reports %r, manifest records %r (verified %s); "
+                                   "the newer version was verified by this run's live checks "
+                                   "(%s, all PASS). To record it: python "
+                                   ".claude/skills/doctor/doctor.py --restamp %s"
+                                   % (first_line, verified, date, ", ".join(cover), tool)))
         else:
             results.append(Result("WARN", name,
                                    "version drift: probe now reports %r, manifest "
@@ -1562,12 +1770,14 @@ def run_all(root, fast_selftests=False):
     add(_safe(check_skill_drift, "skill-drift", ctx))
     add(_safe(check_derivation_gate, "derivation-gate", ctx))
     add(_safe(check_docs_stamps, "docs-stamps", ctx))
-    add(_safe(check_version_drift, "version-drift", ctx))
     add(_safe(check_sensor_reachability, "sensor-reachability", ctx))
     add(_safe(check_skill_adapters, "skill-adapters", ctx))
     add(_safe(check_corpus_reachability, "corpus-reachability", ctx))
     add(_safe(check_sweep_schedule_log, "sweep-schedule-log", ctx))
     add(_safe(check_verifier_models, "verifier-models", ctx))
+    # v3.0-222: last, so it can read this run's live checks
+    ctx["prior_results"] = list(results)
+    add(_safe(check_version_drift, "version-drift", ctx))
     return results
 
 def _exit_code(results):
@@ -1726,6 +1936,63 @@ def self_test():
             "@echo off\r\nset RHEOSCOPE_UNATTENDED=1\r\nclaude -p /sweep\r\n", encoding="utf-8")
         r = note(check_hooks_wired(ctx))
         check("hooks-wired: the same wrapper WITH the marker -> PASS", r.status == "PASS")
+        # v3.0-207 (fleet inbox #41): a launch-free helper beside it needs no marker; a .ps1
+        # with a statement above param() WARNs on its own; the FIX names the ps1 placement
+        (claude_dir / "sweep-postcheck.ps1").write_text(
+            "param([int]$ExitCode)\r\n# reads .claude\\sweep-schedule.log, raises a toast\r\n"
+            "if ($ExitCode -ne 0) { Write-Host 'nightly sweep failed' }\r\n", encoding="utf-8")
+        r = note(check_hooks_wired(ctx))
+        check("hooks-wired (v3.0-207): a helper that launches no agent and has no marker -> PASS",
+              r.status == "PASS")
+        (claude_dir / "sweep-postcheck.ps1").write_text(
+            "$env:RHEOSCOPE_UNATTENDED = '1'\r\nparam([int]$ExitCode)\r\n"
+            "if ($ExitCode -ne 0) { Write-Host 'failed' }\r\n", encoding="utf-8")
+        r = note(check_hooks_wired(ctx))
+        check("hooks-wired (v3.0-207): a .ps1 with the marker ABOVE param() -> WARN naming it "
+              "and the parameter-binding cause",
+              r.status == "WARN" and "sweep-postcheck.ps1" in r.detail and "param()" in r.detail
+              and "FIX:" in r.detail)
+        (claude_dir / "sweep-postcheck.ps1").write_text(
+            "[CmdletBinding()]\r\nparam([int]$ExitCode)\r\n$env:RHEOSCOPE_UNATTENDED = '1'\r\n"
+            "if ($ExitCode -ne 0) { Write-Host 'failed' }\r\n", encoding="utf-8")
+        r = note(check_hooks_wired(ctx))
+        check("hooks-wired (v3.0-207): an attribute line above param() is legal -> PASS",
+              r.status == "PASS")
+        (claude_dir / "sweep-postcheck.ps1").unlink()
+        (claude_dir / "nightly.ps1").write_text(
+            "param([string]$Day)\r\n& \"C:\\Tools\\claude.exe\" -p /sweep\r\n", encoding="utf-8")
+        r = note(check_hooks_wired(ctx))
+        check("hooks-wired (v3.0-207): a .ps1 that launches claude.exe by path without the marker "
+              "-> WARN whose FIX says after param(), never first line",
+              r.status == "WARN" and "nightly.ps1" in r.detail and "AFTER the script's param()"
+              in r.detail and "first line\"" not in r.detail)
+        (claude_dir / "nightly.ps1").unlink()
+        check("hooks-wired (v3.0-207): `.claude` paths and claude-named folders are not launches",
+              not _launches_agent("cd %~dp0..\\.claude\r\ntype .claude\\sweep.log\r\n")
+              and not _launches_agent("copy C:\\x\\claude\\notes.txt y\r\n")
+              and _launches_agent("npx @anthropic-ai/claude-code -p /sweep\n")
+              and _launches_agent("Start-Process codex -ArgumentList 'exec'\n")
+              and not _launches_agent("REM claude -p /sweep\r\n")
+              and not _launches_agent("$reasons += 'Claude was signed out on this machine'\r\n"))
+        check("hooks-wired (v3.0-207, review round 1): an UPPERCASE launch counts; a quoted path "
+              "ending in the CLI counts; quoted prose does not",
+              _launches_agent("CLAUDE -p /sweep\r\n")
+              and _launches_agent("& 'C:\\Tools\\Claude.exe' -p /sweep\r\n", ps1=True)
+              and not _launches_agent("echo \"run claude later\"\n"))
+        check("hooks-wired (v3.0-207, review round 2): a quoted '<#' in a .ps1 never hides the "
+              "launch line after it, and a quoted command at the START of a string counts",
+              _launches_agent("Write-Host '<#'\nclaude -p /sweep\nWrite-Host '#>'\n", ps1=True)
+              and _launches_agent("sh -c 'claude -p /sweep'\n")
+              and not _launches_agent("$reasons += 'Claude was signed out'\n", ps1=True))
+        check("hooks-wired (v3.0-207, review round 1): `<#` in a SHELL script is text -- it never "
+              "hides the launch line that follows",
+              _launches_agent("echo '<#'\nclaude -p /sweep\necho '#>'\n")
+              and _launches_agent("<#\nclaude -p /sweep\n#>\n", ps1=True))
+        check("hooks-wired (v3.0-207, review round 1): a bare type literal above param() is a "
+              "statement; an attribute with arguments is not",
+              _ps1_statement_above_param("[int]\nparam([int]$X)\n")
+              and not _ps1_statement_above_param("[CmdletBinding()]\n[OutputType([int])]\n"
+                                                 "param([int]$X)\n"))
         (claude_dir / "nightly-sweep.cmd").unlink()
 
         # v3.0-180: the scheduled sweep's log
@@ -1940,6 +2207,55 @@ def self_test():
             check("version-drift: warn on drifted version, names both + date, carries FIX",
                   r.status == "WARN" and "Python 0.0.1" in r.detail
                   and "2026-01-01" in r.detail and "FIX:" in r.detail)
+            if live_python_available:
+                # v3.0-222: the same drift, with this run's live python checks all PASS
+                ctx["prior_results"] = [Result("PASS", "python-sensors:a.py", "ok"),
+                                        Result("PASS", "python-sensors:b.py", "ok")]
+                check("version-drift (v3.0-222, review round 1): an OLDER probe version is never "
+                      "covered, and a probe on a different binary is never covered",
+                      _live_cover_passed("python", ctx["prior_results"], "Python 3.1.0",
+                                         [sys.executable], "Python 3.9.0") is None
+                      and _live_cover_passed("python", ctx["prior_results"], "Python 9.9.0",
+                                             ["totally-nonexistent-binary-xyz"],
+                                             "Python 3.1.0") is None
+                      and _live_cover_passed("python", ctx["prior_results"], "Python 9.9.0",
+                                             [sys.executable], "Python 3.1.0") is not None)
+                results = note(check_version_drift(ctx))
+                r = next(x for x in results if x.name == "version-drift:python")
+                check("version-drift (v3.0-222): drift the same run's live checks verified -> "
+                      "PASS naming both versions and the one-command restamp",
+                      r.status == "PASS" and "Python 0.0.1" in r.detail
+                      and live_version in r.detail and "--restamp python" in r.detail)
+                ctx["prior_results"] = [Result("PASS", "python-sensors:a.py", "ok"),
+                                        Result("FAIL", "python-sensors:b.py", "boom FIX: x")]
+                results = note(check_version_drift(ctx))
+                r = next(x for x in results if x.name == "version-drift:python")
+                check("version-drift (v3.0-222): one covering check failed -> still WARN",
+                      r.status == "WARN")
+                ctx["prior_results"] = []
+                (deploy_dir / "environment-manifest.yaml").write_bytes(
+                    b"\xef\xbb\xbf" + ("# keep this comment\r\ntools:\r\n  - tool: node\r\n"
+                    "    probe: \"node --version\"\r\n"
+                    "    version_verified: \"v1\"\r\n    date: \"2026-01-01\"\r\n"
+                    "  - tool: python\r\n    probe: %s\r\n    # keep me too\r\n"
+                    "    meta:\r\n      date: \"2025-05-05\"\r\n"
+                    "    version_verified: \"Python 0.0.1\"\r\n    date: \"2026-01-01\"\r\n"
+                    % json.dumps(probe_cmd)).encode("utf-8"))
+                rc_rs = restamp_version(root, "python")
+                raw_rs = (deploy_dir / "environment-manifest.yaml").read_bytes()
+                text_rs = raw_rs.decode("utf-8-sig")
+                check("restamp (v3.0-222, review round 2): a nested key of the same name deeper in "
+                      "the row is left alone", 'date: "2025-05-05"' in text_rs)
+                check("restamp (v3.0-222, review round 1): the file keeps its BOM and every CRLF "
+                      "line ending",
+                      raw_rs.startswith(b"\xef\xbb\xbf")
+                      and raw_rs.count(b"\r\n") == raw_rs.count(b"\n"))
+                check("restamp (v3.0-222): rewrites only that row's version_verified and date, "
+                      "comments and other rows untouched",
+                      rc_rs == 0 and json.dumps(live_version) in text_rs
+                      and "Python 0.0.1" not in text_rs and "# keep this comment" in text_rs
+                      and "# keep me too" in text_rs and 'version_verified: "v1"' in text_rs
+                      and text_rs.count('date: "2026-01-01"') == 1)
 
             (deploy_dir / "environment-manifest.yaml").write_text(
                 "tools:\n  - tool: nonexistent-tool-xyz\n"
@@ -2409,6 +2725,20 @@ def self_test():
             check("trust-surfaces(g): a forged ack -> FAIL 'acknowledgement ledger inconsistent'",
                   by["trust-surfaces:ack"].status == "FAIL"
                   and "inconsistent" in by["trust-surfaces:ack"].detail)
+            pend_saved = (root / "deploy" / "pend.json").read_text(encoding="utf-8")
+            (root / "deploy" / "pend.json").write_text(json.dumps({
+                "pending": [{"id": "trust:abc", "kind": "trust-surface"}], "acked": [], "findings": [],
+                "observation": {"window_days": 7, "missed": True, "failed_cycles": [],
+                                "alarms_outstanding": [], "overdue_items": [],
+                                "last_attended_ok": None}}), encoding="utf-8")
+            by_new = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(h) (v3.0-201): a brand-new project (never swept, nothing overdue, "
+                  "no failed cycle) -> WARN in plain words that the first sweep clears, not 'MISSED'",
+                  by_new["trust-surfaces:alarm"].status == "WARN"
+                  and "no attended sweep has run on this project yet"
+                  in by_new["trust-surfaces:alarm"].detail
+                  and "MISSED" not in by_new["trust-surfaces:alarm"].detail)
+            (root / "deploy" / "pend.json").write_text(pend_saved, encoding="utf-8")
             check("trust-surfaces(h): missed window + failed cycle + outstanding alarm -> WARN naming all three",
                   by["trust-surfaces:alarm"].status == "WARN"
                   and "MISSED" in by["trust-surfaces:alarm"].detail
@@ -2476,6 +2806,9 @@ def main(argv=None):
                          help="Sensor self-tests run as a date-keyed rotation instead of "
                               "the full battery (for the every-session /sweep call; init "
                               "and manual checkups should stay full).")
+    parser.add_argument("--restamp", metavar="TOOL", default=None,
+                         help="Re-run TOOL's probe and record its output and today's date in "
+                              "deploy/environment-manifest.yaml (v3.0-222), then exit.")
     parser.add_argument("--verbose", action="store_true",
                          help="Print every check line, including all-PASS family members "
                               "(default collapses homogeneous PASS runs to one line).")
@@ -2485,6 +2818,8 @@ def main(argv=None):
         return self_test()
 
     root = Path(args.root).resolve() if args.root else Path.cwd().resolve()
+    if args.restamp:
+        return restamp_version(root, args.restamp)
     print("doctor: checking %s" % root)
     results = run_all(root, fast_selftests=args.fast_selftests)
 

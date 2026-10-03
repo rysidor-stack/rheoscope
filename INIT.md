@@ -13,7 +13,7 @@ Before opening Claude, confirm:
 - [ ] `init-validate.ps1` / `init-validate.sh` reports **PASS**.
 - [ ] The `capabilities/` directory has been removed from the target (init deletes it on success).
 - [ ] All enabled capabilities' runtime files are at their canonical locations (under `.claude/skills/`, `docs/`, etc.).
-- [ ] Init's end-of-run `/doctor` check was green, or you've addressed the FIX instructions it printed. Re-run any time with `python .claude/skills/doctor/doctor.py`. (On a brand-new project init's own doctor call runs before the first commit exists, so its one `trust-surfaces:pending … production branch main does not resolve` FAIL is expected; re-run after the interim commit and it clears.)
+- [ ] Init's end-of-run `/doctor` check was green, or you've addressed the FIX instructions it printed. Re-run any time with `python .claude/skills/doctor/doctor.py`. (On a brand-new project init's own doctor call runs before the first commit exists, so its one `trust-surfaces:pending … production branch main does not resolve` FAIL is expected; re-run after the interim commit and it clears. One WARN stays until your first attended `/sweep`: "no attended sweep has run on this project yet" — run `/sweep` once yourself and read it, and it clears.)
 - [ ] You have at least 60–90 minutes uninterrupted. The interview is paced and reflective; rushing produces shallow answers that become anchors.
 
 If any of these is not true, do not open the kickoff session. Resolve first.

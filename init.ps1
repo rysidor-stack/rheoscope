@@ -924,6 +924,17 @@ if (Test-Path $doctorPy -PathType Leaf) {
     $pyCmd = Get-Command python3 -ErrorAction SilentlyContinue
     if (-not $pyCmd) { $pyCmd = Get-Command python -ErrorAction SilentlyContinue }
     if ($pyCmd) {
+        # v3.0-201: generate the skill-discovery adapters for non-Claude agents here, so a fresh
+        # project's doctor does not WARN "skill-adapters: 14 missing"
+        $genAdapters = Join-Path $scriptRoot 'deploy/gen-skill-adapters.py'
+        if (Test-Path $genAdapters -PathType Leaf) {
+            & $pyCmd.Source $genAdapters --root $scriptRoot *> $null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Output "skill adapters generated (.agents/skills/) for non-Claude agents"
+            } else {
+                Write-Output "WARNING: could not generate .agents/skills/ -- run: python deploy/gen-skill-adapters.py"
+            }
+        }
         Write-Output "Running /doctor ($($pyCmd.Name) .claude/skills/doctor/doctor.py)..."
         # Pass the project root explicitly: init may be invoked from outside the project
         # root, and doctor.py defaults to cwd -- --root pins it to the right directory.
@@ -945,7 +956,10 @@ Write-Output "answers cite the installed docs."
 Write-Output ""
 
 Write-Output "Recommended next steps:"
-Write-Output "  git init"
+# v3.0-201: init already ran `git init` above when it could; name it only when it could not
+if (-not (Test-Path (Join-Path $scriptRoot '.git'))) {
+    Write-Output "  git init"
+}
 Write-Output "  git config core.longpaths true"
 Write-Output "  git add -A"
 Write-Output "  git commit -m `"instantiated rheoscope-harness v$($py.template_version)`""

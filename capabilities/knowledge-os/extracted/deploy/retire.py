@@ -1226,7 +1226,96 @@ def propose(root, view_rel, titles=(), preamble=False, mode="cold", mapping=None
         raise Refuse("refs/retire/%d could not be created (exists?): %s" % (seq, err.strip()))
     return {"seq": seq, "commit": commit, "digest": digest, "record": rec_path,
             "proposal": prop_path, "spans": results, "view": view_rel, "tag": tag,
-            "branch": branch, "compaction": compaction, "batch": batch}
+            "branch": branch, "compaction": compaction, "batch": batch,
+            "post_bytes": len(post_bytes), "cap": _post_cap(post_text)}
+
+
+def _post_cap(post_text):
+    """v3.0-224 (3): the view's cap for its declared type (engine-caps.yaml), so the preparer
+    reports the MEASURED post-retirement size against it -- the read-only manifest's estimate
+    runs low for multi-span members. None when the caps cannot be read."""
+    try:
+        caps = _caps.load_caps(os.path.join(_HERE, "engine-caps.yaml"))
+        return _caps.cap_for(caps, _caps.view_type_of(post_text))
+    except Exception:                                       # noqa: BLE001
+        return None
+
+
+def _size_note(res):
+    """One line: the member's measured size after retirement, and a WARNING when it stays
+    over its cap (retiring it then does not discharge the cap episode)."""
+    cap = res.get("cap")
+    n = res.get("post_bytes")
+    if n is None:
+        return ""
+    if cap is None:
+        return "after retirement: %d LF bytes (cap unknown)" % n
+    if n > cap:
+        return ("after retirement: %d LF bytes -- WARNING: still OVER its %d-byte cap by %d; "
+                "this retirement does not discharge the cap episode -- re-propose with more "
+                "spans" % (n, cap, n - cap))
+    return "after retirement: %d LF bytes (cap %d)" % (n, cap)
+
+
+def discard(repo, target, branch=None):
+    """v3.0-224 (2): drop a PREPARED retirement's refs -- refs only, journal-free, nothing
+    published is touched. TARGET is a seq (`385`) or a batch (`batch/385-389` or `385-389`).
+    A batch member is refused alone (a batch is complete-or-absent: discard the batch).
+    Returns the refs deleted."""
+    t = str(target).strip()
+    t = t[len("batch/"):] if t.startswith("batch/") else t
+    deleted = []
+    if re.fullmatch(r"\d+-\d+", t):
+        bref = "refs/retire/batch/%s" % t
+        bc = _rev(repo, bref)
+        if not bc:
+            raise Refuse("no prepared batch %s (refs/retire/batch/%s does not exist)" % (t, t))
+        ok, reason, manifest, _chain = verify_batch(repo, t)
+        if not ok or not manifest:
+            # review round 1 (v3.0.61): only a CONSISTENT preparation is discarded by hand;
+            # an inconsistent one goes to --recover, which adjudicates it deterministically
+            raise Refuse("batch %s is not a consistent preparation (%s) -- run `--recover`, "
+                         "which discards an inconsistent preparation deterministically" % (t, reason))
+        refs = ["refs/retire/%d" % m.get("seq") for m in (manifest or {}).get("members") or []
+                if m.get("seq") is not None]
+        for ref in refs + [bref]:
+            c = _rev(repo, ref)
+            if c:
+                _git_text(repo, "update-ref", "-d", ref, c)
+                deleted.append(ref)
+        return deleted
+    if not re.fullmatch(r"\d+", t):
+        raise Refuse("--discard takes a seq (385) or a batch (batch/385-389), not %r" % target)
+    ref = "refs/retire/%s" % t
+    c = _rev(repo, ref)
+    if not c:
+        raise Refuse("no prepared retirement %s (%s does not exist)" % (t, ref))
+    # review round 1 (v3.0.61): membership is read from EVERY batch binder too, not only from
+    # the member's own record -- a member whose record does not verify is still refused alone
+    for bid, _bref in _prepared_batches(repo):
+        _bok, _br, bman, _bc = verify_batch(repo, bid)
+        if any(str(m.get("seq")) == t for m in (bman or {}).get("members") or []):
+            raise Refuse("retirement %s is a member of batch %s -- a batch is complete-or-absent: "
+                         "discard the batch (`--discard batch/%s`)" % (t, bid, bid))
+        if re.fullmatch(r"(\d+)-(\d+)", bid) and \
+                int(bid.split("-")[0]) <= int(t) <= int(bid.split("-")[1]):
+            raise Refuse("retirement %s lies in prepared batch %s's seq window -- discard the "
+                         "batch (`--discard batch/%s`), or run `--recover`" % (t, bid, bid))
+    ok, reason, rec = verify_prepared(repo, c)
+    if not ok or not rec:
+        raise Refuse("retirement %s is not a consistent preparation (%s) -- run `--recover`, "
+                     "which discards an inconsistent preparation deterministically" % (t, reason))
+    if rec and rec.get("batch"):
+        raise Refuse("retirement %s is a member of batch %s -- a batch is complete-or-absent: "
+                     "discard the batch (`--discard batch/%s`)"
+                     % (t, rec["batch"].get("id"), rec["batch"].get("id")))
+    _git_text(repo, "update-ref", "-d", ref, c)
+    return [ref]
+
+
+def _seq_label(seq):
+    """refs/retire/<seq> for a single retirement, refs/retire/batch/<id> for a batch."""
+    return ("refs/retire/%d" % seq) if isinstance(seq, int) else ("refs/retire/batch/%s" % seq)
 
 
 def _build_commit(repo, head, blobs, message):
@@ -1799,11 +1888,12 @@ def recover(repo, branch=None):
                        % (str((manifest or {}).get("parent_head"))[:12], branch))
         else:
             reason2 = "INCONSISTENT: " + reason
+        bcommit = _rev(repo, bref)   # v3.0-224 (1): read before the ref is deleted below
         for ref in member_refs + [bref]:
             c2 = _rev(repo, ref)
             if c2:
                 _git_text(repo, "update-ref", "-d", ref, c2)
-        out.append({"seq": bid, "commit": _rev(repo, bref), "action":
+        out.append({"seq": bid, "commit": bcommit, "action":
                     "pruned" if (chain and published and len(published) == len(chain))
                     else "discarded", "reason": reason2})
     for seq, ref in _prepared(repo):
@@ -2907,6 +2997,70 @@ def self_test():
                  "deterministically (STALE; members + binder gone)",
                  any(o["action"] == "discarded" and "STALE" in o["reason"] for o in outr2)
                  and _prepared(r6) == [] and _prepared_batches(r6) == [], outr2)
+            # v3.0-224 (1): the discarded batch's report row carries the commit it had (read
+            # before its ref was deleted) -- the report line used to crash on None[:12]
+            brow = [o for o in outr2 if not isinstance(o["seq"], int)]
+            case("v3.0-224: recover's discarded-batch row keeps its binder commit, and the "
+                 "printer labels a batch and a single retirement correctly",
+                 brow and all(re.fullmatch(r"[0-9a-f]{40}", o["commit"] or "") for o in brow)
+                 and _seq_label(brow[0]["seq"]).startswith("refs/retire/batch/")
+                 and _seq_label(7) == "refs/retire/7", outr2)
+            # v3.0-224 (2)+(3): a CURRENT prepared batch can be discarded (refs only); a member
+            # alone is refused; every member reports its measured post-retirement size
+            bres5 = propose_batch(r6, {"members": [
+                {"view": "wiki/topic/ba.md", "spans": ["BA"]},
+                {"view": "wiki/topic/bb.md", "spans": ["BB"]}]})
+            case("v3.0-224 (3): each prepared member carries its MEASURED post-retirement size "
+                 "and the size note names it",
+                 all(isinstance(m5.get("post_bytes"), int) and m5["post_bytes"] > 0
+                     and "after retirement: %d LF bytes" % m5["post_bytes"] in _size_note(m5)
+                     for m5 in bres5["members"]), bres5["members"])
+            case("v3.0-224 (3): a member still over its cap gets a WARNING line",
+                 "WARNING: still OVER" in _size_note({"post_bytes": 900, "cap": 500})
+                 and "WARNING" not in _size_note({"post_bytes": 400, "cap": 500}))
+            case("v3.0-224 (2): discarding one MEMBER of a batch is refused (complete-or-absent)",
+                 _refuses(lambda: discard(r6, str(bres5["members"][0]["seq"])), "complete-or-absent"))
+            gone5 = discard(r6, "batch/" + bres5["batch"])
+            case("v3.0-224 (2): `--discard batch/<id>` drops the binder and every member ref, "
+                 "and nothing prepared remains",
+                 "refs/retire/batch/%s" % bres5["batch"] in gone5 and len(gone5) == 3
+                 and _prepared(r6) == [] and _prepared_batches(r6) == [], gone5)
+            case("v3.0-224 (2): discarding what is not prepared, or a malformed target, is refused",
+                 _refuses(lambda: discard(r6, "batch/" + bres5["batch"]), "no prepared batch")
+                 and _refuses(lambda: discard(r6, "not-a-seq"), "takes a seq"))
+            # review round 1: an INCONSISTENT batch -- a member refused alone, the batch refused
+            # too, and nothing (refs, tags, journal, branch head) changes
+            bres7 = propose_batch(r6, {"members": [
+                {"view": "wiki/topic/ba.md", "spans": ["BA"]},
+                {"view": "wiki/topic/bb.md", "spans": ["BB"]}]})
+            m7 = bres7["members"][0]
+            junk = _build_commit(r6, _rev(r6, "refs/heads/main"),
+                                 {"junk.txt": (b"x\n", _hash_object(r6, b"x\n"))}, "not a retirement")
+            git6("update-ref", "refs/retire/%d" % m7["seq"], junk)      # member record gone bad
+            snap = lambda: (_git_text(r6, "for-each-ref", "--format=%(refname) %(objectname)")[1],
+                            _rev(r6, "refs/heads/main"),
+                            sorted(os.listdir(os.path.join(r6, "receipts", "journal")))
+                            if os.path.isdir(os.path.join(r6, "receipts", "journal")) else [])
+            before7 = snap()
+            r_member = _refuses(lambda: discard(r6, str(m7["seq"])), "member of batch")
+            same_after_member = snap() == before7
+            case("v3.0-224 (review round 1): a member of a batch whose own record no longer "
+                 "verifies is STILL refused alone (membership read from the binder), and the "
+                 "refusal changes no ref, tag, branch head or journal file",
+                 r_member and same_after_member)
+            git6("update-ref", "refs/retire/batch/%s" % bres7["batch"], junk)   # binder gone bad
+            before7b = snap()
+            r_batch = _refuses(lambda: discard(r6, "batch/" + bres7["batch"]), "--recover")
+            r_window = _refuses(lambda: discard(r6, str(m7["seq"])), "batch")
+            case("v3.0-224 (review round 1): an inconsistent batch is refused by --discard and "
+                 "sent to --recover; a member inside its seq window is refused too; neither "
+                 "refusal changes any ref, tag, branch head or journal file",
+                 r_batch and r_window and snap() == before7b)
+            recover(r6)
+            single5 = propose(r6, "wiki/topic/ba.md", titles=["BA"])
+            gone6 = discard(r6, str(single5["seq"]))
+            case("v3.0-224 (2): a single prepared retirement is discarded by its seq",
+                 gone6 == ["refs/retire/%d" % single5["seq"]] and _prepared(r6) == [], gone6)
             # round-1 fold: a member commit that ALSO touches another member's view is
             # refused by the PUBLISHER itself (per-view atomicity is check_publishable_
             # batch's own pin, not its caller's)
@@ -3005,6 +3159,9 @@ def main(argv=None):
     ap.add_argument("--mode", choices=["cold", "dedup"], default="cold")
     ap.add_argument("--mapping", metavar="JSON")
     ap.add_argument("--recover", action="store_true")
+    ap.add_argument("--discard", metavar="SEQ_OR_BATCH",
+                    help="drop a prepared retirement's refs (a seq, or batch/<first>-<last>); "
+                         "refs only, nothing published or journaled is touched (v3.0-224)")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--show", metavar="DIGEST")
     ap.add_argument("--resolve", metavar="CITE")
@@ -3026,6 +3183,7 @@ def main(argv=None):
                     r["seq"], r["commit"][:12], r["view"],
                     "; ".join("%r %d bytes -> %s" % (s["title"], s["bytes"], s["mode"])
                               for s in r["spans"])))
+                print("    %s" % _size_note(r))
             print("  batch manifest: %s" % res["manifest"])
             print("  BATCH digest: sha256:%s" % res["digest"])
             print("Nothing is published. ONE promote covers the whole batch. From YOUR terminal:")
@@ -3046,6 +3204,7 @@ def main(argv=None):
                 for s in res["spans"]:
                     print("  span %r lines %d-%d: %d bytes -> %s (%s)" % (
                         s["title"], s["start_line"], s["end_line"], s["bytes"], s["mode"], s["target"]))
+                print("  %s" % _size_note(res))
                 print("  proposal: %s" % res["proposal"])
                 print("  proposal digest: sha256:%s" % res["digest"])
                 print("Nothing is published. To publish (trust_surface_signing: visible), from YOUR terminal:")
@@ -3055,18 +3214,24 @@ def main(argv=None):
                 print("  py deploy/promote.py %s --branch %s" % (res["digest"][:16], res["branch"]))
                 print("(under required: inspect C, then `git tag -s retire/%d %s` and `py deploy/trust.py --publish retire/%d --branch %s`)" % (res["seq"], res["commit"][:12], res["seq"], res["branch"]))
             return 0
+        if a.discard:
+            gone = discard(root, a.discard, a.branch)
+            for ref in gone:
+                print("discarded %s (refs only; nothing published or journaled is touched)" % ref)
+            return 0
         if a.recover:
             out = recover(root, a.branch)
             for o in out:
-                print("refs/retire/%d %s: %s -- %s" % (o["seq"], o["commit"][:12], o["action"].upper(), o["reason"]))
+                print("%s %s: %s -- %s" % (_seq_label(o["seq"]), (o["commit"] or "?")[:12],
+                                           o["action"].upper(), o["reason"]))
             if not out:
                 print("nothing prepared; nothing to recover")
             return 0
         if a.list:
             rows = list_prepared(root, a.branch)
             for x in rows:
-                print("seq %d %s view %s digest %s: %s%s%s" % (
-                    x["seq"], x["commit"][:12], x["view"], (x["digest"] or "?")[7:23],
+                print("seq %s %s view %s digest %s: %s%s%s" % (
+                    x["seq"], (x["commit"] or "?")[:12], x["view"], (x["digest"] or "?")[7:23],
                     "consistent" if x["consistent"] else "INCONSISTENT (" + x["reason"] + ")",
                     " STALE" if x["stale"] else "", " publishable" if x["publishable"] else " awaiting promotion"))
             if not rows:

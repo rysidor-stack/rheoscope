@@ -793,9 +793,14 @@ def observe(repo, observer="standing-loop", branch=None, now=None):
                    for a in existing):
             row = {"ts": _iso(now), "kind": "missed-cycle", "observer": observer,
                    "window_days": obs["window_days"], "last_attended_ok": key,
-                   "detail": "no attended sweep closed ok in the last %s day(s) (window %d); %d item(s) pending"
-                             % (obs["days_since_attended"] if obs["days_since_attended"] is not None else "?",
-                                obs["window_days"], len([p for p in st["pending"] if p["kind"] != "alarm"]))}
+                   # v3.0-201 rider: the never-closed case read "in the last ? day(s)"
+                   "detail": (("no attended sweep closed ok in the last %s day(s) (window %d); "
+                               "%d item(s) pending" % (obs["days_since_attended"], obs["window_days"],
+                                                       len([p for p in st["pending"] if p["kind"] != "alarm"])))
+                              if obs["days_since_attended"] is not None else
+                              ("no attended sweep has closed ok yet (window %d); %d item(s) pending"
+                               % (obs["window_days"],
+                                  len([p for p in st["pending"] if p["kind"] != "alarm"]))))}
             _append(repo, ALARMS, row)
             new.append(row)
     for f in obs["failed_cycles"]:
@@ -872,7 +877,10 @@ def render(st):
                 "PUBLISHED (%s)" % it.get("authority") if it.get("published") else "UNPUBLISHED PROPOSAL",
                 "" if it.get("published") else ": " + str(it.get("status"))[:120])
         elif it["kind"] == "trust-surface":
-            detail = ", ".join(it.get("paths", []))[:160]
+            # v3.0-196: every path, in full -- this table is quoted verbatim in the briefing and
+            # redirected into the committed render receipt; a 160-character cut clipped names
+            # mid-word and hid the rest
+            detail = ", ".join(it.get("paths", []))
         else:
             detail = "ALARM %s" % it.get("detail")
         out.append("%-9s %-12s %-24s %-20s %s" % (it["kind"][:9], (it.get("commit") or "")[:12],
@@ -974,6 +982,16 @@ def self_test():
              and "UNPUBLISHED" in render(st), rit)
         case("the same commit is ALSO a trust-surface item (deploy/rulings/** is in the class)",
              any(it["id"] == "trust:%s" % c3 for it in st["pending"]))
+        long_paths = ["core/security/hooks/block-dangerous-bash.sh",
+                      "core/security/hooks/block-env-writes.sh",
+                      "core/security/hooks/scan-staged-secrets.sh",
+                      "core/security/hooks/trust-surfaces.txt",
+                      "deploy/rulings/retire-batch-385-389/manifest.json"]
+        st_long = dict(st, pending=[{"kind": "trust-surface", "commit": "a" * 40,
+                                     "author": "x", "date": "2026-10-02", "paths": long_paths}])
+        case("v3.0-196: the rendered table lists every path of a trust item in full -- never "
+             "clipped mid-name (it is quoted verbatim and committed as the render receipt)",
+             all(p in render(st_long) for p in long_paths))
         # heartbeats + ack by an attended sweep
         t0 = (_now() + datetime.timedelta(minutes=1)).replace(microsecond=0)  # after the commits above
         try:
@@ -1726,6 +1744,10 @@ def main(argv=None):
             print(render(st))
             return 2 if (new or st["findings"]) else 0
         st = status(repo, a.branch)
+        try:   # v3.0-201 rider: a redirected render on Windows wrote CRLF into the receipt
+            sys.stdout.reconfigure(newline="\n")
+        except (AttributeError, ValueError):
+            pass
         if a.appendix:
             print(render_appendix(st))
             return 2 if st["findings"] else 0

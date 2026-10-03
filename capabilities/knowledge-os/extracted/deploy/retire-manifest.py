@@ -427,6 +427,12 @@ def view_manifest(root, view_rel, caps, universe):
                      "after": running})
     return {
         "view": view_rel, "view_type": vt, "bytes": nbytes, "cap": cap, "over_cap": over,
+        # v3.0-224 (3): the predicted sizes below run low for multi-span members (4-9 KB on
+        # one instance's five-view batch) -- each retired span also adds a redirect entry to
+        # the view's retirements block, which the stub estimate does not count
+        "size_note": ("predicted sizes are ESTIMATES that run low when several spans of one "
+                      "view retire; retire.py's preparer reports each member's MEASURED size "
+                      "after retirement and warns when it stays over its cap"),
         "spans": spans,
         "citations_outside_any_span": orphan,
         "largest_first_plan": plan,

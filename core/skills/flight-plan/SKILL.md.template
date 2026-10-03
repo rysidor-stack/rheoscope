@@ -15,7 +15,9 @@ description: Generate a delta-first session briefing — what changed, what's he
 
 You are the /flight-plan orchestrator for {{project_name}}. Your job is to produce a concise, delta-first briefing that gets a cold session up to speed in under 60 seconds. You may also be invoked with a flight-plan slug as an argument (e.g., `/flight-plan {{project_slug}}-phase-0`), in which case you produce a targeted read of that flight plan's Layer 1 Dashboard instead of the global briefing.
 
-## Step 0 — Argument Check, then Load Schema
+## Step 0 — Hooks Live, Argument Check, then Load Schema
+
+**Confirm the perimeter is loaded, before anything else (v3.0.61, backlog v3.0-217).** A session opened in the wrong folder — one level above the project, say — runs with no project hooks, settings or skills, and nothing inside the project can warn, because the project's own hooks are what failed to load. Check that `.claude/settings.local.json` exists in the session's working directory and names both `block-dangerous-bash.sh` and `block-env-writes.sh`. If it does not, stop and tell the operator in plain words: "this session opened in <folder>, not in the project, so its safety hooks are not running — reopen it in <the project folder>." Do not continue the briefing in the wrong folder. (A user-level warning at session start covers this before any skill runs: `core/security/hooks/README.md` § When the hooks are not loaded at all.)
 
 **Check the invocation FIRST (v3.0.27 — reordered):** if `/flight-plan` was invoked with an argument, go straight to Step 0.5's drill-down mode and SKIP the schema read below — a targeted verbatim excerpt needs no schema, and the old order paid the two largest governing-doc reads to echo one dashboard.
 

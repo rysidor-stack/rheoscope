@@ -38,6 +38,16 @@ writes nothing**. It does *invoke* each deploy sensor's `--self-test` and
 fixtures / report-only scans) — doctor relies on that contract; it cannot independently
 guarantee it for a locally modified sensor.
 
+**How long it takes (v3.0.61, backlog v3.0-196).** A full run takes about 8-10 minutes on a
+typical Windows machine: it runs every deploy sensor's own self-test, and the compile
+engine's (`compile-v2.py`) alone takes 4-6 minutes; `compile-driver.py` and `pending.py`
+take one to two each. A CI wrapper or shell with a default 60-second timeout will report
+those as failures when they are not: give it at least 15 minutes. The doctor's own
+per-sensor budget is 600 s (`SENSOR_SELF_TEST_TIMEOUT`); a sensor that hits it is reported
+with its elapsed time and the limit, so a hang reads differently from a slow pass. The
+default report collapses all-PASS families to one line; `--verbose` shows each sensor's
+own line with its elapsed time.
+
 Pass `--root PATH` to check a different tree (e.g. `--root C:\path\to\project` from
 elsewhere). `--self-test` runs the sensor's own embedded fixtures and needs no live
 node/codex/jq/deploy — use it to sanity-check the sensor itself, not the project. This is
@@ -75,11 +85,11 @@ Exit code 2 means at least one FAIL occurred; 0 means everything is PASS/SKIP or
 | 4 | `codex-auth` | codex on PATH **and** authenticated (`codex login status`) |
 | 5 | `jq` | jq on PATH (runtime dependency of the security hook scripts) |
 | 6 | `python-sensors` | every `deploy/*.py` advertising `--self-test` passes it |
-| 7 | `hooks-wired` | `.claude/settings.local.json` exists, is valid JSON, references both `block-dangerous-bash.sh` and `block-env-writes.sh`, **and** wires `block-dangerous-bash.sh` under both a `Bash` and a `PowerShell` matcher and `block-env-writes.sh` under an `Edit`/`Write` matcher (matcher coverage, not just script presence — see `core/security/hooks/README.md`) |
+| 7 | `hooks-wired` | `.claude/settings.local.json` exists, is valid JSON, references both `block-dangerous-bash.sh` and `block-env-writes.sh`, **and** wires `block-dangerous-bash.sh` under both a `Bash` and a `PowerShell` matcher and `block-env-writes.sh` under an `Edit`/`Write` matcher (matcher coverage, not just script presence — see `core/security/hooks/README.md`); a script under `.claude/` that launches an agent (`claude`, `codex` or `grok` as a command) must set `RHEOSCOPE_UNATTENDED`, and a `.ps1` with any statement above its `param()` block WARNs (v3.0.61, backlog v3.0-207) |
 | 8 | `skill-drift` | superseded-skill probe — today: stale `.claude/skills/grill` alongside its successor `/preflight` |
 | 9 | `derivation-gate` | `deploy/check-derivation.py --gate`, if the sensor is present |
 | 10 | `docs-stamps` | teaching docs (`TOUR.md`, `GLOSSARY.md`, `SYSTEM-MAP.html`, `docs/engine/OPERATIONS.md`, `.claude/skills/orient/SKILL.md`, `core/methodology/manifest-driven-builds.md`, `core/methodology/manifest-format.md`, `.claude/skills/conformance/SKILL.md`, root `ARCHITECTURE.md` — the last added per backlog v3.0-75, migration having never refreshed it) carry a `verified-against: <VERSION> (<date>)` stamp that matches this instance's `project.yaml` `template_version` |
-| 11 | `version-drift` | `deploy/environment-manifest.yaml`, if present: runs each row's `probe` command and compares its output to the row's recorded `version_verified` |
+| 11 | `version-drift` | `deploy/environment-manifest.yaml`, if present: runs each row's `probe` command and compares its output to the row's recorded `version_verified`; a newer version that this same run's live checks already exercised (codex: `codex-auth` + `bridge-cli` + `verifier-models`; node: `bridge-cli`; python: the sensor self-tests) PASSes naming both versions, with `--restamp <tool>` to record it (v3.0-222) |
 | 12 | `sensor-reachability` | every `deploy/*.py` is reachable from an executable surface (skills, init scripts, `.cmd` wrappers, deploy registers; transitive over deploy→deploy dynamic loads); anything else WARNs UNACCOUNTED — the check demands a disposition, never prescribes wiring (backlog v3.0-80; the dormant register that used to excuse the template's own dev drills was retired 2026-08-08 when those drills stopped shipping) |
 | 13 | `skill-adapters` | `deploy/gen-skill-adapters.py --check` — the generated `.agents/skills/` discovery adapters (how Codex and other non-Claude agents find repository skills) are current against `.claude/skills/`; drift WARNs with the regenerate command (backlog v3.0-79). SKIP when the generator isn't wired |
 | 14 | `corpus-reachability` | every execution corpus declared in `project.yaml` — the `corpus_sources` list, or the legacy singular `corpus_source` + `corpus_config` — is present and readable at its `clone_path` (`git rev-parse <branch>`, read-only, no credentials). One result per corpus: a declared-but-unreachable corpus **FAILs** (partial observation is never silent); both binding forms declared at once FAILs as a config error; no binding declared → SKIP (v3.0.18, backlog v3.0-88) |

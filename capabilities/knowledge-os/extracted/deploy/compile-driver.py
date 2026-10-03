@@ -1254,7 +1254,7 @@ def revert_run_commit(repo, run_sha, seq, reason, out=print, stamp_only=()):
     """Auto-revert of an unverified run commit (atomicity rule, incomplete-leg
     branch). Returns (ok, detail).
 
-    STAMP_ONLY (v3.0-170a, fleet inbox #17 + pickler second occurrence): the
+    STAMP_ONLY (v3.0-170a, fleet inbox #17 + a downstream instance's second occurrence): the
     run's own verify legs stamp `verified:` strictly inside the derivation
     region of every CONFIRMED view, so HEAD's tree differs from the run
     commit on exactly those files. `git revert -n` three-way-merges against
@@ -1459,13 +1459,25 @@ def _app_bundled_exes_under(local_root, lister=None):
     lag behind a model's minimum CLI version. `lister` is injectable for the hermetic board."""
     if not local_root:
         return []
+    real = lister is None
     lister = lister or os.listdir
     base = os.path.join(local_root, "OpenAI", "Codex", "bin")
     try:
         names = sorted(lister(base))
     except Exception:                                       # noqa: BLE001
         return []
+    if real:   # v3.0-206 rider: build-hash DIRECTORIES only (not rg.exe and other files)
+        names = [n for n in names if os.path.isdir(os.path.join(base, n))]
     return [os.path.join(base, n, "codex.exe") for n in names]
+
+
+def _standalone_exe_under(local_root):
+    """v3.0-206: the official standalone install,
+    <local_root>/Programs/OpenAI/Codex/bin/codex.exe -- before v3.0.61 reachable only through
+    PATH. Lockstep with standaloneExeUnder() in the bridge."""
+    if not local_root:
+        return None
+    return os.path.join(local_root, "Programs", "OpenAI", "Codex", "bin", "codex.exe")
 
 
 def _known_folder_profile():
@@ -1604,6 +1616,9 @@ def resolve_codex_bin(env=None, homedir=None, isfile=None, which=None,
         for exe in exes:
             candidates.append(("desktop-app bundled CLI (%s)" % root_label, exe,
                                "(none)"))
+    for root_label, root, absent in local_roots:   # v3.0-206, same order as the bridge
+        candidates.append(("standalone install (%s)" % root_label,
+                           _standalone_exe_under(root), absent))
     candidates.append(("where/which codex", found_path, "(not on PATH)"))
 
     chain = []
@@ -2338,7 +2353,7 @@ def execute_revert(root, seq, reason=None, out=print):
             continue
         if then_blob.strip() == now_blob.strip():
             continue
-        # v3.0-170(a) (fleet inbox #17; pickler 2026-09-17): the run's OWN verify
+        # v3.0-170(a) (fleet inbox #17; a downstream instance 2026-09-17): the run's OWN verify
         # legs stamp `verified:` strictly inside the derivation region of every
         # CONFIRMED view -- engine metadata about the body, not later work. A
         # mixed-verdict run therefore ALWAYS failed this guard on its confirmed
@@ -5137,8 +5152,9 @@ def self_test():                                            # noqa: C901
     APPDATA_EXE = os.path.join("C:\\ad", NPM_TAIL)
     KF_EXE = os.path.join("C:\\kf\\Roaming", NPM_TAIL)
     HOME_EXE = os.path.join("C:\\home\\u", "AppData", "Roaming", NPM_TAIL)
-    NATIVE_EXE = ("C:\\home\\u\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\"
-                  "codex.EXE")
+    # a CLI reachable ONLY through PATH (v3.0-206 made the standalone install root an explicit
+    # candidate, so this stand-in lives in a folder no candidate names)
+    NATIVE_EXE = "C:\\tools\\codex\\codex.EXE"
 
     def versions_runner(table, default="codex-cli 0.144.1"):
         """--version stand-in: {path: (rc, stdout)}; anything unlisted reports
@@ -5229,7 +5245,7 @@ def self_test():                                            # noqa: C901
          "crash", b is None, chain)
     b, chain = resolver_probe({}, set(), which_result=None)
     case("resolve: nothing found -> None (never a bare name the probe would "
-         "'succeed' on)", b is None and len(chain) == 6, chain)
+         "'succeed' on)", b is None and len(chain) == 8, chain)
     case("...and every candidate is still reported, skipped ones included",
          all(len(row) == 4 for row in chain)
          and any("skipped" in row[3] for row in chain), chain)
@@ -5302,6 +5318,22 @@ def self_test():                                            # noqa: C901
         app_dirs={APP_BASE: ["abc123"]})
     case("resolve: a bundled CLI below the floor is still rejected", b is None,
          chain)
+    # v3.0-206: the standalone install is found with PATH scrubbed, from LOCALAPPDATA or the home
+    SA_EXE = os.path.join("C:\\lad", "Programs", "OpenAI", "Codex", "bin", "codex.exe")
+    b, chain = resolver_probe(
+        {"LOCALAPPDATA": "C:\\lad"}, {SA_EXE, APP_EXE},
+        versions={SA_EXE: (0, "codex-cli 0.159.3\n"), APP_EXE: (0, "codex-cli 0.158.0\n")},
+        app_dirs={APP_BASE: ["abc123"]})
+    case("resolve (v3.0-206): the standalone install under LOCALAPPDATA is a candidate with "
+         "no PATH hit, and the newer one wins", b == SA_EXE
+         and any(row[0] == "standalone install (LOCALAPPDATA)" and row[1] == SA_EXE
+                 for row in chain), chain)
+    SA_HOME = os.path.join("C:\\home\\u", "AppData", "Local", "Programs", "OpenAI", "Codex",
+                           "bin", "codex.exe")
+    b, chain = resolver_probe({}, {SA_HOME}, kf=None,
+                              versions={SA_HOME: (0, "codex-cli 0.159.3\n")})
+    case("resolve (v3.0-206): with LOCALAPPDATA scrubbed, the home-derived standalone install "
+         "is still found", b == SA_HOME, chain)
 
     repo_p = make_repo("cdrv-probe-")
     try:
@@ -5397,6 +5429,12 @@ def self_test():                                            # noqa: C901
         case("bridge server: the desktop app's bundled CLIs are candidates "
              "(lockstep with _app_bundled_exes_under)",
              "appBundledExesUnder" in jstext)
+        case("bridge server: the standalone install is a candidate from LOCALAPPDATA and the "
+             "home, in that order (v3.0-206, lockstep with _standalone_exe_under)",
+             "standaloneExeUnder(process.env.LOCALAPPDATA)" in jstext
+             and jstext.index("standaloneExeUnder(process.env.LOCALAPPDATA)")
+             < jstext.index("standaloneExeUnder(require('path').join(os.homedir()")
+             and "'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe'" in jstext)
         case("bridge server: the model is resolved (models.js), never pinned",
              "require('./models.js').resolveModel('openai'" in jstext)
         case("bridge server: keeps the bare-name last resort (degrades no "

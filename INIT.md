@@ -129,8 +129,8 @@ Then manually confirm:
 ```bash
 git add -A
 # Use the commit message init printed at the end of its run, with "— kickoff complete"
-# appended. Example for a v2.0 harness:
-git commit -m "instantiated rheoscope-harness v2.0 — kickoff complete"
+# appended. Example:
+git commit -m "instantiated rheoscope-harness v3.0 — kickoff complete"
 ```
 
 ## Next steps
@@ -138,7 +138,7 @@ git commit -m "instantiated rheoscope-harness v2.0 — kickoff complete"
 Begin work.
 
 - The first phase of work typically starts by producing a flight plan: run `/preflight` (a core skill) against the first roadmap phase article, then — same session — author `wiki/flight-plans/<project-slug>-flight-plan.md` from `core/methodology/flight-plan-template-v6.md` using the preflighted article as source. This authoring step belongs to the kickoff session, not to `/preflight` or `/flight-plan` (neither authors the plan — see `core/methodology/HOW-TO-USE-FLIGHT-PLAN.md`). `/flight-plan` (also core) then surfaces the authored plan each session. See `.claude/skills/preflight/SKILL.md` and `.claude/skills/flight-plan/SKILL.md`.
-- If `knowledge-os` is enabled, the first `/compile` run happens after the first session writes a raw file. `git init` is a hard prerequisite for any `register-intake` or `/compile` run — the registration chain lives in git, not just versioning hygiene — so make sure the Commit step above has run at least once before your first knowledge-capture cycle. See `.claude/skills/compile/SKILL.md`.
+- If `knowledge-os` is enabled, the first `/compile` run happens after the first session writes a raw file. A git repository with at least one commit is a hard prerequisite for any `register-intake` or `/compile` run — the registration chain lives in git, not just versioning hygiene. Init creates the repository itself (v3.0.61); make sure the Commit step above has run at least once before your first knowledge-capture cycle. See `.claude/skills/compile/SKILL.md`.
 
 ## Troubleshooting
 

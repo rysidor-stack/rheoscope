@@ -266,6 +266,14 @@ if [ "${1:-}" = "--self-test" ]; then
   run_case DENY  '.ENV'                                                'env-uppercase'
   run_case DENY  'config/.Env.Production'                              'env-mixed-case-dotted'
   run_case allow '.ENV.EXAMPLE'                                        'env-example-uppercase'
+  # -- v3.0-199 (v3.0.62): direnv's .envrc joins the class, same exemption
+  run_case DENY  '.envrc'                                              '199-envrc'
+  run_case DENY  'sub/.EnvRC'                                          '199-envrc-mixed-case-nested'
+  run_case DENY  '.envrc.local'                                        '199-envrc-dotted'
+  run_case allow '.envrc.example'                                      '199-envrc-example'
+  run_case allow '.envrc.sample'                                       '199-envrc-sample'
+  run_case allow '.environment'                                        '199-other-env-prefix-outside'
+  run_case allow 'docs/envrc.md'                                       '199-named-after-envrc'
   run_case allow 'src/main.py'                                         'plain'
   # -- v3.0.56 stranger-test fold: an ALLOWED call is silent on stderr (a lone `tr '\'` made
   #    GNU tr warn on every invocation; verdicts were right, the noise reached every session)
@@ -410,7 +418,7 @@ while [[ "$NORM_PATH" == */..* ]] && [[ "$NORM_PATH" =~ $_PARENT_RE ]]; do
 done
 load_class
 if [ "$OUTSIDE_PROJECT" -eq 0 ] && glob=$(trust_match "$NORM_PATH"); then
-  echo "Blocked: '$FILE_PATH' is a TRUST SURFACE (class entry '$glob', core/security/hooks/trust-surfaces.txt). These files decide what a session may do and are operator-edited only: a session proposes the change in chat; the operator applies it outside the session and commits it with \`git commit -S\` under the pinned presence-requiring key (core/security/hooks/allowed_signers). Every honest consumer refuses a trust surface that is not committed-identical and operator-signed, so an unmediated write here is non-authoritative, not a shortcut." >&2
+  echo "Blocked: '$FILE_PATH' is a TRUST SURFACE (class entry '$glob', core/security/hooks/trust-surfaces.txt). These files decide what a session may do and are operator-edited only: a session proposes the change in chat; the operator applies it outside the session and commits it -- signed with \`git commit -S\` under the pinned presence-requiring key (core/security/hooks/allowed_signers) when project.yaml says \`trust_surface_signing: required\`; under \`visible\`, an ordinary commit that stays on the pending list until an attended sweep shows it. Every honest consumer refuses a trust surface that is not committed-identical (and, under \`required\`, operator-signed), so an unmediated write here is non-authoritative, not a shortcut." >&2
   exit 2
 fi
 
@@ -433,13 +441,15 @@ fi
 # Allow .env.example and .env.sample (template files for operators to fill in).
 # Block .env and all other .env.* (real secrets). Matched case-insensitively since v3.0.56
 # (`.ENV` is `.env` on Windows; the old match was case-sensitive -- found by the release's
-# own differential run), the exemption included, byte-parity with the scanner.
+# own differential run), the exemption included, byte-parity with the scanner. Since
+# v3.0.62 (v3.0-199) direnv's .envrc and .envrc.* are the same class with the same
+# exemption: by convention they hold `export SECRET=...` in plaintext.
 case "$(printf '%s' "$BASENAME" | tr 'A-Z' 'a-z')" in
-  .env.example|.env.sample)
+  .env.example|.env.sample|.envrc.example|.envrc.sample)
     exit 0
     ;;
-  .env|.env.*)
-    echo "Blocked: writes to '$BASENAME' are denied by policy. Secrets live in environment, never in the repo. .env.example and .env.sample are exempt." >&2
+  .env|.env.*|.envrc|.envrc.*)
+    echo "Blocked: writes to '$BASENAME' are denied by policy. Secrets live in environment, never in the repo. .env.example and .env.sample (and the same for .envrc) are exempt." >&2
     exit 2
     ;;
   *)

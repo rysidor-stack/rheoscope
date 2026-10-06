@@ -267,9 +267,66 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.61 → v3.0.62 (the perimeter pair: `.envrc` joins the secrets rule, a copy written as `/bin/cp` is still a copy, `echo cp ...` is prose again, and the project's own file permissions finally match)
+
+**Two lanes, in either order** — nothing in one depends on the other. Almost all of this
+release is the operator lane: the safety hooks and two trust tools changed.
+
+**Step 1 — OPERATOR-COPY lane (trust surfaces; you copy and commit them yourself — under
+`required`, `git commit -S`):**
+- `core/security/hooks/block-env-writes.sh` (v3.0-199: direnv's `.envrc` and `.envrc.*` are
+  refused like `.env`, `.envrc.example` / `.envrc.sample` exempt; 164/164 —
+  `bash core/security/hooks/block-env-writes.sh --self-test`).
+- `core/security/hooks/scan-staged-secrets.sh` (v3.0-199: the same files refused at commit;
+  120/120 — `bash core/security/hooks/scan-staged-secrets.sh --self-test`). Reinstall it FIRST,
+  before you commit anything else in this lane:
+  `cp core/security/hooks/scan-staged-secrets.sh .git/hooks/pre-commit` (re-chain if you chained it).
+- `core/security/hooks/block-dangerous-bash.sh` (v3.0-200: a write tool named by its path —
+  `/bin/cp`, `/usr/bin/tee`, `cp.exe` — is a writer, so a copy over a protected file is refused
+  however the tool is spelled; and a line that only prints or reads (`echo cp deploy/x`,
+  `grep -n rm deploy/x`, `Write-Host ...`) is prose, no longer refused — unless the command
+  is named by a path, an assignment or launch wrapper (`env`, `sudo`, ...) precedes it, it holds a bracket or substitution, or the command
+  pipes into anything but another reader; a `--output=FILE` (git diff/log/show) is now
+  checked as a write target; 353/353 —
+  `bash core/security/hooks/block-dangerous-bash.sh --self-test`). Both hooks' trust-surface
+  refusal now says what a commit needs under each authority mode (v3.0-199 rider: it named
+  `git commit -S` under `visible`, where no signature is expected).
+- `core/security/hooks/warn-wrong-folder.sh` (v3.0-229: under Git Bash it names folders as
+  `C:/...`, not `/c/...`; 6/6), only if you installed it at user level — then copy it over your
+  installed copy too.
+- `core/security/hooks/README.md` and `core/security/CREDENTIALS.md` (text: the `.envrc` rule,
+  the battery counts).
+- `deploy/trust.py` (v3.0-230: `--report` saved to a file writes LF, and prints every path and
+  author in full; 120/120 — `py deploy/trust.py --self-test`) and `deploy/pending.py` (v3.0-230:
+  the render's kind, author and date columns in full; 83/83 — `py deploy/pending.py --self-test`).
+- **Your .claude/settings.local.json** (v3.0-229, a trust surface; plain text here: an instance file, not in the template): replace the three file rules
+  under `permissions.allow` — `Read(<your project path>/**)`, `Edit(...)`, `Write(...)` — with
+  `Read(/**)`, `Edit(/**)`, `Write(/**)`. Claude Code reads a rule path starting with one `/` as
+  inside this project and a `C:/...` path as relative to the current folder, so the absolute
+  path init wrote matched nothing: every edit asked. The template's
+  `core/security/settings.local.json.example.template` carries the new form. The new doctor row
+  `permission-paths` names any dead rule left.
+
+**Step 2 — SESSION lane (copy, commit together):**
+- `.claude/skills/doctor/doctor.py` and `.claude/skills/doctor/SKILL.md` (v3.0-229: the new
+  `permission-paths` row, row 7b — a WARN, never a FAIL; v3.0-231: the never-swept note says the
+  first sweep shows two items; run times measured again; 139/139 —
+  `python .claude/skills/doctor/doctor.py --self-test`).
+- `TEMPLATE-README.md` and `INIT.md` (v3.0-231 text: run times, the first sweep's two items,
+  INIT.md's commit example and its repository line).
+
+**What changes in your day.**
+- **Edits stop asking for permission** inside your project, once the three rules are replaced
+  (on a fresh project, from the start).
+- **`echo` and `grep` lines that mention a protected file are no longer refused**; a real write
+  to one still is, however the tool is spelled. A commit message that names a protected file
+  beside a write word (`git commit -m "cp deploy/trust.py ..."`) is still refused: git can launch
+  a program, so it is never read as prose (the firewall's round 3).
+- **A `.envrc` with secrets in it can no longer be written or committed** by a session.
+
 ## v3.0.60 → v3.0.61 (the papercut release: the doctor stops crying wolf on a fresh project and on helper scripts, a session in the wrong folder is warned, the retirement tool's recovery no longer crashes, and the operator reports get "short by default")
 
-**Two lanes, in either order** — nothing in one depends on the other.
+**Two lanes** — correction 2026-10-03 (found adopting this release on a production instance): NOT quite in either order. `deploy/compile-driver.py`'s self-test reads the two bridge files (`.claude/skills/bridge/codex-verify-server.js`, `.claude/skills/bridge/handoff-leg.js`) to check the two resolvers stay in lockstep, so copy those two WITH the driver in Step 1 -- otherwise the driver's test reports 293/294 until Step 2 lands. Nothing else in one lane depends on the other.
 
 **Step 1 — OPERATOR-COPY lane (trust surfaces; you copy and commit them yourself — under
 `required`, `git commit -S`):**

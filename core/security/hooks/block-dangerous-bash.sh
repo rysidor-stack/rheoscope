@@ -309,6 +309,74 @@ EOF' 'ts-prose-mention-heredoc-body'
   # accepted conservative FP: a sed/perl SCRIPT operand naming a class path (deny-over-
   # allow on the perimeter; the target parser does not parse sed scripts)
   run_case DENY 'sed -i "s#a#deploy/trust.py#" raw/note.md' 'ts-sed-script-mention-accepted-fp'
+  # -- v3.0-200 (v3.0.62): (a) a qualified writer is a writer; (b) a printer/reader's
+  # arguments are prose. Both directions, plus the fail-safe boundaries of (b).
+  run_case DENY '/bin/cp /tmp/b deploy/credential-bindings.yaml' '200-qualified-cp'
+  run_case DENY '/usr/bin/tee core/security/hooks/allowed_signers < /tmp/k' '200-qualified-tee'
+  run_case DENY 'C:\tools\bin\cp.exe /tmp/b deploy/trust.py' '200-windows-cp-exe'
+  run_case DENY 'cp.exe /tmp/b deploy/trust.py' '200-bare-cp-exe'
+  run_case DENY 'sudo -u root /bin/rm deploy/pending.py' '200-wrapper-flag-value-qualified-rm'
+  run_case DENY 'FOO=1 env BAR=2 nice -n 10 cp /tmp/b deploy/trust.py' '200-assignments-and-wrappers'
+  run_case DENY 'xargs rm deploy/trust.py < /dev/null' '200-xargs-writer'
+  run_case DENY 'if cp /tmp/b deploy/trust.py; then echo ok; fi' '200-keyword-if'
+  run_case DENY 'for f in a; do rm deploy/trust.py; done' '200-keyword-do'
+  run_case DENY 'if (Test-Path x) { Set-Content deploy/trust.py x }' '200-ps-scriptblock-keeps-old-match'
+  run_case DENY 'foreach ($f in $a) { Remove-Item deploy/pending.py }' '200-ps-foreach-keeps-old-match'
+  run_case DENY 'bash -c "cp /tmp/b deploy/trust.py"' '200-bash-c-keeps-old-match'
+  run_case DENY 'echo cp /tmp/b deploy/trust.py | sh' '200-echo-piped-to-sh'
+  run_case DENY 'printf "rm deploy/trust.py" | bash' '200-printf-piped-to-bash'
+  run_case DENY 'echo $(rm deploy/trust.py)' '200-substitution-in-printer'
+  run_case DENY 'git rm deploy/trust.py' '200-git-rm-still-writer'
+  run_case DENY 'git -C . mv deploy/trust.py /tmp/x' '200-git-mv-with-global-flag'
+  run_case DENY 'mytool cp /tmp/b deploy/trust.py' '200-unlisted-command-keeps-old-match'
+  run_case DENY 'git diff --output=deploy/trust.py HEAD~1' '200-git-diff-output-target'
+  run_case DENY 'git log -p --output deploy/pending.py' '200-git-log-output-separate'
+  run_case silent 'git diff --output=/tmp/d.patch -- deploy/trust.py' '200-git-diff-output-elsewhere'
+  # review round 1 (v3.0.62): every exception fails safe
+  run_case DENY 'echo cp /tmp/b deploy/trust.py | env -i sh' '200-r1-pipe-into-env-with-flag'
+  run_case DENY 'echo cp /tmp/b deploy/trust.py | /usr/bin/env sh' '200-r1-pipe-into-qualified-env'
+  run_case DENY 'echo cp /tmp/b deploy/trust.py | mytool' '200-r1-pipe-into-unknown-command'
+  run_case DENY 'env -u echo cp /tmp/b deploy/credential-bindings.yaml' '200-r1-wrapper-flag-value-looks-like-reader'
+  run_case DENY 'sudo echo cp /tmp/b deploy/trust.py' '200-r1-any-wrapper-turns-neutrality-off'
+  run_case DENY 'rg --pre cp /tmp/b deploy/trust.py' '200-r1-rg-is-not-a-reader'
+  run_case DENY 'less cp /tmp/b deploy/trust.py' '200-r1-less-is-not-a-reader'
+  # standing boundary, pre-existing (the old match missed it too): a writer glued into another
+  # token (`+!cp`) is not a tool word -- pinned as the boundary, not as coverage
+  run_case silent 'less +!cp /tmp/b deploy/trust.py' '200-r1-glued-writer-standing-boundary'
+  run_case DENY 'man -P cp /tmp/b deploy/trust.py' '200-r1-man-is-not-a-reader'
+  run_case DENY 'git -c core.pager=cat log cp /tmp/b deploy/trust.py' '200-r1-git-c-never-neutral'
+  run_case silent 'grep -n "rm " deploy/retire.py | head -5' '200-r1-reader-piped-into-reader'
+  run_case silent 'echo a || echo cp deploy/trust.py' '200-r1-or-list-is-not-a-pipe'
+  # review round 2 (v3.0.62): narrower still
+  run_case DENY 'git grep --open-files-in-pager=/tmp/helper cp -- deploy/trust.py' '200-r2-git-grep-pager'
+  run_case DENY 'git diff --ext-diff cp /tmp/b deploy/trust.py' '200-r2-git-diff-not-neutral'
+  run_case DENY 'git show --textconv cp /tmp/b deploy/trust.py' '200-r2-git-show-not-neutral'
+  run_case DENY 'git -ccore.pager=x commit -m cp /tmp/b deploy/trust.py' '200-r2-git-attached-c'
+  run_case DENY 'git --no-pager commit -m cp /tmp/b deploy/trust.py' '200-r2-any-git-global-option'
+  run_case DENY '/tmp/echo cp /tmp/b deploy/trust.py' '200-r2-qualified-reader-is-any-program'
+  run_case DENY './cat cp /tmp/b deploy/trust.py' '200-r2-relative-reader-is-any-program'
+  run_case DENY 'echo cp /tmp/b deploy/trust.py | /tmp/head' '200-r2-qualified-pipe-target'
+  run_case DENY 'GIT_PAGER=x echo cp /tmp/b deploy/trust.py' '200-r2-assignment-turns-neutrality-off'
+  # review round 3: git is never neutral (commit launches the editor and hooks; option values
+  # must never swallow a writer token)
+  run_case DENY 'git commit -m "fix: cp deploy/trust.py by hand"' '200-r3-git-commit-not-neutral'
+  run_case DENY 'git commit --edit -m cp deploy/trust.py' '200-r3-git-commit-edit'
+  run_case DENY 'git -C cp diff -- deploy/trust.py' '200-r3-git-option-value-is-still-a-token'
+  # stated residuals (round 3, accepted over-matches -- deny-over-allow; narrowing them would
+  # loosen the perimeter after its last review): --output in prose, a qualified tool word as
+  # a non-reader's operand
+  run_case DENY 'echo --output=deploy/trust.py' '200-r3-residual-output-in-prose-accepted-fp'
+  run_case DENY 'rg /bin/cp /tmp/b deploy/trust.py' '200-r3-residual-qualified-tool-operand-accepted-fp'
+  run_case silent 'echo cp deploy/credential-bindings.yaml' '200-echo-prose'
+  run_case silent 'echo "use cp to copy deploy/trust.py, never mv" >> raw/note.md' '200-echo-prose-append-elsewhere'
+  run_case silent 'grep -n "rm " deploy/retire.py' '200-grep-tool-word-pattern'
+  run_case DENY 'git commit -m "cp deploy/trust.py from the operator lane"' '200-git-commit-message-r3-refused-again'
+  # round 2: git log is no longer neutral (it can launch a program through an option) --
+  # the log-search mention is refused again, the accepted cost
+  run_case DENY 'git log --grep "rm deploy/pending.py"' '200-git-log-grep-r2-not-neutral'
+  run_case silent 'Write-Host "Copy-Item deploy/trust.py by hand"' '200-ps-write-host-prose'
+  run_case silent 'cat deploy/trust.py | grep -c rm' '200-pipeline-of-readers'
+  run_case silent 'ls /bin/cp deploy/trust.py' '200-reader-with-qualified-tool-operand'
   # cross-vendor round-1 folds (v3.0.51): the `>|` clobber redirect is a target zone;
   # a multiword PowerShell -Value naming a surface in PROSE passes (the value's grouping
   # is gone after quote-stripping, so every token to the next flag is value); a
@@ -675,20 +743,108 @@ esac
 # quote-stripped twin exposes formerly-quoted parens inside sed/awk scripts -- a tool
 # word behind `(` is caught by stripping its leading parens instead). Pure bash inside
 # one substitution.
+# v3.0-200 (v3.0.62), both directions of the tool-word match:
+#   (a) a writer is recognized by its BASENAME, `.exe` stripped: `/bin/cp`, `/usr/bin/tee`,
+#       `C:/.../cp.exe` are `cp` and `tee` (the bare-name list missed every qualified path);
+#       a leading `$(` is stripped like a leading `(` (a writer inside a substitution).
+#   (b) a segment whose COMMAND WORD only prints or reads its arguments contributes no
+#       writer: `echo cp deploy/x`, `grep -n cp deploy/x` are prose, not writes (git was on
+#       this list until review round 3 removed it -- see below). The command word is the first token after leading parens,
+#       `VAR=value` assignments, shell keywords (if/then/do/...) and launch wrappers (sudo,
+#       env, xargs, nohup, ... with their flags and numeric values). Fail-safe by
+#       construction: only a command word on the closed READER list (or git with a
+#       read-only subcommand) is neutral; every other segment keeps the pre-v3.0.62 match
+#       (the first listed writer ANYWHERE in it), so an unlisted wrapper, a keyword this
+#       code does not know or a PowerShell scriptblock never loosens anything. Neutrality
+#       is OFF when the segment holds any bracket -- a substitution (`$(`, `<(` execute),
+#       a condition or a scriptblock (`if (Test-Path x) { Set-Content ... }`: the reader
+#       there is the condition, not the command) -- or the command pipes into an
+#       interpreter (`echo cp a deploy/x | sh`).
+#   Review round 1 (v3.0.62) made every judgment above a CLOSED list, failing safe:
+#       a launch wrapper in command position (`env -u echo cp ...`: a flag's value would
+#       pass for the command word) and git's `-c` (config can run a program) turn
+#       neutrality OFF; any pipe into a command NOT on the reader list (`| env -i sh`,
+#       `| xargs`, an unknown tool) turns it OFF for the whole command; and the list holds
+#       no command that can run another (`rg --pre`, `less`, `more`, `man`, `file` left out).
+#   Review round 2 narrowed it again: the command word must be a BARE name (`/tmp/echo` is
+#       any program); a leading VAR=value assignment turns neutrality off (an environment
+#       variable can name a program: GIT_PAGER, LESSOPEN); and git is neutral only as
+#       `git commit` with NO git-level option before it -- grep/diff/show/log can launch a
+#       program through an option (--open-files-in-pager, --ext-diff, --textconv), and a
+#       `-ckey=value` spelling slipped past the `-c` check.
+#   Review round 3 (the last; this fold only narrows): git is never neutral -- `git commit`
+#       launches the editor and hooks, and skipping git's option values (`git -C cp diff ...`)
+#       discarded a token the old match read as a writer. A commit message naming a protected
+#       file beside a write word is refused again, as before v3.0.62 (the accepted cost).
+_is_reader() {
+  case "$1" in
+    echo|printf|write-host|write-output|write-verbose|write-warning|write-error|write-information|write-debug|grep|egrep|fgrep|findstr|select-string|sls|cat|type|get-content|gc|head|tail|wc|ls|dir|get-childitem|gci|diff|test-path|stat|which|where) return 0 ;;
+  esac
+  return 1
+}
+PIPE_EXEC=0
+_pt=${COMMAND_PATHS//||/ ; }; _pt=${_pt//|&/|}   # `||` is a list operator, not a pipe
+while [[ "$_pt" == *'|'* ]]; do
+  _pt=${_pt#*|}
+  _seg=${_pt%%[|;&]*}
+  set -f
+  # shellcheck disable=SC2206
+  _w=($_seg)
+  set +f
+  _cw=''
+  for _t in "${_w[@]}"; do
+    while :; do case "$_t" in \(*|\{*) _t=${_t#?} ;; \$\(*) _t=${_t#??} ;; *) break ;; esac; done
+    [ -n "$_t" ] || continue
+    case "$_t" in [a-z_]*=*) case "${_t%%=*}" in *[!a-z0-9_]*) ;; *) continue ;; esac ;; esac
+    _cw=$_t; break
+  done
+  if [ -n "$_cw" ] && ! _is_reader "$_cw"; then PIPE_EXEC=1; break; fi   # bare names only (round 2)
+done
 TOOL_TARGETS=$(printf '%s' "$COMMAND_PATHS" | tr '|;&`' '\n\n\n\n' | {
   out=''
   while IFS= read -r seg || [ -n "$seg" ]; do
     tool=''; skipnext=0; valmode=0; sedperl=0; saw_i=0; pending=''
+    cmdpos=1; wrapped=0; neutral_ok=1
+    case "$seg" in *'('*|*')'*|*'{'*|*'}'*) neutral_ok=0 ;; esac
+    [ "$PIPE_EXEC" -eq 1 ] && neutral_ok=0
     set -f
     # shellcheck disable=SC2086
     set -- $seg
     set +f
+    # v3.0-200 review: `--output=<file>` / `--output <file>` writes its file whatever the
+    # command (git diff/log/show among the read-only subcommands above) -- always a target
+    oprev=''
+    for tok in "$@"; do
+      case "$tok" in --output=?*) out="$out
+${tok#--output=}" ;; esac
+      [ "$oprev" = "--output" ] && out="$out
+$tok"
+      oprev=$tok
+    done
     for tok in "$@"; do
       if [ -z "$tool" ]; then
-        while :; do case "$tok" in \(*) tok=${tok#\(} ;; *) break ;; esac; done
-        case "$tok" in
-          tee|cp|mv|rm|install|truncate|ln|dd|rsync|set-content|add-content|out-file|copy-item|move-item|remove-item|new-item|clear-content|rename-item|sc|ac|cpi|mi|ni|clc|rni|ri|del) tool=$tok ;;
-          sed|perl) tool=$tok; sedperl=1 ;;
+        while :; do case "$tok" in \(*|\{*) tok=${tok#?} ;; \$\(*) tok=${tok#??} ;; *) break ;; esac; done
+        [ -n "$tok" ] || continue
+        base=${tok##*/}; base=${base%.exe}
+        if [ "$cmdpos" -eq 1 ]; then
+          case "$tok" in
+            [a-z_]*=*) case "${tok%%=*}" in *[!a-z0-9_]*) ;; *) neutral_ok=0; continue ;; esac ;;
+          esac
+          case "$base" in
+            sudo|doas|env|command|exec|nohup|time|nice|timeout|xargs|builtin|stdbuf|ionice) wrapped=1; neutral_ok=0; continue ;;
+            if|then|else|elif|do|while|until|'!'|'{'|'}') continue ;;
+          esac
+          if [ "$wrapped" -eq 1 ]; then
+            case "$tok" in -*|[0-9]*) continue ;; esac
+          fi
+          cmdpos=0
+          if [ "$tok" = "$base" ] && _is_reader "$base"; then
+            [ "$neutral_ok" -eq 1 ] && break
+          fi
+        fi
+        case "$base" in
+          tee|cp|mv|rm|install|truncate|ln|dd|rsync|set-content|add-content|out-file|copy-item|move-item|remove-item|new-item|clear-content|rename-item|sc|ac|cpi|mi|ni|clc|rni|ri|del) tool=$base ;;
+          sed|perl) tool=$base; sedperl=1 ;;
         esac
         continue
       fi
@@ -747,7 +903,7 @@ if [ "$deny_trust" -eq 0 ] && printf '%s' "$COMMAND_PATHS" | grep -Eq "$INTERP_W
 fi
 if [ "$deny_trust" -eq 1 ]; then
   log_row trust-deny trust-surface false || true
-  echo "Blocked: write-shaped command TARGETS a trust surface (see core/security/hooks/trust-surfaces.txt). Trust surfaces are operator-edited only, outside the session, and committed with \`git commit -S\` under the pinned presence-requiring key; every honest consumer refuses one that is not committed-identical and operator-signed. Read it freely (cat/grep/git show), cite it freely in prose you write elsewhere (v3.0-144); propose the change itself in chat." >&2
+  echo "Blocked: write-shaped command TARGETS a trust surface (see core/security/hooks/trust-surfaces.txt). Trust surfaces are operator-edited only, outside the session, and committed by the operator -- signed with \`git commit -S\` under the pinned presence-requiring key when project.yaml says \`trust_surface_signing: required\`; under \`visible\`, an ordinary commit that stays on the pending list until an attended sweep shows it. Every honest consumer refuses one that is not committed-identical (and, under \`required\`, operator-signed). Read it freely (cat/grep/git show), cite it freely in prose you write elsewhere (v3.0-144); propose the change itself in chat." >&2
   exit 2
 fi
 

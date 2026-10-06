@@ -19,6 +19,13 @@ hooked_project() {   # $1 = a directory; true when it carries a wired project se
   [ -f "$s" ] && grep -q "block-dangerous-bash" "$s" 2>/dev/null
 }
 
+shown() {            # a path as the operator knows it: under Git Bash, /c/... or /tmp/... as C:/... (v3.0-229)
+  case "$1" in
+    /*) if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1" 2>/dev/null && return; fi ;;
+  esac
+  printf '%s' "$1"
+}
+
 check_dir() {        # $1 = the session's working directory; prints the warning or nothing
   local cwd="$1" hits="" d
   [ -n "$cwd" ] && [ -d "$cwd" ] || return 0
@@ -27,11 +34,11 @@ check_dir() {        # $1 = the session's working directory; prints the warning 
     d="${d%/}"
     [ -d "$d" ] || continue
     if hooked_project "$d"; then
-      hits="${hits:+$hits, }$d"
+      hits="${hits:+$hits, }$(shown "$d")"
     fi
   done
   [ -n "$hits" ] || return 0
-  local msg="This session opened in $cwd, which is not a project folder, so no project safety hooks, settings or skills are loaded. Projects one level down: $hits. Reopen the session in the project you meant before doing any work."
+  local msg="This session opened in $(shown "$cwd"), which is not a project folder, so no project safety hooks, settings or skills are loaded. Projects one level down: $hits. Reopen the session in the project you meant before doing any work."
   # systemMessage shows the operator; additionalContext tells the session to stop and say so
   msg="${msg//\\/\\\\}"; msg="${msg//\"/\\\"}"
   printf '{"systemMessage": "%s", "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "WRONG FOLDER: %s Tell the operator this before anything else."}}\n' "$msg" "$msg"

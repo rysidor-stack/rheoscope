@@ -108,6 +108,7 @@ import argparse
 import base64
 import contextlib
 import hashlib
+import io
 import json
 import os
 import posixpath
@@ -1460,15 +1461,21 @@ def _print_report(rep):
         print("pin: %d key(s), %d non-presence (%s); chain: %s" % (
             len(pin["keys"]), len(pin["non_sk"]), "FAIL" if pin["non_sk"] else "ok",
             ch.get("reason")))
-    print("%-44s %-5s %-12s %-18s %-6s %s" % ("surface", "HEAD=", "commit", "author", "signed",
-                                              "detail"))
+    # v3.0-230 (v3.0.62): every path and author in full -- the table is saved into the
+    # committed sweep receipt, and a 44-column cut clipped paths from the left
+    # ("/security/hooks/test-inputs/..."); the columns size to their longest cell instead
+    pw = max([len("surface")] + [len(r["path"]) for r in rep["surfaces"]]
+             + [len(u) for u in rep["untracked_members"]])
+    aw = max([len("author")] + [len(r["author"] or "") for r in rep["surfaces"]])
+    print("%-*s %-5s %-12s %-*s %-6s %s" % (pw, "surface", "HEAD=", "commit", aw, "author",
+                                           "signed", "detail"))
     for r in rep["surfaces"]:
-        print("%-44s %-5s %-12s %-18s %-6s %s" % (
-            r["path"][-44:], "yes" if r["head_identical"] else "NO", r["commit"],
-            (r["author"] or "")[:18], "yes" if r["signed"] else "NO",
+        print("%-*s %-5s %-12s %-*s %-6s %s" % (
+            pw, r["path"], "yes" if r["head_identical"] else "NO", r["commit"],
+            aw, r["author"] or "", "yes" if r["signed"] else "NO",
             r["reason"] if not (r["head_identical"] and r["signed"]) else r.get("principal") or ""))
     for u in rep["untracked_members"]:
-        print("%-44s (untracked member: hook-lane only; doctor 16(c) checks wiring)" % u)
+        print("%-*s (untracked member: hook-lane only; doctor 16(c) checks wiring)" % (pw, u))
     for rr in rep["retire_records"]:
         print("retire record %s seq %s: %s -- %s" % (rr["path"], rr["seq"],
               "PUBLISHED" if rr["published"] else "UNPUBLISHED PROPOSAL", rr["reason"]))
@@ -1743,6 +1750,21 @@ def self_test():
              {r["path"] for r in rep["surfaces"]} == {PIN_PATH, CLASS_PATH,
                                                       "deploy/evidence/operator-grant.md"}
              and not any(r["signed"] for r in rep["surfaces"]), str(rep["surfaces"]))
+        long_rep = dict(rep, surfaces=[dict(rep["surfaces"][0],
+                                            path="core/security/hooks/test-inputs/test-a-curl.json",
+                                            author="An Operator With A Long Name <op@example.com>")])
+        _buf = io.StringIO()
+        with contextlib.redirect_stdout(_buf):
+            _print_report(long_rep)
+        case("v3.0-230: the report prints a long path and author in full (never clipped from "
+             "the left or the right)",
+             "core/security/hooks/test-inputs/test-a-curl.json" in _buf.getvalue()
+             and "An Operator With A Long Name <op@example.com>" in _buf.getvalue(),
+             _buf.getvalue()[-400:])
+        _r = subprocess.run([sys.executable, os.path.abspath(__file__), "--root", r1, "--report"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        case("v3.0-230: --report writes LF line endings when redirected (no CR byte)",
+             b"\r" not in _r.stdout and _r.stdout.count(b"\n") >= 3, _r.stdout[:200])
 
         # ---------------------------------------------------------- 3. mechanics (override)
         with _accept_types({"ssh-ed25519"}):
@@ -2394,6 +2416,10 @@ def main(argv=None):
         return 2
     if a.report:
         rep = report(repo)
+        try:   # v3.0-230: a redirected report on Windows wrote CRLF into the sweep receipt,
+            sys.stdout.reconfigure(newline="\n")   # beside pending.py's LF render (v3.0-201)
+        except (AttributeError, ValueError):
+            pass
         if a.json:
             print(json.dumps(rep, indent=1, default=str))
         else:

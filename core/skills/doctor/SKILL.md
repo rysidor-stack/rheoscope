@@ -38,9 +38,9 @@ writes nothing**. It does *invoke* each deploy sensor's `--self-test` and
 fixtures / report-only scans) — doctor relies on that contract; it cannot independently
 guarantee it for a locally modified sensor.
 
-**How long it takes (v3.0.61, backlog v3.0-196).** A full run takes about 8-10 minutes on a
-typical Windows machine: it runs every deploy sensor's own self-test, and the compile
-engine's (`compile-v2.py`) alone takes 4-6 minutes; `compile-driver.py` and `pending.py`
+**How long it takes (v3.0.61, backlog v3.0-196; measured again at v3.0.62).** A full run takes
+about 8-13 minutes on a typical Windows machine: it runs every deploy sensor's own self-test,
+and the compile engine's (`compile-v2.py`) alone takes 4-7 minutes; `compile-driver.py` and `pending.py`
 take one to two each. A CI wrapper or shell with a default 60-second timeout will report
 those as failures when they are not: give it at least 15 minutes. The doctor's own
 per-sensor budget is 600 s (`SENSOR_SELF_TEST_TIMEOUT`); a sensor that hits it is reported
@@ -86,6 +86,7 @@ Exit code 2 means at least one FAIL occurred; 0 means everything is PASS/SKIP or
 | 5 | `jq` | jq on PATH (runtime dependency of the security hook scripts) |
 | 6 | `python-sensors` | every `deploy/*.py` advertising `--self-test` passes it |
 | 7 | `hooks-wired` | `.claude/settings.local.json` exists, is valid JSON, references both `block-dangerous-bash.sh` and `block-env-writes.sh`, **and** wires `block-dangerous-bash.sh` under both a `Bash` and a `PowerShell` matcher and `block-env-writes.sh` under an `Edit`/`Write` matcher (matcher coverage, not just script presence — see `core/security/hooks/README.md`); a script under `.claude/` that launches an agent (`claude`, `codex` or `grok` as a command) must set `RHEOSCOPE_UNATTENDED`, and a `.ps1` with any statement above its `param()` block WARNs (v3.0.61, backlog v3.0-207) |
+| 7b | `permission-paths` | (v3.0.62, backlog v3.0-229) every `Read`/`Edit`/`Write` allow rule in `.claude/settings.local.json` names a path Claude Code can match: **WARNs** on a drive-letter path (`C:/...`, read as relative to the current folder) or a single-`/` path whose first folder is not in the project (`/home/...`, `/tmp/...`, read as relative to the project) -- the absolute forms init wrote before v3.0.62, which pre-approved nothing. FIX: `Read(/**)`, `Edit(/**)`, `Write(/**)`; the file is a trust surface, edited by the operator |
 | 8 | `skill-drift` | superseded-skill probe — today: stale `.claude/skills/grill` alongside its successor `/preflight` |
 | 9 | `derivation-gate` | `deploy/check-derivation.py --gate`, if the sensor is present |
 | 10 | `docs-stamps` | teaching docs (`TOUR.md`, `GLOSSARY.md`, `SYSTEM-MAP.html`, `docs/engine/OPERATIONS.md`, `.claude/skills/orient/SKILL.md`, `core/methodology/manifest-driven-builds.md`, `core/methodology/manifest-format.md`, `.claude/skills/conformance/SKILL.md`, root `ARCHITECTURE.md` — the last added per backlog v3.0-75, migration having never refreshed it) carry a `verified-against: <VERSION> (<date>)` stamp that matches this instance's `project.yaml` `template_version` |

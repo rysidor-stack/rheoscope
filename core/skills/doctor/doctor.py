@@ -570,6 +570,61 @@ def check_hooks_wired(ctx):
                    "Edit/Write for block-env-writes.sh)")
 
 
+_FILE_RULE_RE = re.compile(r"^(Read|Edit|Write)\((.*)\)$")
+
+
+def check_permission_paths(ctx):
+    """v3.0-229 (v3.0.62): a Read/Edit/Write ALLOW rule whose path Claude Code can never match.
+    Claude Code reads a rule path starting with one `/` as relative to the project, `//` as
+    absolute (Windows paths matched as `/c/...`), and a bare path as relative to the current
+    folder. Before v3.0.62 init substituted the project's ABSOLUTE path (`C:/...` from
+    init.ps1, `/home/...` or `/tmp/...` from init.sh), so the three file rules pointed nowhere
+    and every edit they meant to pre-approve asked. Flagged: a drive-letter path, and a
+    single-`/` path whose literal part (up to the first wildcard) does not exist in the
+    project. A WARN, never a FAIL:
+    a dead allow rule only costs prompts; the hooks are the boundary."""
+    path = ctx["root"] / ".claude" / "settings.local.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return Result("SKIP", "permission-paths",
+                       "no readable .claude/settings.local.json (hooks-wired reports it)")
+    allow = (data.get("permissions") or {}).get("allow") or [] if isinstance(data, dict) else []
+    dead = []
+    for rule in allow:
+        m = _FILE_RULE_RE.match(str(rule).strip())
+        if not m:
+            continue
+        p = m.group(2).strip()
+        if re.match(r"^[A-Za-z]:[/\\]", p):
+            dead.append(str(rule))
+        elif not p.startswith("//") and not p.startswith("~"):
+            # review round 1: the WHOLE literal prefix must exist (up to the first segment
+            # with a wildcard) -- `/tmp/x/proj/**` is dead even when the project has a tmp/;
+            # round 2: a bare / ./ path too (relative to the session's folder, normally the
+            # project root)
+            lit = []
+            for seg in p.lstrip("/").split("/"):
+                if seg == ".":
+                    continue
+                if not seg or any(ch in seg for ch in "*?[{"):
+                    break
+                lit.append(seg)
+            if lit and not (Path(ctx["root"]).joinpath(*lit)).exists():
+                dead.append(str(rule))
+    if dead:
+        return Result("WARN", "permission-paths",
+                       "allow rule(s) that can never match: %s -- Claude Code reads a path "
+                       "starting with one `/` as inside this project and a `C:/...` path as "
+                       "relative to the current folder, so these pre-approvals are dead and "
+                       "every read or edit they meant to cover asks you. FIX: in "
+                       ".claude/settings.local.json replace them with `Read(/**)`, `Edit(/**)`, "
+                       "`Write(/**)` (this project, relative); the file is a trust surface, so "
+                       "you edit it yourself outside the session." % ", ".join(dead))
+    return Result("PASS", "permission-paths",
+                   "every Read/Edit/Write allow rule names a path Claude Code can match")
+
+
 def check_precommit_scanner(ctx):
     """Check 15 (v3.0-112, 2026-08-17 defect-class hunt): the commit scanner must
     be INSTALLED and CURRENT, not just shipped. Before this check, an instance
@@ -1090,9 +1145,12 @@ def check_trust_surfaces(ctx):
                     and not obs.get("alarms_outstanding"):
                 # v3.0-201: a new project's first state, not a lapse -- its birth commit is a
                 # trust item nobody has been shown yet; one attended /sweep clears it
+                # v3.0-231 (v3.0.62): the first sweep's heartbeat adds a "no attended sweep
+                # yet" alarm row before it renders, so it shows one item more than counted here
                 problems.append("no attended sweep has run on this project yet, so %s item(s) "
                                 "are waiting to be shown to you (a new project starts with one: "
-                                "its first commit)" % len(pend))
+                                "its first commit; the first sweep also shows a 'no attended "
+                                "sweep yet' note, and acknowledges both)" % len(pend))
             elif obs.get("missed"):
                 problems.append("observation window MISSED (window %s day(s); last attended "
                                 "sweep that closed ok: %s; %s pending)" % (
@@ -1765,6 +1823,7 @@ def run_all(root, fast_selftests=False):
     add(_safe(check_jq, "jq", ctx))
     add(_safe(check_python_sensors, "python-sensors", ctx))
     add(_safe(check_hooks_wired, "hooks-wired", ctx))
+    add(_safe(check_permission_paths, "permission-paths", ctx))
     add(_safe(check_precommit_scanner, "precommit-scanner", ctx))
     add(_safe(check_trust_surfaces, "trust-surfaces", ctx))
     add(_safe(check_skill_drift, "skill-drift", ctx))
@@ -1848,6 +1907,39 @@ def self_test():
         r = note(check_hooks_wired(ctx))
         check("hooks-wired: warn when one hook missing",
               r.status == "WARN" and "block-env-writes.sh" in r.detail)
+
+        # v3.0-229: dead Read/Edit/Write allow rules (the pre-v3.0.62 init forms) WARN;
+        # the project-relative and absolute forms pass
+        def _perm(allow):
+            (claude_dir / "settings.local.json").write_text(
+                json.dumps({"permissions": {"allow": allow}}), encoding="utf-8")
+            return note(check_permission_paths(ctx))
+        (root / "src").mkdir(exist_ok=True)
+        r = _perm(["Read(C:/Users/op/proj/**)", "Edit(/tmp/x/proj/**)", "Write(/home/op/proj/**)",
+                   "Glob", "Bash(git *)"])
+        check("permission-paths (v3.0-229): the old init forms -- C:/..., /tmp/..., /home/... "
+              "-- WARN, each named, with the /** FIX",
+              r.status == "WARN" and "C:/Users/op/proj" in r.detail and "/tmp/x/proj" in r.detail
+              and "/home/op/proj" in r.detail and "Read(/**)" in r.detail)
+        r = _perm(["Read(/**)", "Edit(/**)", "Write(/src/**)", "Read(//c/Users/op/**)",
+                   "Read(~/notes/**)", "Read(*.md)", "Glob"])
+        check("permission-paths (v3.0-229): project-relative, absolute (//), home and bare "
+              "rules PASS", r.status == "PASS")
+        r = _perm(["Read(/**/*.md)", "Edit(/{a,b}/**)"])
+        check("permission-paths (v3.0-229): a wildcard first segment is never called dead",
+              r.status == "PASS")
+        (root / "tmp").mkdir(exist_ok=True)
+        r = _perm(["Read(missing/**)", "Read(./src/**)"])
+        check("permission-paths (v3.0-229, review round 2): a bare path that does not exist "
+              "WARNs; ./src (which exists) PASSes",
+              r.status == "WARN" and "missing/**" in r.detail and "./src" not in r.detail)
+        r = _perm(["Edit(/tmp/x/proj/**)", "Edit(/tmp/**)"])
+        check("permission-paths (v3.0-229, review round 1): /tmp/x/proj/** is dead even when the "
+              "project has a tmp/ folder; /tmp/** (which exists) is live",
+              r.status == "WARN" and "/tmp/x/proj" in r.detail and "Edit(/tmp/**)" not in r.detail)
+        (claude_dir / "settings.local.json").write_text("[]", encoding="utf-8")
+        check("permission-paths (v3.0-229): a settings file without a permissions object PASSes",
+              note(check_permission_paths(ctx)).status == "PASS")
 
         # v3.0-112: precommit-scanner check, all four dispositions on real trees.
         scan_src_dir = Path(ctx["root"]) / "core" / "security" / "hooks"

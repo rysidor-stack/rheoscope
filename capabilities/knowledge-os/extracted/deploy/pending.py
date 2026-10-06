@@ -862,7 +862,12 @@ def render(st):
         "MISSED" if obs["missed"] else "within window"))
     if obs.get("unacknowledged_failed_cycles"):
         out.append("failed cycles not yet acknowledged: %d" % len(obs["unacknowledged_failed_cycles"]))
-    out.append("%-9s %-12s %-24s %-20s %s" % ("kind", "commit", "author", "date", "detail"))
+    # v3.0-230 (v3.0.62): the kind and author columns size to their longest cell -- a 9- and
+    # 24-column cut printed "trust-sur" and clipped authors in the committed render receipt
+    kw = max([len("kind")] + [len(it["kind"]) for it in st["pending"]])
+    aw = max([len("author")] + [len(it.get("author") or "") for it in st["pending"]])
+    dw = max([len("date")] + [len(it.get("date") or "") for it in st["pending"]])   # the stranger: a 20-cut dropped the UTC offset
+    out.append("%-*s %-12s %-*s %-*s %s" % (kw, "kind", "commit", aw, "author", dw, "date", "detail"))
     for it in st["pending"]:
         if it["kind"] == "retirement":
             btag = ""
@@ -883,8 +888,9 @@ def render(st):
             detail = ", ".join(it.get("paths", []))
         else:
             detail = "ALARM %s" % it.get("detail")
-        out.append("%-9s %-12s %-24s %-20s %s" % (it["kind"][:9], (it.get("commit") or "")[:12],
-                                                   (it.get("author") or "")[:24], (it.get("date") or "")[:20], detail))
+        out.append("%-*s %-12s %-*s %-*s %s" % (kw, it["kind"], (it.get("commit") or "")[:12],
+                                                 aw, it.get("author") or "", dw, it.get("date") or "",
+                                                 detail))
     if not st["pending"]:
         out.append("(nothing pending)")
     out.append("acknowledged: %d item(s); pending: %d" % (len(st["acked"]), len(st["pending"])))
@@ -992,6 +998,14 @@ def self_test():
         case("v3.0-196: the rendered table lists every path of a trust item in full -- never "
              "clipped mid-name (it is quoted verbatim and committed as the render receipt)",
              all(p in render(st_long) for p in long_paths))
+        st_wide = dict(st, pending=[dict(st_long["pending"][0],
+                                         author="An Operator With A Long Name <op@example.com>",
+                                         date="2026-10-03T18:59:07-07:00")])
+        case("v3.0-230: the kind, author and date columns print in full (\"trust-surface\", a long "
+             "author, a date with its UTC offset) -- never clipped",
+             "trust-surface " in render(st_wide)
+             and "An Operator With A Long Name <op@example.com>" in render(st_wide)
+             and "2026-10-03T18:59:07-07:00" in render(st_wide))
         # heartbeats + ack by an attended sweep
         t0 = (_now() + datetime.timedelta(minutes=1)).replace(microsecond=0)  # after the commits above
         try:

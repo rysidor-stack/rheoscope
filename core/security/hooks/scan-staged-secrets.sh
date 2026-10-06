@@ -25,7 +25,8 @@
 #   3. embedded-credential URLs -- scheme://user:password@host, password not a
 #      named placeholder shape
 #   4. credential FILES by staged path -- .env* (except .env.example/.env.sample,
-#      byte-parity with block-env-writes.sh), key material *.pem/*.key/*.ppk/*.p12/*.pfx,
+#      byte-parity with block-env-writes.sh), and since v3.0.62 (v3.0-199) direnv's .envrc
+#      and .envrc.* the same way (.envrc.example/.envrc.sample exempt), key material *.pem/*.key/*.ppk/*.p12/*.pfx,
 #      and (v3.0.56, v3.0-197) the files Google's client libraries write:
 #      credentials.json, token.json, token.pickle, client_secret*.json, service-account
 #      key JSON -- template copies with a .example./.sample. name segment exempt for
@@ -82,8 +83,10 @@ CONTENT_PATTERNS=(
 PLACEHOLDER_RE='EXAMPLE|REDACTED|PLACEHOLDER|CHANGE[-_]?ME|your-[a-z0-9-]+-here|<[A-Za-z][A-Za-z0-9 _-]*>|\{\{[^}]+\}\}|[Xx]{6,}|\.\.\.'
 
 # Staged PATHS that are credential homes. Basename-matched, extended regex.
-PATH_BLOCK_RE='(^|/)\.env(\..*)?$'
-PATH_ALLOW_RE='(^|/)\.env\.(example|sample)$'
+# v3.0-199 (v3.0.62): direnv's .envrc (and .envrc.local etc.) is plaintext `export SECRET=`
+# by convention -- the same class as .env, with the same template exemption
+PATH_BLOCK_RE='(^|/)\.env(rc)?(\..*)?$'
+PATH_ALLOW_RE='(^|/)\.env(rc)?\.(example|sample)$'
 # key material, case-insensitive, no exemption (a staged *.pem blocks whatever it is called)
 PATH_KEY_RE='(^|/)[^/]*\.(pem|key|ppk|p12|pfx)$'
 # v3.0-197 (v3.0.56): OAuth client / token / service-account files, case-insensitive
@@ -164,7 +167,7 @@ scan_repo() {
   [ -n "$hit" ] || hit=$(printf '%s\n' "$cand" | grep -Ei -e "$PATH_KEY_RE" | head -n 1 || true)
   [ -n "$hit" ] || hit=$(printf '%s\n' "$cand" | grep -Ei -e "$PATH_CRED_RE" | grep -Evi -e "$PATH_CRED_TEMPLATE_RE" | head -n 1 || true)
   if [ -n "$hit" ]; then
-    _fail "staged file '$hit' is a credential-file class (.env*, key material, or an OAuth client/token/service-account file such as credentials.json, token.json, client_secret*.json). Unstage it (git restore --staged '$hit') and keep the secret in the OS vault via the credential broker (core/security/CREDENTIALS.md); .env.example/.env.sample and *.example.json/*.sample.json copies of the OAuth names are exempt."
+    _fail "staged file '$hit' is a credential-file class (.env*, .envrc*, key material, or an OAuth client/token/service-account file such as credentials.json, token.json, client_secret*.json). Unstage it (git restore --staged '$hit') and keep the secret in the OS vault via the credential broker (core/security/CREDENTIALS.md); .env.example/.env.sample (and the same for .envrc) and *.example.json/*.sample.json copies of the OAuth names are exempt."
   fi
 
   # ---- classes 1-3: added lines, ONE diff over the whole index -----------------
@@ -385,6 +388,13 @@ again: sk-ant-$(printf 'b%.0s' $(seq 1 24))";                                   
   mkrepo; stage "doc.md" "url=https://user:${LB}${LB}db_password${RB}${RB}@host/";         expect "template placeholder URL passes" 0
   mkrepo; stage ".env.example" "SECRET=fill-me-in";                                       expect ".env.example passes (parity with block-env-writes)" 0
   mkrepo; stage ".env.sample" "SECRET=";                                                  expect ".env.sample passes" 0
+  mkrepo; stage ".envrc" "export TOKEN=1";                                                expect "v3.0-199: direnv's .envrc blocks by path" 1
+  mkrepo; stage "sub/.EnvRC" "export TOKEN=1";                                            expect "v3.0-199: .envrc in any letter case, in a subfolder, blocks" 1
+  mkrepo; stage ".envrc.local" "export TOKEN=1";                                          expect "v3.0-199: .envrc.local blocks (the .envrc.* family)" 1
+  mkrepo; stage ".envrc.example" "export TOKEN=";                                         expect "v3.0-199: .envrc.example passes (the same template exemption)" 0
+  mkrepo; stage ".envrc.sample" "export TOKEN=";                                          expect "v3.0-199: .envrc.sample passes" 0
+  mkrepo; stage ".environment" "x";                                                       expect "v3.0-199: an unrelated .env-prefixed name stays outside the class (evidence first)" 0
+  mkrepo; stage "docs/envrc.md" "use direnv";                                             expect "v3.0-199: a file merely NAMED after envrc passes" 0
   mkrepo; stage "core/security/hooks/test-inputs/fx.txt" "-----BEGIN RSA PRIVATE KEY-----"; expect "perimeter fixture dir is exempt (hard-coded)" 0
   mkrepo; stage "src/app.py" "def main():  # reads key by NAME from the vault";           expect "ordinary code passes" 0
   mkrepo; stage "docs/signing.key" "even an empty-looking key file blocks";               expect "a *.key path blocks wherever it sits" 1

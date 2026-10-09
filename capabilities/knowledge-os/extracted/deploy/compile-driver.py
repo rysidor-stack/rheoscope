@@ -296,6 +296,14 @@ def _backends():
     return _ENGINE_MODS["cb"]
 
 
+def _substrate():
+    """check-substrate.py (the one home of the v3.0-233 direction rule), loaded alone --
+    the pre-write probe must not need the whole engine to decide which CLI to check."""
+    if "cs" not in _ENGINE_MODS:
+        _ENGINE_MODS["cs"] = _load("check-substrate.py", "check_substrate_drv")
+    return _ENGINE_MODS["cs"]
+
+
 def _core():
     if "core" not in _ENGINE_MODS:
         _ENGINE_MODS["core"] = _load("compile-core.py", "compile_core_drv")
@@ -412,8 +420,9 @@ def parse_args(argv):
     if "--no-verify" in args:
         raise UsageError(
             "--no-verify is not a flag on this CLI and never will be: every "
-            "live absorption rides a cross-vendor verify leg (runbook standing "
-            "invariant 4). Nothing was run.")
+            "live absorption rides an independent verify leg -- a different "
+            "model, usually the other vendor (runbook standing invariant 4). "
+            "Nothing was run.")
     out = {"mode": None, "root": None, "staging": None, "authorization": None,
            "seq": None, "reason": None, "view": None, "ruling": None,
            "since": None, "sections": False, "union-event": None,
@@ -1667,7 +1676,163 @@ def _render_chain(chain):
     return "\n".join(lines)
 
 
-def probe_bridge(repo, out=print, resolver=None, runner=None, env=None):
+
+# --------------------------------------------------------------- claude resolution (v3.0-233)
+# Mirror of the CLAUDE side of the bridge (core/skills/bridge/verify-server.js
+# CLAUDE_MIN_VERSION / resolveClaudeBin). Unlike the codex walk above, the candidate WALK is
+# not duplicated here: the probe asks the bridge's own resolver (node, no model call; it runs
+# `claude --version` on each candidate) and then version-checks the one path it returns, the
+# same way the codex side re-checks a CODEX_BIN pin. THE FLOOR MUST NOT DRIFT from the bridge's:
+# change both or neither. A CLAUDE_BIN pin is version-checked here (the bridge honors it as-is)
+# and, like CODEX_BIN, the accepted path is exported so the child legs run exactly it.
+CLAUDE_MIN_VERSION = (2, 1, 220)
+
+_CLAUDE_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+_BRIDGE_CLAUDE_RESOLVER_JS = (
+    "const m=require(process.argv[1]);"
+    "process.stdout.write(String((m.resolveClaudeBin&&m.resolveClaudeBin())||''))")
+
+
+def parse_claude_version(text):
+    """First x.y.z in `claude --version` output ('2.1.291 (Claude Code)' -> (2, 1, 291))."""
+    m = _CLAUDE_VERSION_RE.search(text or "")
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+
+def resolve_claude_bin(env=None, bridge_dir=None, runner=None, isfile=None):
+    """Resolve the claude binary the Claude-direction verify legs will run. Candidates: a
+    CLAUDE_BIN pin, then the bridge's own resolveClaudeBin() (the newest claude at or above
+    the floor among the desktop app's bundled CLIs and PATH; '' when none). Every candidate
+    is version-checked against CLAUDE_MIN_VERSION here. `runner(args, timeout)` -> (rc,
+    stdout, stderr) is injectable (the self-test never spawns node or claude).
+    Returns (path_or_None, chain) with the codex walk's 4-tuple rows."""
+    env = os.environ if env is None else env
+    isfile = os.path.isfile if isfile is None else isfile
+    runner = runner or _default_version_runner
+    floor = ".".join(str(n) for n in CLAUDE_MIN_VERSION)
+    chain = []
+
+    def check(path):
+        try:
+            rc, stdout, stderr = runner([path, "--version"], PROBE_TIMEOUT_S)
+        except Exception as e:                              # noqa: BLE001
+            return False, "could not run --version (%s: %s)" % (type(e).__name__, e)
+        text = (stdout or "") + (" " + stderr if stderr else "")
+        if rc != 0:
+            return False, "--version exited %s" % rc
+        ver = parse_claude_version(text)
+        if ver is None:
+            return False, "unparseable --version output: %r" % (text.strip()[:80],)
+        shown = ".".join(str(n) for n in ver)
+        if ver < CLAUDE_MIN_VERSION:
+            return False, ("claude %s is BELOW the %s floor (the oldest CLI the "
+                           "verifier's containment was proven on)" % (shown, floor))
+        return True, "claude " + shown
+
+    pinned = env.get("CLAUDE_BIN")
+    if not pinned:
+        chain.append(("CLAUDE_BIN env", "(CLAUDE_BIN unset)", False, "skipped"))
+    elif not isfile(pinned):
+        chain.append(("CLAUDE_BIN env", pinned, False, "not on disk"))
+    else:
+        ok, detail = check(pinned)
+        chain.append(("CLAUDE_BIN env", pinned, ok,
+                      detail + (" (operator pin)" if ok else "")))
+        if ok:
+            return pinned, chain
+
+    server = os.path.join(bridge_dir or "", "verify-server.js")
+    if not bridge_dir or not isfile(server):
+        chain.append(("bridge resolveClaudeBin()", server, False,
+                      "no verify-server.js in the bridge"))
+        return None, chain
+    try:
+        rc, stdout, _err = runner(["node", "-e", _BRIDGE_CLAUDE_RESOLVER_JS,
+                                   os.path.abspath(server)], PROBE_TIMEOUT_S * 3)
+    except Exception as e:                                  # noqa: BLE001
+        chain.append(("bridge resolveClaudeBin()", server, False,
+                      "could not run node (%s)" % type(e).__name__))
+        return None, chain
+    found = (stdout or "").strip() if rc == 0 else ""
+    if not found:
+        chain.append(("bridge resolveClaudeBin()", "(none)", False,
+                      "no claude >= %s among the desktop app's bundled CLIs or PATH" % floor))
+        return None, chain
+    if not isfile(found):
+        chain.append(("bridge resolveClaudeBin()", found, False, "not on disk"))
+        return None, chain
+    ok, detail = check(found)
+    chain.append(("bridge resolveClaudeBin()", found, ok, detail + (" (newest)" if ok else "")))
+    return (found if ok else None), chain
+
+
+def _peek_author(staging):
+    """(vendor, model) from the staging dir's dispatch stamp, or (None, None). Read-only and
+    unvalidated: it only tells the pre-write probe which CLI the run will need; staging
+    validation (the F17 stamp check) still refuses a bad stamp right after the probe."""
+    try:
+        with open(os.path.join(staging, "dispatch-manifest.json"), encoding="utf-8") as fh:
+            d = (json.load(fh) or {}).get("dispatch") or {}
+        v, m = d.get("vendor"), d.get("model")
+        return (v if isinstance(v, str) and v.strip() else None,
+                m if isinstance(m, str) and m.strip() else None)
+    except Exception:                                       # noqa: BLE001
+        return None, None
+
+
+def _probe_routed(repo, bridge_dir, author, out, resolver, runner, env, claude_resolver,
+                  gate_kind, home):
+    """v3.0-233: the author-routed half of probe_bridge (see its docstring)."""
+    cs = _substrate()
+    a_vendor, a_model = author
+    a_norm = cs.normalize_vendor(a_vendor)
+    order = [v for v in cs.opposite_vendors(a_vendor) if v in cs.BRIDGE_DIRECTIONS]
+    if gate_kind == "routine" and a_norm in cs.BRIDGE_DIRECTIONS:
+        order.append(a_norm)            # the same-vendor fallback, checked only if needed
+    claude_resolver = claude_resolver or (
+        lambda env=None, runner=None: resolve_claude_bin(env=env, bridge_dir=bridge_dir,
+                                                         runner=runner))
+    resolved, chains, route = {}, [], None
+    second = cs.registry_second_model(a_vendor, home=home)
+    for v in order:
+        if v == "openai":
+            path, chain = resolver(env=env, runner=runner)
+        else:
+            path, chain = claude_resolver(env=env, runner=runner)
+        chains.append((v, chain))
+        if path:
+            resolved[v] = path
+        route = cs.choose_verifier(a_vendor, a_model, gate_kind, resolved.keys(),
+                                   second_model=second, env_model=env.get("VERIFY_MODEL"))
+        if route.get("ok"):
+            break
+    if route is None:
+        route = cs.choose_verifier(a_vendor, a_model, gate_kind, (), second_model=second,
+                                   env_model=env.get("VERIFY_MODEL"))
+    if not route.get("ok"):
+        out("REFUSED (bridge probe): %s" % route.get("refusal"))
+        for v, chain in chains:
+            out("  %s CLI candidates tried:" % v)
+            out(_render_chain(chain))
+        out("  Nothing was written.")
+        return False, route.get("refusal")
+    d = route["direction"]
+    binpath = resolved[d]
+    version = "(version not recorded)"
+    for _v, chain in chains:
+        for row in chain:
+            if row[2] and row[1] == binpath:
+                version = row[3] if len(row) > 3 else version
+    env["CODEX_BIN" if d == "openai" else "CLAUDE_BIN"] = binpath   # pin the child legs
+    out("bridge probe: %s at %s -- verifier route: author %s/%s -> %s (%s, %s leg)"
+        % (version, binpath, route.get("author_vendor"), a_model, d, route.get("basis"),
+           gate_kind))
+    return True, version
+
+
+def probe_bridge(repo, out=print, resolver=None, runner=None, env=None, author=None,
+                 claude_resolver=None, gate_kind="routine", home=None):
     """PRE-WRITE bridge probe (backlog v3.0-68). Resolves the bridge dir the way
     compile-backends.BridgeVerifyBackend._bridge_dir() does, then resolves the
     codex binary the way codex-verify-server.js does -- version-checking EVERY
@@ -1689,6 +1854,19 @@ def probe_bridge(repo, out=print, resolver=None, runner=None, env=None):
     failure -- a scrubbed environment resolving the wrong binary or none at all
     -- from a wasted absorb-then-revert cycle into a refusal that costs nothing.
 
+    v3.0-233 -- THE PROBE FOLLOWS THE ARTIFACT'S AUTHOR. With `author` = the dispatch
+    stamp's (vendor, model) (execute_run peeks it from the staging dir), the probe checks
+    the CLI of whichever direction the run will NEED, chosen by check-substrate's
+    choose_verifier (the same rule BridgeVerifyBackend applies): the opposite vendor's CLI
+    first (codex >= CODEX_MIN_VERSION through resolve_codex_bin; claude >=
+    CLAUDE_MIN_VERSION through the bridge's own resolver), the author's own CLI only for a
+    routine same-vendor fallback, and it pins the chosen one (CODEX_BIN or CLAUDE_BIN). A
+    route the policy refuses (no far-side CLI and no different same-vendor model, a
+    same-model check, a vendor-tier leg with no other vendor) refuses HERE, before anything
+    is written, with the remedy and every chain it tried. With no author (no stamp yet --
+    staging validation refuses that right after) the probe keeps its pre-v3.0-233 codex
+    check unchanged.
+
     Returns (ok, detail)."""
     env = os.environ if env is None else env
     bridge_dir = env.get("CROSS_VENDOR_BRIDGE_DIR") or os.path.join(
@@ -1700,6 +1878,9 @@ def probe_bridge(repo, out=print, resolver=None, runner=None, env=None):
         return False, "no verify-cli.js at %s" % bridge_dir
 
     resolver = resolver or resolve_codex_bin
+    if author and author[0]:
+        return _probe_routed(repo, bridge_dir, author, out, resolver, runner, env,
+                             claude_resolver, gate_kind, home)
     binpath, chain = resolver(env=env, runner=runner)
     if not binpath:
         out("REFUSED (bridge probe): no codex binary met the >= %s floor. "
@@ -1777,7 +1958,9 @@ def execute_run(root, staging, auth_path, sections=False, engine=None,
 
     # ---- 2b. bridge probe (v3.0-68): can the verify legs reach a runnable
     # codex at all? A no-token, no-network check -- see probe_bridge().
-    ok, _detail = probe(repo, out=out)
+    # v3.0-233: the probe checks (and pins) the CLI of the direction the run's
+    # author stamp needs -- peeked read-only here; validated in step 3.
+    ok, _detail = probe(repo, out=out, author=_peek_author(staging))
     if not ok:
         return EXIT_FAIL
 
@@ -2110,7 +2293,7 @@ def execute_reverify(root, seq, staging, auth_path, engine=None, probe=None,
         return EXIT_FAIL
     for w in authorization.get("trust_warnings", []):
         out("WARNING (trust-surface): %s" % w)
-    ok, _detail = probe(repo, out=out)
+    ok, _detail = probe(repo, out=out, author=_peek_author(staging))
     if not ok:
         return EXIT_FAIL
     try:
@@ -5398,6 +5581,116 @@ def self_test():                                            # noqa: C901
                              probe=lambda repo, out=print, **kw: (False, "x"))
         case("--reverify refuses when the bridge probe fails, nothing "
              "dispatched", rc == EXIT_FAIL and eng_probe4.verify_calls == 0)
+
+        # ---- P2. v3.0-233: the probe follows the ARTIFACT's author (hermetic: both
+        # resolvers are stubs; nothing spawns node, codex or claude)
+        CLAUDE_EXE = "C:\\app\\claude-code\\2.1.291\\claude.exe"
+        tried = []
+
+        def codex_stub(found):
+            def r(**kw):
+                tried.append("codex")
+                return (HOME_EXE if found else None), [
+                    ("expanduser npm exe", HOME_EXE, bool(found),
+                     "codex-cli 0.144.1" if found else "not on disk")]
+            return r
+
+        def claude_stub(found):
+            def r(**kw):
+                tried.append("claude")
+                return (CLAUDE_EXE if found else None), [
+                    ("bridge resolveClaudeBin()", CLAUDE_EXE if found else "(none)",
+                     bool(found), "claude 2.1.291" if found
+                     else "no claude >= 2.1.220 among the desktop app's bundled CLIs or PATH")]
+            return r
+
+        no_home = os.path.join(repo_p, "no-home")
+        del tried[:]
+        env_c = {}
+        lines = []
+        ok, _d = probe_bridge(repo_p, out=lines.append, env=env_c,
+                              author=("openai", "gpt-6.1-sol"), home=no_home,
+                              resolver=codex_stub(True), claude_resolver=claude_stub(True))
+        case("v3.0-233 probe: a Codex-authored stamp checks the CLAUDE CLI (the direction "
+             "the run needs), pins it as CLAUDE_BIN, and never consults codex",
+             ok and env_c.get("CLAUDE_BIN") == CLAUDE_EXE and "CODEX_BIN" not in env_c
+             and tried == ["claude"] and "-> anthropic" in "\n".join(lines), lines)
+        del tried[:]
+        env_o = {}
+        ok, _d = probe_bridge(repo_p, out=silent, env=env_o,
+                              author=("anthropic", "claude-opus-5-5"), home=no_home,
+                              resolver=codex_stub(True), claude_resolver=claude_stub(True))
+        case("v3.0-233 probe: a Claude-authored stamp checks and pins the CODEX CLI "
+             "(floor unchanged), never consults claude",
+             ok and env_o.get("CODEX_BIN") == HOME_EXE and "CLAUDE_BIN" not in env_o
+             and tried == ["codex"])
+        del tried[:]
+        env_n = {}
+        lines = []
+        ok, _d = probe_bridge(repo_p, out=lines.append, env=env_n,
+                              author=("openai", "gpt-6.1-sol"), home=no_home,
+                              resolver=codex_stub(True), claude_resolver=claude_stub(False))
+        blob = "\n".join(lines)
+        case("v3.0-233 probe: no far-side CLI and no second model -> REFUSED pre-write, "
+             "naming what to install or set, with the chains it tried; nothing pinned",
+             ok is False and "Claude Code CLI" in blob and "VERIFY_MODEL" in blob
+             and "2.1.220" in blob and env_n == {} and tried == ["claude", "codex"], lines)
+        lines = []
+        ok, _d = probe_bridge(repo_p, out=lines.append,
+                              env={"VERIFY_MODEL": "GPT-6.1-sol"},
+                              author=("openai", "gpt-6.1-sol"), home=no_home,
+                              resolver=codex_stub(True), claude_resolver=claude_stub(False))
+        case("v3.0-233 probe: a same-vendor fallback naming the author's own model "
+             "(differently written) -> REFUSED (never a same-model leg)",
+             ok is False and "SAME model" in "\n".join(lines), lines)
+        del tried[:]
+        ok, _d = probe_bridge(repo_p, out=silent, env={}, gate_kind="migration",
+                              author=("openai", "gpt-6.1-sol"), home=no_home,
+                              resolver=codex_stub(True), claude_resolver=claude_stub(False))
+        case("v3.0-233 probe: a vendor-tier leg never checks the author's own CLI as a "
+             "fallback -> REFUSED", ok is False and tried == ["claude"])
+
+        # resolve_claude_bin through a stubbed runner: the pin is version-checked, the
+        # bridge's resolver is asked next, and its answer is version-checked too
+        def claude_runner(table):
+            def run(args, timeout):
+                if args[0] == "node":
+                    return table.get("node", (0, "", ""))
+                return table.get(args[0], (0, "2.1.291 (Claude Code)", ""))
+            return run
+        srv_dir = os.path.join(repo_p, ".claude", "skills", "bridge")
+        write(os.path.join(srv_dir, "verify-server.js"), "// fixture\n")
+        b, chain = resolve_claude_bin(
+            env={"CLAUDE_BIN": "C:\\old\\claude.exe"}, bridge_dir=srv_dir,
+            isfile=lambda p: True,
+            runner=claude_runner({"C:\\old\\claude.exe": (0, "2.1.219 (Claude Code)", ""),
+                                  "node": (0, CLAUDE_EXE, "")}))
+        case("v3.0-233 resolve_claude_bin: a CLAUDE_BIN pin BELOW 2.1.220 is rejected and "
+             "the bridge's resolver answer (2.1.291) is used",
+             b == CLAUDE_EXE and any("BELOW" in r[3] for r in chain), chain)
+        b, chain = resolve_claude_bin(env={}, bridge_dir=srv_dir, isfile=lambda p: True,
+                                      runner=claude_runner({"node": (0, "", "")}))
+        case("v3.0-233 resolve_claude_bin: the bridge finds no claude at the floor -> None "
+             "(no bare-name fallback)", b is None, chain)
+        b, chain = resolve_claude_bin(
+            env={"CLAUDE_BIN": "C:\\pin\\claude.exe"}, bridge_dir=srv_dir,
+            isfile=lambda p: True,
+            runner=claude_runner({"C:\\pin\\claude.exe": (0, "2.1.220 (Claude Code)", "")}))
+        case("v3.0-233 resolve_claude_bin: a pin AT the floor wins as an operator pin",
+             b == "C:\\pin\\claude.exe" and CLAUDE_MIN_VERSION == (2, 1, 220))
+
+        # the driver hands the probe the stamp's author
+        st_a = make_staging(repo_p, view="wiki/route.md", events=("raw/route.md",))
+        case("v3.0-233: _peek_author reads the dispatch stamp's vendor/model; a dir with "
+             "no stamp -> (None, None)",
+             _peek_author(st_a) == ("v", "m")
+             and _peek_author(os.path.join(repo_p, "nowhere")) == (None, None))
+        seen_author = []
+        run_driver(repo_p, st_a, good, engine=FakeEngine(), sensors=quiet_sensors,
+                   out=silent, probe=lambda repo, out=print, **kw: (
+                       seen_author.append(kw.get("author")), (False, "stop"))[1])
+        case("v3.0-233: --run passes the staging stamp's author to the probe",
+             seen_author == [("v", "m")], seen_author)
     finally:
         shutil.rmtree(repo_p, ignore_errors=True)
 

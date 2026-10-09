@@ -5,9 +5,10 @@ description: Get a fast, substrate-different (cross-vendor) second opinion on a 
 
 # /cross-check — Cross-Vendor Second Opinion
 
-You (a Claude session) just produced or drove something — a build you're about to call done, a
-decision you're about to commit, a reasoning step you suspect you're anchoring on. This skill
-hands the **claim** to an *independent OpenAI Codex/GPT verifier* (a different AI vendor), gets
+You (the driving session — Claude Code or Codex) just produced or drove something — a build you're
+about to call done, a decision you're about to commit, a reasoning step you suspect you're anchoring
+on. This skill hands the **claim** to an *independent verifier from the OTHER AI vendor* (a Claude
+session gets an OpenAI Codex/GPT verifier; a Codex session gets an Anthropic Claude verifier), gets
 back a structured verdict, and folds it into your reasoning. It runs on the operator's existing
 subscription — no API keys, no copy-paste — via the bundled cross-vendor verify bridge (`bridge/verify-cli.js`).
 
@@ -18,12 +19,18 @@ want to pressure-test the verifier's verdict, or it's a T1 keystone call — tha
 
 ## Non-negotiables (read before every run)
 
-1. **Cross-vendor only counts if the verifier ≠ the substrate that produced the thing.** You are
-   Claude; this skill routes to a **GPT** verifier (which GPT is resolved at run time — the Codex CLI's own
-   default unless overridden; `node .claude/skills/bridge/models.js` shows it). That direction is fixed by the tool you call
-   (`verify-cli.js` → codex-verify server → GPT) — you cannot accidentally get a same-vendor
-   rubber-stamp. (If you were a *Codex/GPT* session, you'd use the mirror, `claude-verify` → Claude,
-   from the Codex harness — not this skill.)
+1. **Cross-vendor only counts if the verifier ≠ the substrate that produced the thing.** Before the
+   first call, establish **your own vendor** from the session's agent markers (the same ones the
+   bridge's `models.js sessionVendor()` and the doctor read): `CLAUDECODE` / `CLAUDE_CODE_SESSION_ID` /
+   `CLAUDE_CODE_ENTRYPOINT` set ⇒ you are **Claude** (`anthropic`); `CODEX_SANDBOX` / `CODEX_THREAD_ID` /
+   `CODEX_SESSION_ID` set ⇒ you are **Codex** (`openai`). Markers from **both** tools, or from **neither** ⇒
+   ask the operator **once** this session which tool is driving, and use the answer for every call. Then
+   always pass `--direction <the OTHER vendor>` and `--requester-vendor <your own>` (step 3): a Claude
+   session runs `--direction openai --requester-vendor anthropic` (contained `codex exec` → GPT); a Codex
+   session runs `--direction anthropic --requester-vendor openai` (contained, tool-less `claude -p`). Which
+   model answers is resolved at run time (`node .claude/skills/bridge/models.js` shows it). The bridge
+   refuses a requester equal to the verifier's vendor, so a same-vendor rubber-stamp fails loud instead of
+   passing — but never lean on the default direction: it is `openai`, which is same-vendor from Codex.
 2. **Verification is NOT approval.** A `confirmed` verdict does not lock a decision and does not
    authorize any irreversible or real-world action (send / publish / delete / spend / change live
    infra / expose private data). Those still need explicit **human** approval, and locking a
@@ -32,7 +39,7 @@ want to pressure-test the verifier's verdict, or it's a T1 keystone call — tha
    missing, timeout, garbage verdict). If it fails, you **HALT and say so** — never substitute a
    silent "looks fine." Every reported outcome points at the actual verdict JSON.
 4. **Don't poison the verifier (taint).** Whatever you put in `--claim`/`--evidence` enters the
-   GPT verifier's context. From a session holding live credentials and a push/egress channel
+   other vendor's verifier context. From a session holding live credentials and a push/egress channel
    (e.g. a credentialed MCP server plus `git push`), **never** put secrets, customer PII, or
    untrusted scraped text in the claim or evidence. If the thing under test can't be evidenced
    without secrets, redact them or abort and route to a contained session.
@@ -95,6 +102,8 @@ is the make-or-break turned into something auditable; the verifier's skeptic man
 ### 3 — Invoke the verifier (fail loud)
 ```
 node "${CROSS_VENDOR_BRIDGE_DIR:-.claude/skills/bridge}/verify-cli.js" \
+  --direction <the OTHER vendor: openai|anthropic> \
+  --requester-vendor <your own vendor: anthropic|openai> \
   --claim "<your one falsifiable sentence>" \
   --evidence-file <path to the raw artifacts you assembled> \
   [--tier T2|T3|T4]
@@ -104,14 +113,17 @@ init materializes the bridge — see `bridge/README.md`. A missing or unreadable
 the correct behavior.)
 stdout is the verdict JSON only; diagnostics go to stderr. **Non-zero exit ⇒ HALT** and report
 the `VERIFY FAILED: …` line — do not proceed as if verified. Confirm the returned
-`verifier.vendor` is `openai` (it must be, for this to be cross-vendor).
+`verifier.vendor` **differs from your own vendor** (it must, for this to be cross-vendor) — if it
+matches, HALT and report it as a routing failure, not a verdict.
 
 ### 3a — Optional: repo-grounding (opt-in; ground in the real bytes, not your paste)
 When a code/data claim is better checked against the files on disk than a paste you could (even
 accidentally) trim, add BOTH flags. The **trusted bridge reads only what you allowlist** and inlines
-the real bytes as ground truth — the GPT model stays tool-less and never browses the repo:
+the real bytes as ground truth — the verifier model stays tool-less and never browses the repo. It
+works in **both directions** since v3.0.63 (both bundled servers run the same `repo-grounding.js` gate):
 ```
-node "${CROSS_VENDOR_BRIDGE_DIR:-.claude/skills/bridge}/verify-cli.js" --claim "<…>" \
+node "${CROSS_VENDOR_BRIDGE_DIR:-.claude/skills/bridge}/verify-cli.js" \
+  --direction <the OTHER vendor> --requester-vendor <your own> --claim "<…>" \
   --repo-root <absolute repo root>  --read <repo-relative file-or-dir>  [--read <another> …]
 ```
 - **Default-deny:** off unless BOTH `--repo-root` and ≥1 `--read` are passed (one alone fails closed);
@@ -150,13 +162,16 @@ skill adds **no** new store, dashboard, or status of its own.
 - **Not a test runner** — see non-negotiable #5.
 - **No metrics / verdict database / receipts subsystem** — no consumer yet; the asking session
   just folds the verdict into its own reasoning.
-- **Repo-grounding is built, but OPT-IN and off by default** — by default the verifier sees only your
-  inlined `--claim`/`--evidence`. When you want the verdict grounded in the *real bytes on disk* rather
-  than a paste, opt in (step 3a): the trusted bridge reads only the files you allowlist (fail-closed
-  gates — containment + secret-path denylist + per-file + return-path secret scrubs), and the model
-  stays tool-less. Single-shot only (not the loop). Not a license to allowlist secret stores.
+- **Not repo-blind by necessity — repo-grounding is OPT-IN and off by default.** By default the verifier
+  sees only your inlined `--claim`/`--evidence`. To ground the verdict in the *real bytes on disk*, pass
+  `--repo-root <absolute root>` plus one or more `--read <relpath>` (step 3a; either flag alone fails
+  closed): the trusted bridge reads only the files you allowlist (fail-closed gates — containment +
+  secret-path denylist + per-file + return-path secret scrubs) and the model stays tool-less. It works in
+  **both directions** (`--direction openai` and `--direction anthropic`) since v3.0.63; the contract is
+  `bridge/REPO-GROUNDING.md`. Single-shot only (not the loop). Not a license to allowlist secret stores.
   (v3.0-189: this bullet said "no repo-grounded verifier yet" from ADR #7 through v3.0.54 while
   `bridge/repo-grounding.js` shipped alongside it the whole time.)
 
-> Mirror direction: a Codex/GPT session gets a *Claude* second opinion via `claude-verify`
-> (`bridge/verify-server.js`) from the Codex harness. Same discipline, opposite vendor.
+> Both directions run through this one skill (v3.0-236): the driver's vendor picks `--direction`. A Codex
+> harness that registers the `claude-verify` MCP server (`bridge/verify-server.js`) reaches the same Claude
+> verifier as `--direction anthropic` — same discipline, same refusal of a same-vendor pair.

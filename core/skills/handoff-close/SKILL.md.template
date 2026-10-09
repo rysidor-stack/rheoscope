@@ -35,8 +35,13 @@ the T1 closer must not share the AUTHORING session's substrate — `meta.yaml.au
 **Tier-dependent rules:**
 - **T1**: the closer must NOT be the authoring substrate (family-level; non-negotiable)
   and must not be a context that wrote an output round. The headless close leg satisfies
-  both by construction: distinct vendor from the author, fresh context (mechanically
-  attested). If you are executing this protocol and either test trips, refuse — the
+  both by construction: `/handoff` chooses the close leg's vendor as the opposite family of
+  `meta.yaml.authored_by` — whichever family that is (Anthropic Claude, OpenAI Codex/GPT,
+  or another) — refuses in a preflight to fire a leg of the author's family, and runs it as
+  a fresh context (mechanically attested, with the leg's vendor and the requester's vendor
+  in the sidecar). Compare your own family (the leg prompt names it, and who the requester
+  is) against the family `authored_by` names, not against any vendor this document or the
+  packet assumes. If you are executing this protocol and either test trips, refuse — the
   dispatch layer routed wrongly.
 - **T2 / T3**: the orchestrator (authoring) session is acceptable; a context that
   authored an output round should not close.

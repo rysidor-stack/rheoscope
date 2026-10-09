@@ -19,10 +19,18 @@ leg packets one event + the union of views that source it. A failing event conse
 blocks EVERY view that sources it; a view is cleared only when all its events pass.
 
 It runs UNDER THE VERIFY HARNESS, never as a standalone same-substrate LLM batch (tp:350):
-  (a) SUBSTRATE  : verifier vendor != view-lineage vendor. The lineage author is
-                   anthropic/Claude, so every audit leg must return from a non-anthropic
-                   verifier -- the MIGRATION policy of check-substrate.py (LLM-5), with
-                   F17/F18 enforced fail-closed on every leg's substrate record.
+  (a) SUBSTRATE  : verifier vendor != view-lineage vendor -- the MIGRATION policy of
+                   check-substrate.py (LLM-5), with F17/F18 enforced fail-closed on every
+                   leg's substrate record. v3.0-233: the lineage author is READ, per leg,
+                   from the corpus records (each view's derivation `verified:` block,
+                   absorb_vendor/absorb_model_id, which the engine stamps from the
+                   dispatch record), or from an operator attestation (--author-vendor
+                   with --author-source) for views no record covers -- never the old
+                   hard-coded "anthropic", which let a Codex-authored corpus pass this
+                   vendor gate GPT-against-GPT. The fire step routes each leg to the
+                   OPPOSITE vendor of that author (check-substrate.choose_verifier,
+                   vendor tier: no same-vendor fallback) and refuses when its CLI is
+                   absent.
   (b) RECORD     : every leg's verdict is recorded in the same structured form as a
                    VERIFY pass (separate vendor/model_id fields, substrate_source,
                    packet hash, artifact = the raw verdict JSON on disk).
@@ -63,8 +71,11 @@ consumed_status -- clearing views to verified-consumed happens at P1-live seedin
 Usage:
   audit-content.py --prepare --root DIR --out DIR --planted SPEC [--planted SPEC2 ...]
                    [--events e1,e2,...]     (default: the full event population)
+                   [--author-vendor V --author-source operator-attested:<date>]
+                   (v3.0-233: who wrote views no corpus record covers; never assumed)
   audit-content.py --fire --batch DIR [--timeout-ms N] [--effort LEVEL]
-                   (fires the bridge verifier per unanswered leg; needs node + codex CLI)
+                   (fires the bridge verifier per unanswered leg, each routed to the
+                   OPPOSITE vendor of its author; needs node + that vendor's CLI)
   audit-content.py --ingest --batch DIR
   audit-content.py --population --root DIR  (report the audit population, read-only)
   audit-content.py --self-test
@@ -79,6 +90,7 @@ import importlib.util
 import json
 import os
 import posixpath
+import re
 import subprocess
 import sys
 
@@ -111,11 +123,198 @@ def _load_module(basename, alias):
 
 _substrate = _load_module("check-substrate.py", "check_substrate")
 
-# The view-lineage author (absorb side). The legacy corpus was authored across many Claude
-# sessions/models; the MIGRATION gate is VENDOR-level (tp:384 policy), so the model_id is an
-# honest aggregate label, recorded separately per F18.
-ABSORB_VENDOR = "anthropic"
-ABSORB_MODEL_ID = "claude-legacy-lineage"
+# --------------------------------------------------------------------------- lineage author
+# v3.0-233. The view-lineage author (absorb side) used to be a constant ("anthropic" /
+# "claude-legacy-lineage"). It is now READ per leg: each view's derivation-region
+# `verified:` block carries absorb_vendor/absorb_model_id (stamped by the engine from the
+# F17 dispatch record when that view's absorption was verified). A view with no such record
+# (the legacy, backfilled population this audit exists for) needs an OPERATOR ATTESTATION of
+# who wrote the corpus: --author-vendor V --author-source <class>:<payload>, the same legal
+# provenance classes stamp_dispatch accepts. A leg whose views disagree, or whose record
+# contradicts the attestation, is refused at prepare time. The MIGRATION gate is
+# VENDOR-level (tp:384 policy), so an attested author's model_id is an honest aggregate
+# label ("<vendor>-legacy-lineage"), recorded separately per F18.
+AUTHOR_SOURCE_CLASSES = ("attestation:", "operator-attested:", "scheduled-invocation:")
+_DERIV_START = "# --- derivation"
+_DERIV_END = "# --- /derivation"
+_VERIFIED_FIELD_RE = re.compile(r"^\s+(absorb_vendor|absorb_model_id):[ \t]*(\S*)[ \t]*$")
+
+
+def view_author_record(text):
+    """(vendor, model) from a view's derivation-region `verified:` block, or (None, None)."""
+    vendor = model = None
+    inside = in_verified = False
+    for line in (text or "").splitlines():
+        st = line.strip()
+        if not inside:
+            inside = st.startswith(_DERIV_START)
+            continue
+        if st.startswith(_DERIV_END):
+            break
+        if re.match(r"^verified:", line):
+            in_verified = True
+            continue
+        if in_verified and line and not line[0].isspace():
+            in_verified = False
+        if in_verified:
+            m = _VERIFIED_FIELD_RE.match(line)
+            if m and m.group(2) and m.group(2).lower() not in ("null", "~", "''", '""'):
+                if m.group(1) == "absorb_vendor":
+                    vendor = m.group(2)
+                else:
+                    model = m.group(2)
+    return vendor, model
+
+
+def author_source_ok(source):
+    return isinstance(source, str) and any(
+        source.startswith(c) and source[len(c):].strip() for c in AUTHOR_SOURCE_CLASSES)
+
+
+def leg_author(root, views, explicit=None):
+    """The author of one leg's views: {"vendor", "model_id", "source"} or {"error"}.
+    explicit = (vendor, source) from --author-vendor/--author-source, or None."""
+    recorded, unrecorded = {}, []
+    for v in views:
+        try:
+            vendor, model = view_author_record(_read(root, v))
+        except OSError:
+            vendor, model = None, None
+        nv = _substrate.normalize_vendor(vendor)
+        if nv:
+            recorded.setdefault(nv, []).append((v, model))
+        else:
+            unrecorded.append(v)
+    ex_vendor = _substrate.normalize_vendor(explicit[0]) if explicit else None
+    vendors = set(recorded) | ({ex_vendor} if ex_vendor and unrecorded else set())
+    if len(vendors) > 1 or (ex_vendor and recorded and ex_vendor not in recorded):
+        return {"error": "views of one event were written by different vendors (%s%s) -- "
+                         "no single verifier vendor differs from all of them; audit them "
+                         "in separate batches" % (
+                             ", ".join("%s: %s" % (k, ", ".join(x for x, _m in vs))
+                                       for k, vs in sorted(recorded.items())),
+                             ("; attested: %s" % ex_vendor) if ex_vendor else "")}
+    if unrecorded and not ex_vendor:
+        return {"error": "no record names who wrote %s (no derivation verified.absorb_vendor) "
+                         "-- pass --author-vendor <anthropic|openai|...> --author-source "
+                         "operator-attested:<YYYY-MM-DD> (the operator's statement of who "
+                         "authored the corpus); the audit never assumes a vendor"
+                         % ", ".join(unrecorded)}
+    if recorded and not unrecorded:
+        (vendor, pairs), = recorded.items()
+        models = sorted({m for _v, m in pairs if m})
+        return {"vendor": vendor,
+                # v3.0.64 review round 3: one model only when EVERY view records that model
+                "model_id": models[0] if (len(models) == 1 and all(m for _v, m in pairs))
+                            else "%s-lineage" % vendor,
+                "source": "corpus-record:verified.absorb_vendor (%d view(s))" % len(pairs)}
+    return {"vendor": ex_vendor, "model_id": "%s-legacy-lineage" % ex_vendor,
+            "source": explicit[1]}
+
+
+def assign_authors(root, legs, explicit=None):
+    """Set absorb_vendor / absorb_model_id / author_source on every leg; returns the list
+    of refusal lines (empty when every leg has one author)."""
+    errors = []
+    for leg in legs:
+        a = leg_author(root, leg["views"], explicit)
+        if a.get("error"):
+            errors.append("%s: %s" % (leg["event"], a["error"]))
+            continue
+        leg["absorb_vendor"], leg["absorb_model_id"] = a["vendor"], a["model_id"]
+        leg["author_source"] = a["source"]
+    return errors
+
+
+def manifest_author(legs):
+    """Top-level (absorb_vendor, absorb_model_id) for the manifest: the common value, or
+    "mixed" -- ingest gates every leg on ITS OWN author, never on this summary."""
+    vs = sorted({x.get("absorb_vendor") for x in legs})
+    ms = sorted({x.get("absorb_model_id") for x in legs})
+    return (vs[0] if len(vs) == 1 else "mixed"), (ms[0] if len(ms) == 1 else "mixed")
+
+
+def parse_author_args(vendor, source):
+    """(explicit, error) for --author-vendor/--author-source."""
+    if not vendor and not source:
+        return None, None
+    if not vendor or not source:
+        return None, "--author-vendor and --author-source go together"
+    if not _substrate.normalize_vendor(vendor) or "/" in vendor or ":" in vendor:
+        return None, "--author-vendor %r is not a vendor name" % vendor
+    if not author_source_ok(source):
+        return None, ("--author-source %r is not in a legal class (%s, each with a payload) "
+                      "-- typing a vendor from memory is not a source"
+                      % (source, ", ".join(AUTHOR_SOURCE_CLASSES)))
+    return (vendor, source), None
+
+
+# --------------------------------------------------------------------------- leg routing
+def leg_route(leg, manifest, available=None):
+    """v3.0-233: the verifier route for one audit leg -- the OPPOSITE vendor of the leg's
+    author (MIGRATION tier: no same-vendor fallback), or a refusal naming what to install."""
+    vendor = leg.get("absorb_vendor") or manifest.get("absorb_vendor")
+    model = leg.get("absorb_model_id") or manifest.get("absorb_model_id")
+    if vendor == "mixed":
+        vendor = None
+    if available is None:
+        available = _substrate.detect_cli_vendors()
+    route = _substrate.choose_verifier(vendor, model, _substrate.MIGRATION, available,
+                                       env_model=os.environ.get("VERIFY_MODEL") or None)
+    route["server"] = {"openai": "codex-verify-server.js",
+                       "anthropic": "verify-server.js"}.get(route.get("direction"))
+    return route
+
+
+def routed_evidence(batch, leg_id, packet_path, route, tag=""):
+    """Writes the evidence actually sent (the packet + the VERIFIER ROUTE disclosure) to
+    routed/ and the route itself to routes/ (the receipt ingest reads); returns the path.
+    The prepare-time packet and its recorded sha are left untouched."""
+    for d in ("routed", "routes"):
+        os.makedirs(os.path.join(batch, d), exist_ok=True)
+    name = leg_id + (("-" + tag) if tag else "")
+    with open(packet_path, encoding="utf-8") as fh:
+        body = fh.read()
+    body += ("\n\n## VERIFIER ROUTE (engine disclosure, v3.0-233)\n"
+             "author (from the corpus records): %s/%s\n"
+             "verifier direction: %s (%s; %s leg)\n"
+             "requester vendor passed to the bridge: %s\n"
+             "bridge server: %s\n" % (
+                 route.get("author_vendor"), route.get("author_model"),
+                 route.get("direction"), route.get("basis"), route.get("gate_kind"),
+                 route.get("requester_vendor"), route.get("server")))
+    ev = os.path.join(batch, "routed", name + ".md")
+    with open(ev, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(body)
+    with open(os.path.join(batch, "routes", name + ".json"), "w", encoding="utf-8",
+              newline="\n") as fh:
+        json.dump(dict(route, evidence_sha256=_sha256_file(ev)), fh, indent=1,
+                  sort_keys=True)
+    return ev
+
+
+def _runner_takes_env(runner):
+    """Test runners may accept (args, env) to observe the dispatch environment."""
+    try:
+        import inspect
+        return len(inspect.signature(runner).parameters) >= 2
+    except (TypeError, ValueError):
+        return False
+
+
+def routed_direction(batch, leg_id):
+    """The direction the route recorded for this leg (routes/<leg>.json), or None."""
+    p = os.path.join(batch, "routes", leg_id + ".json")
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return (json.load(fh) or {}).get("direction")
+    except (OSError, ValueError):
+        return None
+
+
+def route_args(route):
+    return ["--direction", route["direction"], "--requester-vendor",
+            route["requester_vendor"]]
 
 CLAIM_TEMPLATE = (
     "In content-audit packet %s, every load-bearing claim asserted by the EVENT section "
@@ -261,7 +460,7 @@ def _assert_out_safe(root, out):
                              % (out, surface))
 
 
-def prepare(root, out, planted_specs, events=None, injection_json=None):
+def prepare(root, out, planted_specs, events=None, injection_json=None, author=None):
     if yaml is None:
         print("RESULT: INCONCLUSIVE -- PyYAML unavailable")
         return 2
@@ -346,6 +545,13 @@ def prepare(root, out, planted_specs, events=None, injection_json=None):
              views, False, None)
 
     legs.sort(key=lambda x: x["id"])   # hash order == blinded order
+    # v3.0-233: every leg's author is READ from the corpus records (or attested)
+    author_errors = assign_authors(root, legs, author)
+    if author_errors:
+        print("RESULT: INCONCLUSIVE -- the author of these views is not known, so no "
+              "verifier vendor can be chosen:\n  " + "\n  ".join(author_errors))
+        return 2
+    m_vendor, m_model = manifest_author(legs)
     # the FULL population's view->events map, so ingest can roll up view clearance
     # honestly: a view clears only when EVERY event sourcing it (population-wide, not
     # batch-wide) has a passing audit
@@ -354,7 +560,7 @@ def prepare(root, out, planted_specs, events=None, injection_json=None):
         for v in views:
             view_totals.setdefault(v, []).append(erel)
     manifest = {"root_sha": salt, "root": os.path.abspath(root).replace("\\", "/"),
-                "absorb_vendor": ABSORB_VENDOR, "absorb_model_id": ABSORB_MODEL_ID,
+                "absorb_vendor": m_vendor, "absorb_model_id": m_model,
                 "deferred_events": sorted(deferred),
                 "view_event_totals": {v: sorted(es) for v, es in view_totals.items()},
                 "legs": legs}
@@ -438,7 +644,8 @@ def _trust_gate(rel, root=None):
     return mod.gate_artifact(root, rel_posix)
 
 
-def fire(batch, timeout_ms=0, effort="", shard=None, full_run_authorized=False):
+def fire(batch, timeout_ms=0, effort="", shard=None, full_run_authorized=False,
+         available=None, runner=None):
     """Fire the bridge verifier for every leg without a verdict file (resumable). The
     verifier substrate comes back in the verdict JSON's `verifier` field -- the
     invocation-metadata channel (F17); this runner never writes substrate strings.
@@ -480,24 +687,40 @@ def fire(batch, timeout_ms=0, effort="", shard=None, full_run_authorized=False):
         if os.path.isfile(vpath) and os.path.getsize(vpath) > 0:
             skipped += 1
             continue
+        # v3.0-233: the verifier is the OPPOSITE vendor of this leg's author (vendor tier)
+        route = leg_route(leg, manifest, available)
+        if not route.get("ok"):
+            print("  REFUSED %s (route): %s" % (leg["id"], route.get("refusal")))
+            failed += 1
+            continue
+        evidence = routed_evidence(batch, leg["id"],
+                                   os.path.join(batch, leg["packet"].replace("/", os.sep)),
+                                   route)
         args = ["node", cli, "--claim", leg["claim"],
-                "--evidence-file", os.path.join(batch, leg["packet"].replace("/", os.sep)),
-                "--tier", "T2"]
+                "--evidence-file", evidence, "--tier", "T2"] + route_args(route)
         if timeout_ms:
             args += ["--timeout-ms", str(timeout_ms)]
         if effort:
             args += ["--effort", effort]
-        print("firing %s (%s)..." % (leg["id"], leg["event"]))
+        print("firing %s (%s) -> %s..." % (leg["id"], leg["event"], route["direction"]))
         # the bridge emits UTF-8; never let Windows' cp1252 default kill the reader thread
-        proc = subprocess.run(args, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace")
-        if proc.returncode != 0 or not (proc.stdout or "").strip():
-            print("  FAILED rc=%d: %s" % (proc.returncode,
-                                          (proc.stderr or "").strip()[-300:]))
+        # v3.0.64 review round 2: a VERIFY_MODEL naming the AUTHOR's vendor never reaches the
+        # other vendor's CLI (parity with compile-backends._run_bridge)
+        env = dict(os.environ)
+        if route.get("drop_env_model"):
+            env.pop("VERIFY_MODEL", None)
+        if runner is not None:
+            rc, out_text, err_text = runner(args, env) if _runner_takes_env(runner) else runner(args)
+        else:
+            proc = subprocess.run(args, capture_output=True, text=True, env=env,
+                                  encoding="utf-8", errors="replace")
+            rc, out_text, err_text = proc.returncode, proc.stdout, proc.stderr
+        if rc != 0 or not (out_text or "").strip():
+            print("  FAILED rc=%d: %s" % (rc, (err_text or "").strip()[-300:]))
             failed += 1
             continue
         with open(vpath, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(proc.stdout.strip())
+            fh.write(out_text.strip())
         fired += 1
         print("  verdict saved -> %s" % vpath)
     print("fire: %d fired, %d already-answered, %d failed" % (fired, skipped, failed))
@@ -513,10 +736,16 @@ def _substrate_record(leg, verdict, manifest):
     v = (verdict or {}).get("verifier") or {}
     rec = {"verifier_vendor": v.get("vendor") or "",
            "verifier_model_id": v.get("model") or "",
-           "absorb_vendor": manifest.get("absorb_vendor", ""),
-           "absorb_model_id": manifest.get("absorb_model_id", ""),
+           # v3.0-233: the LEG's own author (read from the corpus records at prepare);
+           # the manifest's value is the fallback for batches prepared before it
+           "absorb_vendor": leg.get("absorb_vendor") or manifest.get("absorb_vendor", ""),
+           "absorb_model_id": leg.get("absorb_model_id")
+           or manifest.get("absorb_model_id", ""),
            "packet_hash": leg.get("packet_sha256", ""),
            "artifact": "verdicts/%s.json" % leg["id"]}
+    if rec["absorb_vendor"] == "mixed":
+        # a summary value is never an author: blank fails F18 well-formedness (closed)
+        rec["absorb_vendor"], rec["absorb_model_id"] = "", ""
     if rec["verifier_vendor"] and rec["verifier_model_id"]:
         rec["substrate_source"] = "invocation-metadata"
     return rec
@@ -583,6 +812,17 @@ def ingest(batch):
             ok_gate = _substrate.substrate_gate_ok(
                 rec["absorb_vendor"], rec["absorb_model_id"],
                 rec["verifier_vendor"], rec["verifier_model_id"], _substrate.MIGRATION)
+            # v3.0.64 review round 2: the verdict must come from the direction the route CHOSE,
+            # not merely from some vendor other than the author's (a third-vendor author routed
+            # to anthropic must not accept an openai verdict)
+            chosen = routed_direction(batch, leg["id"])
+            got = _substrate.normalize_vendor(rec["verifier_vendor"])
+            ok_dir = bool(chosen) and got == _substrate.normalize_vendor(chosen)
+            if not ok_dir:
+                substrate_fails.append(
+                    "%s: verdict from %r but the route chose %r%s" % (
+                        leg["id"], rec["verifier_vendor"], chosen,
+                        "" if chosen else " (no route recorded -- re-prepare the batch)"))
             if not (ok_form and ok_prov and ok_gate):
                 substrate_fails.append(
                     "%s: %s" % (leg["id"],
@@ -684,7 +924,19 @@ def ingest(batch):
 
 
 # --------------------------------------------------------------------------- self-test
-def _mk_fixture_tree(base):
+def _fixture_deriv(author):
+    """v3.0-233 fixture: a derivation region whose verified: block names the author (the
+    corpus record the audit reads), or none at all when author is None."""
+    if not author:
+        return ""
+    return ("# --- derivation (engine-managed; strip region) ---\n"
+            "schema_version: 3.2\nverified:\n  status: passed\n"
+            "  verifier_vendor: x\n  verifier_model_id: x\n"
+            "  absorb_vendor: %s\n  absorb_model_id: %s\n"
+            "# --- /derivation ---\n" % author)
+
+
+def _mk_fixture_tree(base, author=("anthropic", "claude-sonnet-5")):
     """e1 -> v1 only (planted target); e2 -> v2; e3 -> v2+v3 with its claims
     DISTRIBUTED across the two siblings (the batched-compile shape that broke the
     per-view audit unit -- the event-centric packet must embed both views).
@@ -716,14 +968,17 @@ def _mk_fixture_tree(base):
       "---\ndate: 2026-01-03\ntags: [beta, gamma]\n---\nThe beta opens 2026-02-01.\n"
       "The gamma budget is $10k.\n")
     w(os.path.join(wiki, "v1.md"),
-      "---\ntitle: V1\nsources:\n  - raw/2026-01-01-e1.md\n---\n# V1\n"
+      "---\ntitle: V1\nsources:\n  - raw/2026-01-01-e1.md\n---\n" + _fixture_deriv(author)
+      + "# V1\n"
       "Pricing decision: the launch price is $49/mo.\n"
       "Refund policy: the refund window is 30 days.\n")
     w(os.path.join(wiki, "v2.md"),
       "---\ntitle: V2\nsources:\n  - raw/2026-01-02-e2.md\n  - raw/2026-01-03-e3.md\n"
-      "---\n# V2\nThe beta cap is 200 seats.\nThe beta opens 2026-02-01.\n")
+      "---\n" + _fixture_deriv(author)
+      + "# V2\nThe beta cap is 200 seats.\nThe beta opens 2026-02-01.\n")
     w(os.path.join(wiki, "v3.md"),
-      "---\ntitle: V3\nsources:\n  - raw/2026-01-03-e3.md\n---\n# V3\n"
+      "---\ntitle: V3\nsources:\n  - raw/2026-01-03-e3.md\n---\n" + _fixture_deriv(author)
+      + "# V3\n"
       "The gamma budget is $10k.\n")
     w(os.path.join(wiki, "INDEX.md"), "---\ntitle: idx\n---\nprojection\n")
     spec_path = os.path.join(base, "planted-v1.yaml")
@@ -754,13 +1009,20 @@ def _mk_fixture_tree(base):
 
 
 def _write_verdict(batch, leg_id, verdict, vendor="openai", model="gpt-5.5",
-                   drop_verifier=False):
+                   drop_verifier=False, route_direction="same"):
     v = {"verdict": verdict, "uncertainty": "confident"}
     if not drop_verifier:
         v["verifier"] = {"vendor": vendor, "model": model}
     with open(os.path.join(batch, "verdicts", leg_id + ".json"), "w",
               encoding="utf-8", newline="\n") as fh:
         json.dump(v, fh)
+    # the route a real fire records beside its verdict (v3.0.64 round 2: ingest checks it);
+    # "same" = the verdict's own vendor, None = no route recorded
+    if route_direction is not None:
+        os.makedirs(os.path.join(batch, "routes"), exist_ok=True)
+        with open(os.path.join(batch, "routes", leg_id + ".json"), "w",
+                  encoding="utf-8", newline="\n") as fh:
+            json.dump({"direction": vendor if route_direction == "same" else route_direction}, fh)
 
 
 def self_test():
@@ -884,6 +1146,18 @@ def self_test():
              json.load(open(os.path.join(out, "records", rleg["id"] + ".json"),
                             encoding="utf-8"))["substrate"]["substrate_source"]
              == "invocation-metadata")
+
+        # v3.0.64 review round 2: a verdict from a vendor the route did NOT choose is refused at
+        # ingest even though it differs from the author's vendor; no recorded route is refused too
+        _write_verdict(out, rleg["id"], "confirmed", route_direction="anthropic")
+        case("ingest (v3.0.64 r2): an openai verdict where the route chose anthropic -> NOT accepted",
+             ingest(out) != 0)
+        _write_verdict(out, rleg["id"], "confirmed", route_direction=None)
+        os.remove(os.path.join(out, "routes", rleg["id"] + ".json"))
+        case("ingest (v3.0.64 r2): a verdict with no recorded route -> NOT accepted",
+             ingest(out) != 0)
+        _write_verdict(out, rleg["id"], "confirmed")
+        case("ingest: restored to PASS (0) after the direction cases", ingest(out) == 0)
 
         # planted missed -> efficacy failure (1)
         _write_verdict(out, pleg["id"], "confirmed")
@@ -1089,6 +1363,179 @@ def self_test():
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
+    # ------------------------------------------------ v3.0-233: the author is READ
+    # (corpus records / operator attestation), and every leg routes to the OPPOSITE
+    # vendor. Hermetic: fire() takes a stub runner; nothing spawns node/codex/claude.
+    import contextlib as _ctx
+    import io as _io2
+
+    def quiet(fn, *a, **kw):
+        buf = _io2.StringIO()
+        with _ctx.redirect_stdout(buf):
+            rc = fn(*a, **kw)
+        return rc, buf.getvalue()
+
+    def tree(author):
+        b = tempfile.mkdtemp(prefix="f13-route-")
+        sp = _mk_fixture_tree(b, author=author)
+        bd = os.path.join(b, ".claude", "skills", "bridge")
+        os.makedirs(bd, exist_ok=True)
+        with open(os.path.join(bd, "verify-cli.js"), "w", encoding="utf-8") as fh:
+            fh.write("// dummy -- fire() is driven through a stub runner\n")
+        return b, sp
+
+    def stub_runner(calls, vendor, model):
+        def run(args):
+            calls.append(list(args))
+            return 0, json.dumps({"verdict": "confirmed", "uncertainty": "confident",
+                                  "verifier": {"vendor": vendor, "model": model}}), ""
+        return run
+
+    def flag(args, name):
+        return args[args.index(name) + 1] if name in args else None
+
+    case("author record: the verified: block's absorb_vendor/model are read; a view "
+         "without a derivation region has none",
+         view_author_record(_fixture_deriv(("openai", "gpt-6.1-sol")) + "body")
+         == ("openai", "gpt-6.1-sol") and view_author_record("# V\nbody\n") == (None, None))
+    bases = []
+    try:
+        # (1) a Codex-authored corpus: legs carry openai; fire routes them to Claude
+        b, sp = tree(("openai", "gpt-6.1-sol"))
+        bases.append(b)
+        ob = os.path.join(b, "batch")
+        rc, _o = quiet(prepare, b, ob, [sp])
+        man = json.load(open(os.path.join(ob, "manifest.json"), encoding="utf-8")) \
+            if rc == 0 else {"legs": []}
+        case("v3.0-233 prepare: a Codex-authored corpus is recorded as openai per leg "
+             "(read from the records, not the old hard-coded anthropic)",
+             rc == 0 and man.get("absorb_vendor") == "openai"
+             and all(x.get("absorb_vendor") == "openai"
+                     and x.get("author_source", "").startswith("corpus-record")
+                     for x in man["legs"]))
+        calls = []
+        rc, out_txt = quiet(fire, ob, available=("openai", "anthropic"),
+                            runner=stub_runner(calls, "anthropic", "claude-fable-5-1"))
+        leg0 = man["legs"][0]["id"] if man["legs"] else "?"
+        route0 = os.path.join(ob, "routes", leg0 + ".json")
+        # v3.0.64 review round 2: a VERIFY_MODEL naming the author's (OpenAI) vendor never reaches
+        # the Claude leg -- parity with compile-backends._run_bridge
+        seen_env = []
+
+        def env_runner(args, env):
+            seen_env.append(env.get("VERIFY_MODEL"))
+            return 0, json.dumps({"verdict": "confirmed", "uncertainty": "confident",
+                                  "verifier": {"vendor": "anthropic", "model": "claude-fable-5-1"}}), ""
+        _vdir = os.path.join(ob, "verdicts")
+        _saved = {f: open(os.path.join(_vdir, f), encoding="utf-8").read() for f in os.listdir(_vdir)}
+        for f in _saved:
+            os.remove(os.path.join(_vdir, f))
+        _prev_vm = os.environ.get("VERIFY_MODEL")
+        os.environ["VERIFY_MODEL"] = "gpt-6-astra"
+        try:
+            quiet(fire, ob, available=("openai", "anthropic"), runner=env_runner)
+        finally:
+            if _prev_vm is None:
+                os.environ.pop("VERIFY_MODEL", None)
+            else:
+                os.environ["VERIFY_MODEL"] = _prev_vm
+        for f, body in _saved.items():
+            with open(os.path.join(_vdir, f), "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(body)
+        case("v3.0.64 r2 fire: an OpenAI VERIFY_MODEL is kept OUT of the Claude leg's environment",
+             seen_env and all(v is None for v in seen_env))
+        case("v3.0-233 fire: a Codex-authored leg is routed to Claude "
+             "(--direction anthropic --requester-vendor openai), every leg",
+             rc == 0 and calls and all(flag(a, "--direction") == "anthropic"
+                                       and flag(a, "--requester-vendor") == "openai"
+                                       for a in calls))
+        case("v3.0-233 fire: the evidence sent carries the VERIFIER ROUTE disclosure and "
+             "the chosen server is kept in routes/ (the receipt)",
+             calls and "VERIFIER ROUTE" in open(flag(calls[0], "--evidence-file"),
+                                                encoding="utf-8").read()
+             and os.path.isfile(route0)
+             and json.load(open(route0, encoding="utf-8")).get("server") == "verify-server.js")
+        for x in man["legs"]:
+            if x["planted"]:     # the planted leg is caught (the stub confirmed it)
+                _write_verdict(ob, x["id"], "rejected", vendor="anthropic",
+                               model="claude-fable-5-1")
+        rc, _o = quiet(ingest, ob)
+        case("v3.0-233 ingest: Claude verifying the Codex-authored corpus passes the "
+             "MIGRATION firewall", rc == 0)
+        for x in man["legs"]:
+            _write_verdict(ob, x["id"], "rejected" if x["planted"] else "confirmed",
+                           vendor="openai", model="gpt-6-astra")
+        rc, _o = quiet(ingest, ob)
+        case("v3.0-233 ingest: GPT verifying the Codex-authored corpus (different model) "
+             "-> INCONCLUSIVE -- the vendor gate is no longer passed GPT-against-GPT",
+             rc == 2)
+        calls = []
+        for f in os.listdir(os.path.join(ob, "verdicts")):
+            os.remove(os.path.join(ob, "verdicts", f))
+        rc, out_txt = quiet(fire, ob, available=("openai",),
+                            runner=stub_runner(calls, "openai", "gpt-6-astra"))
+        case("v3.0-233 fire: no far-side (Claude) CLI -> every leg REFUSED naming what to "
+             "install; the bridge is never called",
+             rc == 2 and calls == [] and "Claude Code CLI" in out_txt
+             and "REFUSED" in out_txt)
+
+        # (2) a Claude-authored corpus routes to OpenAI
+        b2, sp2 = tree(("anthropic", "claude-opus-5-5"))
+        bases.append(b2)
+        ob2 = os.path.join(b2, "batch")
+        quiet(prepare, b2, ob2, [sp2])
+        calls = []
+        rc, _o = quiet(fire, ob2, available=("openai", "anthropic"),
+                       runner=stub_runner(calls, "openai", "gpt-6.1-sol"))
+        case("v3.0-233 fire: a Claude-authored leg is routed to OpenAI "
+             "(--direction openai --requester-vendor anthropic)",
+             rc == 0 and calls and all(flag(a, "--direction") == "openai"
+                                       and flag(a, "--requester-vendor") == "anthropic"
+                                       for a in calls))
+
+        # (3) no record and no attestation -> refused; an operator attestation works
+        b3, sp3 = tree(None)
+        bases.append(b3)
+        rc, out_txt = quiet(prepare, b3, os.path.join(b3, "batch"), [sp3])
+        case("v3.0-233 prepare: no corpus record and no attestation -> INCONCLUSIVE, "
+             "naming --author-vendor (never assumed)",
+             rc == 2 and "--author-vendor" in out_txt)
+        rc, _o = quiet(prepare, b3, os.path.join(b3, "batch-att"), [sp3],
+                       author=("openai", "operator-attested:2026-10-09 self-test"))
+        man3 = json.load(open(os.path.join(b3, "batch-att", "manifest.json"),
+                              encoding="utf-8")) if rc == 0 else {}
+        case("v3.0-233 prepare: an operator-attested author covers unrecorded views "
+             "(source recorded per leg)",
+             rc == 0 and man3.get("absorb_vendor") == "openai"
+             and all(x.get("author_source") == "operator-attested:2026-10-09 self-test"
+                     for x in man3.get("legs", [])))
+        case("v3.0-233 --author-source must be a legal provenance class",
+             parse_author_args("openai", "I think so")[1] is not None
+             and parse_author_args("openai", None)[1] is not None
+             and parse_author_args("openai", "operator-attested:2026-10-09")[0]
+             == ("openai", "operator-attested:2026-10-09"))
+        rc, out_txt = quiet(prepare, b2, os.path.join(b2, "batch-conflict"), [sp2],
+                            author=("openai", "operator-attested:2026-10-09"))
+        case("v3.0-233 prepare: an attestation contradicting the corpus record -> refused",
+             rc == 2)
+
+        # (4) one event's views written by two vendors -> refused
+        with open(os.path.join(b2, "wiki", "topic", "v3.md"), "w", encoding="utf-8",
+                  newline="\n") as fh:
+            fh.write("---\ntitle: V3\nsources:\n  - raw/2026-01-03-e3.md\n---\n"
+                     + _fixture_deriv(("openai", "gpt-6.1-sol"))
+                     + "# V3\nThe gamma budget is $10k.\n")
+        rc, out_txt = quiet(prepare, b2, os.path.join(b2, "batch-mixed"), [sp2])
+        case("v3.0-233 prepare: an event whose views have different author vendors -> "
+             "INCONCLUSIVE (no single verifier vendor differs from both)",
+             rc == 2 and "different vendors" in out_txt)
+        case("v3.0-233 a 'mixed' manifest summary is never used as an author (F18 blank)",
+             _substrate_record({"id": "x"}, {"verifier": {"vendor": "openai", "model": "m"}},
+                               {"absorb_vendor": "mixed"})["absorb_vendor"] == "")
+    finally:
+        for b in bases:
+            shutil.rmtree(b, ignore_errors=True)
+
     if failed:
         print("audit-content (F13): FAIL (%d/%d)" % (total - failed, total))
         return 1
@@ -1125,9 +1572,13 @@ def main(argv):
         events = [e.strip() for e in events.split(",")] if events else None
         if not root or not out:
             print("usage: audit-content.py --prepare --root DIR --out DIR --planted "
-                  "SPEC [--events e1,e2,...]")
+                  "SPEC [--events e1,e2,...] [--author-vendor V --author-source SRC]")
             return 2
-        return prepare(root, out, planted, events, opt("--injection-json"))
+        author, aerr = parse_author_args(opt("--author-vendor"), opt("--author-source"))
+        if aerr:
+            print("RESULT: INCONCLUSIVE -- %s" % aerr)
+            return 2
+        return prepare(root, out, planted, events, opt("--injection-json"), author=author)
     if "--fire" in args:
         batch = opt("--batch")
         if not batch:

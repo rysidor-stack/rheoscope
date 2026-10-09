@@ -152,10 +152,39 @@ events; (vi) headings are immutable once written.
 
 ### 7. Cross-vendor verify
 
-A substrate-different model (resolved at run time by the bridge's `models.js` -- the Codex CLI's own
-default unless an operator registry overrides it; `node .claude/skills/bridge/models.js` shows which; routine T1 gates
-on model-id difference, migration/design-gate work on vendor difference — spec §5) receives the
-full event + the current view body and answers whether the absorption is faithful.
+A substrate-different model receives the full event + the current view body and answers whether
+the absorption is faithful. **What "different" guarantees depends on the tier** (spec §5;
+`substrate_gate_ok()` in `deploy/check-substrate.py` is the executable statement):
+
+| Leg | Guaranteed | Usually |
+|---|---|---|
+| Routine — the compile verify legs and the run's routing leg | a **different model** from the author | the **other vendor**, whenever its CLI is installed |
+| Vendor tier — content audits (`audit-content*.py`) and design gates | a **different vendor** from the author | — (no fallback) |
+
+**Who verifies is chosen from the ARTIFACT, never the session (v3.0-233).** The engine reads the
+author from the artifact's own record — the dispatch stamp's vendor and model for a compile
+(`stamp_dispatch`), each view's `verified:` absorb fields (or the operator's
+`--author-vendor`/`--author-source` attestation) for a content audit — and
+`check-substrate.choose_verifier` picks the route: a routine leg goes to the opposite vendor when its
+CLI is present (always a different model); otherwise to the same vendor with a DIFFERENT model (an
+explicit `VERIFY_MODEL`, or `"<vendor>_second"` in `~/.rheoscope/frontier-models.json`); otherwise it
+refuses with a sentence naming what to install or set. A vendor-tier leg goes to the opposite vendor
+or refuses. A same-model leg never runs, and model ids are compared NORMALIZED (`same_model`: an
+alias and its full id, or two spellings of one id, are one model; two versions, tiers or snapshot
+dates never are). The chosen `--direction` and `--requester-vendor <author vendor>` are passed to
+`verify-cli.js`, and the route (direction, requester, server, basis) is written into the evidence
+packet's `VERIFIER ROUTE` section, the attestation record, the verdict's `substrate.route` and the
+journal. `compile-driver.py`'s pre-write probe checks and pins the CLI of the direction the run will
+need (`codex` ≥ 0.144 → `CODEX_BIN`; `claude` ≥ 2.1.220 through the bridge's own resolver →
+`CLAUDE_BIN`) and refuses before anything is written when the route cannot run. **Stated limit:** the
+shipped bridge (v3.0.63) refuses a requester of its own vendor, and the engine never declares a false
+requester — so today the routine same-vendor fallback is selected and then refused with that reason;
+in practice a routine leg needs the other vendor's CLI until the bridge accepts a routine same-vendor
+call (`BRIDGE_SAME_VENDOR_LEGS` in `check-substrate.py`). The model each direction runs is resolved at
+run time by the bridge's `models.js` (`node .claude/skills/bridge/models.js` shows which). The F17
+gate accepts a Claude-direction attestation whose `model_match` is `alias` (the claude CLI reports a
+full id for an alias) only when the pair is independently an alias pair; `mismatch` fails closed, and
+the OpenAI side keeps exact equality.
 
 #### The verdict lifecycle — one state table (v3.0-92, 2026-08-09)
 

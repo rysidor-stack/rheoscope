@@ -6,8 +6,8 @@
  * It runs ONE round of cross-vendor verification over a ledger of load-bearing claims, enforces
  * the honesty gates, records each verdict + the SHA-256 of the evidence that produced it, and
  * enforces the tier round cap. It builds ON the proven single-shot primitive
- * (cross-vendor-verify/verify-cli.js -> an OpenAI Codex/GPT verifier): one round == N verify-cli calls,
- * one per active claim, run with bounded concurrency. It adds NO new verifier and NO new vendor
+ * (bridge/verify-cli.js -> a verifier of the OTHER vendor than the driving session): one round == N
+ * verify-cli calls, one per active claim, run with bounded concurrency. It adds NO new verifier and NO new vendor
  * path — the load-bearing check every round is the same cross-vendor call.
  *
  * The split is deliberate. Everything JUDGMENT — decompose into claims, gather/re-ground primary
@@ -22,7 +22,7 @@
  *      it is the prior conclusion wearing a fresh-round costume. These are compared here, not left
  *      to the session to remember. (The script still cannot detect narrative prose that mimics an
  *      artifact and carries a plausible provenance line — that residual is a session honor
- *      obligation, and the GPT verifier's skeptic mandate is the behavioral backstop, not a gate.)
+ *      obligation, and the verifier's skeptic mandate is the behavioral backstop, not a gate.)
  *   2. TIER ROUND CAP. T2=2 rounds, T3=1. Hitting the cap with unsettled claims is the ESCALATE
  *      signal (the handoff protocol), not a thing to override your way past. T1 -> author a full handoff;
  *      T4 -> don't loop, just decide.
@@ -38,6 +38,16 @@
  *   node converge.js <ledger.json> --status   lint + print state, NO verify calls (exits 3 if an
  *                                              active claim fails a gate)
  *   node converge.js <ledger.json> --concurrency N   (default 2) cap parallel verify calls
+ *   node converge.js <ledger.json> --direction openai|anthropic --requester-vendor <vendor>
+ *                                              who ANSWERS / who is asking (v3.0-236 routing).
+ *
+ * DIRECTION (v3.0-236): every verify call carries `--direction` (the verifier's vendor) and
+ * `--requester-vendor` (the driving session's vendor), passed straight to verify-cli.js. The skill
+ * passes both explicitly. When neither is given, the requester is read from the session's own agent
+ * markers (bridge/models.js sessionVendor(): Claude markers -> anthropic, Codex markers -> openai)
+ * and the direction is its opposite; both or no markers -> exit 64 asking for the flags (no guess).
+ * A direction equal to the requester is refused here (exit 64) before any verify call -- a
+ * same-vendor round is not cross-vendor.
  *
  * Exit: 0 ok; 2 a verify-cli call failed (HALT); 3 ledger/gate violation (HALT); 64 usage/setup.
  *
@@ -63,6 +73,11 @@ const LEGAL_STATES = new Set(['pending', 'recheck', 'needs-action', 'settled', '
 const VALID_VERDICTS = new Set(['confirmed', 'revised', 'rejected']);
 const ID_RE = /^[A-Za-z0-9_-]+$/;
 
+const BRIDGE_DIR = process.env.CROSS_VENDOR_BRIDGE_DIR || path.join(__dirname, '..', 'bridge');
+const DIRECTIONS = new Set(['openai', 'anthropic']);
+const VENDOR_ALIASES = { claude: 'anthropic', codex: 'openai', gpt: 'openai' };
+const OPPOSITE = { anthropic: 'openai', openai: 'anthropic' };
+
 const LIVE = new Set();                        // in-flight child processes, killed if a round HALTs
 
 function die(code, msg) {
@@ -73,18 +88,56 @@ function die(code, msg) {
 function note(msg) { process.stderr.write(msg + '\n'); }
 
 function parseArgs(argv) {
-  const a = { status: false, concurrency: 2 };
+  const a = { status: false, concurrency: 2, direction: '', requesterVendor: '' };
   const rest = [];
   for (let i = 2; i < argv.length; i++) {
     const k = argv[i];
     if (k === '--status') a.status = true;
     else if (k === '--concurrency') a.concurrency = parseInt(argv[++i], 10) || 2;
+    else if (k === '--direction') a.direction = String(argv[++i] || '').trim().toLowerCase();
+    else if (k === '--requester-vendor') a.requesterVendor = String(argv[++i] || '').trim().toLowerCase();
     else if (k === '-h' || k === '--help') a.help = true;
     else if (k.startsWith('--')) die(64, 'unknown argument: ' + k);
     else rest.push(k);
   }
   a.ledgerPath = rest[0];
   return a;
+}
+
+// The session's own vendor from its agent markers -- the single home is bridge/models.js
+// sessionVendor(); read from there so converge.js and verify-cli agree. Returns
+// 'anthropic' | 'openai' | 'both' | null (null also when models.js cannot be loaded).
+function sessionVendor() {
+  try { return require(path.join(BRIDGE_DIR, 'models.js')).sessionVendor(process.env); }
+  catch (e) { return null; }
+}
+
+// -> {direction, requester}. Exits 64 on anything that is not a clean cross-vendor pair.
+function resolveRouting(a) {
+  const norm = v => (v ? (VENDOR_ALIASES[v] || v) : '');
+  let direction = norm(a.direction), requester = norm(a.requesterVendor);
+  if (direction && !DIRECTIONS.has(direction))
+    die(64, '--direction must be openai or anthropic (got ' + JSON.stringify(a.direction) + ')');
+  if (requester && !DIRECTIONS.has(requester) && requester !== 'xai' && requester !== 'google')
+    die(64, 'unknown --requester-vendor ' + JSON.stringify(a.requesterVendor));
+  if (!requester) {
+    // Who is asking comes from the session's own markers, never from the direction (a Codex session
+    // passing only --direction openai must be refused as same-vendor, not relabelled anthropic).
+    const sv = sessionVendor();
+    if (sv === 'both') die(64, 'this process carries BOTH Claude and Codex session markers, so who is driving is ' +
+      'ambiguous -- ask the operator which tool is driving and pass --direction <the other vendor> ' +
+      '--requester-vendor <your own>.');
+    if (sv) requester = sv;
+    // v3.0.64 review round 1: no markers and no --requester-vendor is an UNKNOWN requester --
+    // refused, never inferred from the direction (that inference is how a mislabel happens)
+    else die(64, 'no session markers identify the driving tool (or bridge/models.js is unreadable) -- ' +
+      'ask the operator which tool is driving and pass --direction <the other vendor> --requester-vendor <your own>.');
+  }
+  if (!direction) direction = OPPOSITE[requester] || 'anthropic';
+  if (direction === requester)
+    die(64, 'direction ' + direction + ' equals the requester vendor ' + requester + ' -- a same-vendor round is not ' +
+      'cross-vendor. Pass --direction ' + OPPOSITE[requester] + '.');
+  return { direction, requester };
 }
 
 function sha256(file) {
@@ -192,12 +245,13 @@ function lintForRound(l, ledgerDir, mode) {
 }
 
 // One verify-cli subprocess for one claim. Resolves {verdict} or rejects (HALT-worthy).
-function runVerify(claim, evidenceAbs, tier) {
+function runVerify(claim, evidenceAbs, tier, routing) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const done = (fn, arg) => { if (settled) return; settled = true; fn(arg); };
     const args = ['--claim', claim.claim, '--evidence-file', evidenceAbs];
     if (tier) args.push('--tier', tier);
+    args.push('--direction', routing.direction, '--requester-vendor', routing.requester);
     const p = spawn(process.execPath, [VERIFY_CLI, ...args],
       { stdio: ['ignore', 'pipe', 'inherit'], env: process.env });   // stderr -> our stderr (per-claim banner shows)
     LIVE.add(p);
@@ -311,7 +365,8 @@ function writeLedger(ledgerPath, l) {
 async function main() {
   const args = parseArgs(process.argv);
   if (args.help || !args.ledgerPath) {
-    note('usage: node converge.js <ledger.json> [--status] [--concurrency N]');
+    note('usage: node converge.js <ledger.json> [--status] [--concurrency N] ' +
+      '[--direction openai|anthropic] [--requester-vendor <vendor>]');
     process.exit(args.help ? 0 : 64);
   }
   const ledgerPath = path.resolve(args.ledgerPath);
@@ -340,25 +395,28 @@ async function main() {
     return;
   }
 
+  const routing = resolveRouting(args);   // before any verify call; refuses same-vendor (exit 64)
+
   if (!fs.existsSync(VERIFY_CLI))
     die(64, 'verify-cli not found at ' + VERIFY_CLI + ' — set CONVERGE_VERIFY_CLI to its path.');
 
   note('Running round ' + next + ' over ' + active.length + ' claim(s): [' + active.map(c => c.id).join(', ') + '] ' +
-    '(concurrency ' + args.concurrency + ', verifier=openai via verify-cli)');
+    '(concurrency ' + args.concurrency + ', verifier=' + routing.direction + ' requester=' + routing.requester + ' via verify-cli)');
 
   const verdictsDir = path.join(ledgerDir, 'verdicts');
   fs.mkdirSync(verdictsDir, { recursive: true });
 
   let verdicts;
   try {
-    verdicts = await pool(active, args.concurrency, c => runVerify(c, c._evidenceAbs, c.tier || l.tier));
+    verdicts = await pool(active, args.concurrency, c => runVerify(c, c._evidenceAbs, c.tier || l.tier, routing));
   } catch (e) {
     die(2, e.message);   // die() kills any sibling verify children still in LIVE
   }
 
   // Record. The script auto-settles only the clean cases; everything else parks in needs-action
   // for the session's judgment.
-  const roundRec = { round: next, verified: [], results: {}, new_finding: false };
+  const roundRec = { round: next, direction: routing.direction, requester_vendor: routing.requester,
+    verified: [], results: {}, new_finding: false };
   active.forEach((c, i) => {
     const v = verdicts[i];
     const vf = path.join('verdicts', c.id + '-r' + next + '.json');

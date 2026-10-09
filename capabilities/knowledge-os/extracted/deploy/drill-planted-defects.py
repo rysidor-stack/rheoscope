@@ -602,14 +602,19 @@ def _seed_fixture_repo(root):
     _stamp_fixture_dispatch_manifest(root)
 
 
-def _stamp_fixture_dispatch_manifest(root, model="unknown", vendor="unknown"):
+def _stamp_fixture_dispatch_manifest(root, model="claude-opus-4-8", vendor="anthropic"):
     """Create + stamp a minimal dispatch-manifest.json in the fixture repo
     (compile_backends.stamp_dispatch, the same pattern drill-workload-
     bench.py uses) so a --live judgment leg can construct BridgeVerifyBackend
     via dispatch_manifest_path and actually pass the F17 channel gate instead
     of being unconditionally substrate-gated (bare "unknown"/"unknown"
     literals -> _absorb_channel None -> gate always fails before the raw
-    bridge verdict is ever consulted)."""
+    bridge verdict is ever consulted).
+
+    v3.0.64: the default author is a REAL identity (anthropic / claude-opus-4-8): since the
+    engine routes each leg from the stamped author (v3.0-233), a placeholder "unknown" author
+    is refused rather than routed, and the stub verify runners answer as the openai side
+    a Claude-authored stamp is routed to."""
     cb = _load("compile-backends.py", "compile_backends_pd")
     receipts_dir = os.path.join(root, "receipts")
     os.makedirs(receipts_dir, exist_ok=True)
@@ -921,9 +926,12 @@ def self_test():
             root5, "unknown", "unknown", runner=_clean_confirmed_runner)
         gated_verdict = gated_backend.verify(
             "CLAIM: test claim for substrate-gated fixture\n")
+        # v3.0.64: since the engine routes from the stamped author (v3.0-233), a placeholder
+        # author is refused BEFORE the leg (bridge-error, "ROUTE REFUSED") rather than gated
+        # after it -- either way it is never a genuine judgment, which the next case pins
         case("bare unknown/unknown absorb identity (no dispatch manifest) "
-            "-> substrate-gated wrapper verdict",
-             gated_verdict["verdict"] == "substrate-gated")
+            "-> refused or substrate-gated, never a verdict",
+             gated_verdict["verdict"] in ("substrate-gated", "bridge-error"))
         genuine_gated, _ = _genuine_semantic_verdict(gated_verdict)
         case("substrate-gated verdict is NOT classified as genuine",
              genuine_gated is False)

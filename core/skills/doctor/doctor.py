@@ -481,6 +481,11 @@ def _ps1_statement_above_param(body):
     return False
 
 
+# The folders whose top-level scripts the scheduled-wrapper scan reads (v3.0.47 .claude/;
+# v3.0-236 remainder: .codex/, where a Codex nightly wrapper lives).
+WRAPPER_DIRS = (".claude", ".codex")
+
+
 def check_hooks_wired(ctx):
     path = ctx["root"] / ".claude" / "settings.local.json"
     if not path.is_file():
@@ -532,23 +537,29 @@ def check_hooks_wired(ctx):
     # line" advice, followed on a .ps1 with a param() block, unbound its parameters and made
     # a nightly alarm fire on every healthy run. A .ps1 with any statement above its param()
     # block WARNs on its own, marker or not.
+    # v3.0-236 remainder: `.codex/*` is scanned by the same rules -- a Codex nightly wrapper
+    # (`codex exec ...`, the sweep recipe's Codex leg) that omits the marker runs attended too.
     unmarked = []
     misplaced_param = []
-    for w in sorted((ctx["root"] / ".claude").glob("*")):
+    wrappers = []
+    for d in WRAPPER_DIRS:
+        wrappers += [(d, w) for w in sorted((ctx["root"] / d).glob("*"))]
+    for d, w in wrappers:
         if w.suffix.lower() in (".cmd", ".bat", ".ps1", ".sh") and w.is_file():
+            label = "%s/%s" % (d, w.name)
             try:
                 body = w.read_text(encoding="utf-8", errors="replace")
             except OSError:
-                unmarked.append(w.name + " (unreadable)")
+                unmarked.append(label + " (unreadable)")
                 continue
             if w.suffix.lower() == ".ps1" and _ps1_statement_above_param(body):
-                misplaced_param.append(w.name)
+                misplaced_param.append(label)
             if _launches_agent(body, ps1=w.suffix.lower() == ".ps1") \
                     and "RHEOSCOPE_UNATTENDED" not in body:
-                unmarked.append(w.name)
+                unmarked.append(label)
     if misplaced_param:
         return Result("WARN", "hooks-wired",
-                       "PowerShell script(s) under .claude/ have a statement above their param() "
+                       "PowerShell script(s) under .claude/ or .codex/ have a statement above their param() "
                        "block: %s -- PowerShell binds parameters only when param() is the first "
                        "statement, so every parameter silently arrives empty (an exit-code check "
                        "reads a healthy run as failed). FIX: move the statement(s) below the "
@@ -556,7 +567,8 @@ def check_hooks_wired(ctx):
                        "after it." % ", ".join(misplaced_param))
     if unmarked:
         return Result("WARN", "hooks-wired",
-                       "hooks wired, but scheduled wrapper(s) under .claude/ that launch an agent "
+                       "hooks wired, but scheduled wrapper(s) under .claude/ or .codex/ that "
+                       "launch an agent "
                        "do not set the unattended marker: %s -- a run they launch would "
                        "allow-and-log egress as if you were present instead of asking/failing "
                        "closed. FIX: set it before the line that launches the agent: "
@@ -882,6 +894,35 @@ def _project_authority_mode(root):
     return m.group(1).lower() if m else None
 
 
+def _knowledge_os_enabled(root):
+    """v3.0-239: project.yaml's `capabilities: knowledge-os:` as written -- True, False, or
+    None (no project.yaml, unreadable, or no such key). Regex only, no YAML dependency (the
+    same lenient read as _project_authority_mode); the key's line must sit indented under a
+    column-0 `capabilities:` block, so a comment or another block naming knowledge-os does
+    not count."""
+    try:
+        text = (Path(root) / "project.yaml").read_text(encoding="utf-8-sig")
+    except OSError:
+        return None
+    m = re.search(r"(?m)^capabilities:[ \t]*(#.*)?$", text)
+    if not m:
+        return None
+    for line in text[m.end():].splitlines()[1:]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[:1].isspace():
+            break  # the next top-level key: the block ended
+        km = re.match(r"""\s+["']?knowledge-os["']?\s*:\s*["']?(true|false)["']?\s*(#.*)?$""",
+                      line, re.I)
+        if km:
+            return km.group(1).lower() == "true"
+    return None
+
+
+_CORE_ONLY_TRUST_SKIP = ("not part of a core-only project (the trust tools ship with "
+                         "knowledge-os, which project.yaml does not enable)")
+
+
 SWEEP_LOG_MAX_BYTES = 16 * 1024 * 1024
 SWEEP_LOG_MAX_LINE = 1024 * 1024
 
@@ -998,7 +1039,10 @@ def check_trust_surfaces(ctx):
                          (FAIL "uncommitted perimeter change" with the diff stat);
       (b) signatures     every tracked member's newest commit is operator-signed
                          (deploy/trust.py --report): FAIL under trust_surface_signing:
-                         required, WARN under warn; WARN "unavailable" without trust.py;
+                         required, WARN under warn; WARN "unavailable" without trust.py
+                         (SKIP instead when project.yaml does not enable knowledge-os:
+                         a core-only project has no deploy/ by design -- v3.0-239; the
+                         same holds for (f) without pending.py);
       (c) wiring         the UNTRACKED members (.claude/settings.local.json,
                          .git/hooks/**) are hook-lane members: all three hook entries
                          wired (check 7) and the scanner byte-current (check 15), else
@@ -1126,6 +1170,11 @@ def check_trust_surfaces(ctx):
         out.append(Result("FAIL", fam + ":retirements",
                           "verifier tampered: see trust-surfaces:signatures. FIX: restore "
                           "deploy/trust.py, then re-run."))
+    elif not trust_py.is_file() and _knowledge_os_enabled(root) is False:
+        # v3.0-239: a core-only project never has deploy/ -- migration advice would be wrong
+        out.append(Result("SKIP", fam + ":signatures",
+                          "deploy/trust.py %s. Head-identity and wiring still checked."
+                          % _CORE_ONLY_TRUST_SKIP))
     elif not trust_py.is_file():
         out.append(Result("WARN", fam + ":signatures",
                           "deploy/trust.py absent -- signature verification unavailable "
@@ -1220,6 +1269,9 @@ def check_trust_surfaces(ctx):
                           "list is UNKNOWABLE from inside this repo. FIX: restore it (`git "
                           "checkout -- deploy/pending.py`) and re-run; treat the session that "
                           "patched it as the finding."))
+    elif not pending_py.is_file() and _knowledge_os_enabled(root) is False:
+        out.append(Result("SKIP", fam + ":pending",
+                          "deploy/pending.py %s." % _CORE_ONLY_TRUST_SKIP))
     elif not pending_py.is_file():
         out.append(Result("WARN", fam + ":pending",
                           "deploy/pending.py absent -- the durable pending list and the "
@@ -2281,6 +2333,34 @@ def self_test():
               _ps1_statement_above_param("[int]\nparam([int]$X)\n")
               and not _ps1_statement_above_param("[CmdletBinding()]\n[OutputType([int])]\n"
                                                  "param([int]$X)\n"))
+        # v3.0-236 remainder: .codex/* wrappers are scanned by the same rules
+        codex_dir = root / ".codex"
+        codex_dir.mkdir(exist_ok=True)
+        (codex_dir / "nightly-sweep.sh").write_text(
+            "#!/bin/sh\ncd \"$(dirname \"$0\")/..\"\ncodex exec \"/sweep\" >> .codex/sweep.log\n",
+            encoding="utf-8")
+        r = note(check_hooks_wired(ctx))
+        check("hooks-wired (v3.0-236): a .codex/ wrapper launching `codex exec` WITHOUT the "
+              "unattended marker -> WARN naming .codex/nightly-sweep.sh",
+              r.status == "WARN" and ".codex/nightly-sweep.sh" in r.detail
+              and "RHEOSCOPE_UNATTENDED" in r.detail)
+        (codex_dir / "nightly-sweep.sh").write_text(
+            "#!/bin/sh\nexport RHEOSCOPE_UNATTENDED=1\ncodex exec \"/sweep\"\n", encoding="utf-8")
+        (codex_dir / "hooks.json").write_text('{"hooks": {}}\n', encoding="utf-8")
+        (codex_dir / "rotate-log.cmd").write_text(
+            "@echo off\r\nREM trims .codex\\sweep.log; codex runs elsewhere\r\n"
+            "del .codex\\sweep.log.old\r\n", encoding="utf-8")
+        r = note(check_hooks_wired(ctx))
+        check("hooks-wired (v3.0-236): the .codex/ wrapper WITH the marker, a launch-free "
+              ".codex/ helper and a non-script file -> PASS", r.status == "PASS")
+        (codex_dir / "nightly.ps1").write_text(
+            "$env:RHEOSCOPE_UNATTENDED = '1'\r\nparam([string]$Day)\r\ncodex exec /sweep\r\n",
+            encoding="utf-8")
+        r = note(check_hooks_wired(ctx))
+        check("hooks-wired (v3.0-236): a .codex/ .ps1 with a statement above param() -> WARN "
+              "naming it", r.status == "WARN" and ".codex/nightly.ps1" in r.detail
+              and "param()" in r.detail)
+        shutil.rmtree(codex_dir)
         (claude_dir / "nightly-sweep.cmd").unlink()
 
         # v3.0-180: the scheduled sweep's log
@@ -2883,6 +2963,39 @@ def self_test():
             check("trust-surfaces(b): no deploy/trust.py -> WARN unavailable",
                   by["trust-surfaces:signatures"].status == "WARN"
                   and "unavailable" in by["trust-surfaces:signatures"].detail)
+            # v3.0-239: a core-only project (knowledge-os: false) has no deploy/ by design --
+            # the absent trust tools SKIP; a knowledge-os project lacking them keeps the FIX
+            (root / "project.yaml").write_text(
+                "project_name: x\ncapabilities:\n  # knowledge-os: true would add /compile\n"
+                "  knowledge-os: false            # core-only\n  code-conventions: true\n"
+                "template_version: \"3.0\"\n", encoding="utf-8")
+            kby = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(b)/(f): core-only project (knowledge-os: false), no deploy/ -> "
+                  "SKIP 'not part of a core-only project', no migration FIX (v3.0-239)",
+                  kby["trust-surfaces:signatures"].status == "SKIP"
+                  and kby["trust-surfaces:pending"].status == "SKIP"
+                  and all("not part of a core-only project" in kby[k].detail
+                          and "adopt" not in kby[k].detail
+                          for k in ("trust-surfaces:signatures", "trust-surfaces:pending")))
+            (root / "project.yaml").write_text(
+                "capabilities:\n  knowledge-os: true\n  code-conventions: false\n",
+                encoding="utf-8")
+            kby = {x.name: x for x in note(check_trust_surfaces(ctx))}
+            check("trust-surfaces(b)/(f): knowledge-os enabled but deploy/trust.py + pending.py "
+                  "absent -> still WARN with the migration FIX (v3.0-239)",
+                  kby["trust-surfaces:signatures"].status == "WARN"
+                  and "adopt v3.0.46" in kby["trust-surfaces:signatures"].detail
+                  and kby["trust-surfaces:pending"].status == "WARN"
+                  and "FIX: adopt" in kby["trust-surfaces:pending"].detail)
+            (root / "project.yaml").write_text(
+                "# capabilities:\n#   knowledge-os: false\nother:\n  knowledge-os: false\n",
+                encoding="utf-8")
+            check("trust-surfaces: _knowledge_os_enabled reads only the capabilities block "
+                  "(a comment or another block naming knowledge-os -> None)",
+                  _knowledge_os_enabled(root) is None)
+            (root / "project.yaml").unlink()
+            check("trust-surfaces: _knowledge_os_enabled with no project.yaml -> None (keeps WARN)",
+                  _knowledge_os_enabled(root) is None)
             check("trust-surfaces(c): nothing wired -> FAIL perimeter unwired",
                   by["trust-surfaces:wiring"].status == "FAIL"
                   and "perimeter unwired" in by["trust-surfaces:wiring"].detail)

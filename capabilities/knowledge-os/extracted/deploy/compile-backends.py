@@ -55,7 +55,13 @@ Two seams, two backends:
 
   VERIFY  BridgeVerifyBackend.verify(packet) fires the cross-vendor bridge
           CLI (node <bridge>/verify-cli.js --claim ... --evidence-file ...
-          --tier T2) exactly the way audit-content-v2.py's _fire_leg does
+          --tier T2 --direction D --requester-vendor A; v3.0-233: D is chosen
+          from the ARTIFACT's stamped author A by check-substrate.
+          choose_verifier, tiered -- routine: the opposite vendor when its
+          CLI exists, else a different same-vendor model, else refuse;
+          vendor tiers: the opposite vendor or refuse -- and disclosed in the
+          evidence packet, the attestation record and substrate.route)
+          exactly the way audit-content-v2.py's _fire_leg does
           (cp1252-safe subprocess: capture_output=True, text=True,
           encoding="utf-8", errors="replace"). The bridge verdict is then
           run through THREE check-substrate.py gates (imported, not
@@ -795,10 +801,34 @@ _BANNER_VERIFIER_RE = re.compile(r"verifier=([a-z0-9_-]+)/(\S+)", re.IGNORECASE)
 BRIDGE_STDERR_EXCERPT_CHARS = 2000
 
 
-def _default_runner(args):
+def _default_runner(args, env=None):
     p = subprocess.run(args, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
+                       encoding="utf-8", errors="replace", env=env)
     return p.returncode, p.stdout, p.stderr
+
+
+# v3.0-233 verifier routing: the bundled server each bridge direction spawns (verify-cli.js
+# --direction), recorded in the packet and the receipt so "who answered" is never inferred.
+BRIDGE_SERVERS = {"openai": "codex-verify-server.js", "anthropic": "verify-server.js"}
+
+# Self-test seam ONLY: {"available": iterable-of-directions, "home": dir}. A real run leaves it
+# None, and the route is computed from the presence of the two verifier CLIs (the compile
+# driver's pre-write probe has already version-checked and pinned the one the run needs) and
+# the operator registry under the real home directory.
+_ROUTE_ENV_OVERRIDE = None
+
+
+def route_disclosure(route):
+    """The VERIFIER ROUTE section appended to every bridge evidence packet (v3.0-233): who
+    authored the artifact (from its stamp), which direction answers, why, and which server."""
+    return ("\n\n## VERIFIER ROUTE (engine disclosure, v3.0-233)\n"
+            "author (from the artifact's stamp): %s/%s\n"
+            "verifier direction: %s (%s; %s leg)\n"
+            "requester vendor passed to the bridge: %s\n"
+            "bridge server: %s\n"
+            % (route.get("author_vendor"), route.get("author_model"),
+               route.get("direction"), route.get("basis"), route.get("gate_kind"),
+               route.get("requester_vendor"), route.get("server")))
 
 
 class BridgeVerifyBackend:
@@ -823,8 +853,15 @@ class BridgeVerifyBackend:
 
     def __init__(self, repo, absorb_vendor=None, absorb_model_id=None,
                  gate_kind="routine", tier="T2", timeout_ms=None,
-                 staging=None, runner=None, dispatch_manifest_path=None):
+                 staging=None, runner=None, dispatch_manifest_path=None,
+                 available_vendors=None, home=None):
         self.repo = repo
+        # v3.0-233: which verifier CLIs exist (an iterable of "openai"/"anthropic", or a
+        # callable returning one); None = detect presence at verify time. `home` locates the
+        # operator registry (its `<vendor>_second` model); None = the real home directory.
+        self.available_vendors = available_vendors
+        self.home = home
+        self._route_cache = None
         self.gate_kind = gate_kind
         self.tier = tier
         # v3.0-20: unpinned callers honor the operator's VERIFY_TIMEOUT_MS
@@ -872,6 +909,40 @@ class BridgeVerifyBackend:
         return os.environ.get("CROSS_VENDOR_BRIDGE_DIR") or os.path.join(
             self.repo, ".claude", "skills", "bridge")
 
+    def route(self):
+        """v3.0-233: the verifier route for this backend's legs, chosen from the ARTIFACT's
+        stamped author (self.absorb_vendor / self.absorb_model_id -- derived from the dispatch
+        stamp on a real run), never from the session, through check-substrate.choose_verifier
+        (the one home of the tiered direction rule). Computed once per backend."""
+        if self._route_cache is None:
+            ov = _ROUTE_ENV_OVERRIDE or {}
+            avail = self.available_vendors
+            if avail is None:
+                avail = ov.get("available")
+            if avail is None:
+                avail = substrate.detect_cli_vendors()
+            if callable(avail):
+                avail = avail()
+            avail = sorted(set(avail or ()))
+            home = self.home or ov.get("home")
+            route = substrate.choose_verifier(
+                self.absorb_vendor, self.absorb_model_id, self.gate_kind, avail,
+                second_model=substrate.registry_second_model(self.absorb_vendor, home=home),
+                env_model=os.environ.get("VERIFY_MODEL") or None)
+            route["available"] = avail
+            route["server"] = BRIDGE_SERVERS.get(route.get("direction"))
+            self._route_cache = route
+        return self._route_cache
+
+    def _run_bridge(self, args, route):
+        """One bridge call. A VERIFY_MODEL that names the AUTHOR's vendor is kept out of an
+        opposite-vendor leg's environment (it would be handed to the other vendor's CLI)."""
+        if route.get("drop_env_model") and self.runner is _default_runner:
+            env = dict(os.environ)
+            env.pop("VERIFY_MODEL", None)
+            return _default_runner(args, env=env)
+        return self.runner(args)
+
     @staticmethod
     def _extract_claim(packet):
         for line in packet.splitlines():
@@ -900,7 +971,7 @@ class BridgeVerifyBackend:
         return _sha256(packet)[:12]
 
     def _write_attest_record(self, pid, attestation, wrapper_verifier_claim,
-                             evidence_path):
+                             evidence_path, route=None):
         """F17 verifier-side attestation (2026-07-05 design): writes the
         attestation record to receipts/verify/attest/<packet-stem>.attest.json,
         adding packet_sha256 (of the packet/evidence file this leg verified)
@@ -914,6 +985,8 @@ class BridgeVerifyBackend:
         record = dict(attestation)
         record["packet_sha256"] = packet_sha256
         record["wrapper_verifier_claim"] = wrapper_verifier_claim
+        if route is not None:
+            record["route"] = route      # v3.0-233: the chosen direction, in the receipt
         with open(attest_path, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(record, fh, indent=1, sort_keys=True)
         try:
@@ -941,12 +1014,22 @@ class BridgeVerifyBackend:
             return self._fail_closed("bridge-error",
                                      "packet carries no CLAIM: line")
 
+        # v3.0-233: choose the verifier from the artifact's author stamp BEFORE anything is
+        # written or sent; a refused route (no far-side CLI, a same-model check, a vendor-tier
+        # leg with no other vendor) fails closed with the plain remedy, nothing transmitted.
+        route = self.route()
+        if not route.get("ok"):
+            out = self._fail_closed(
+                "bridge-error", "ROUTE REFUSED (v3.0-233): %s" % route.get("refusal"))
+            out["substrate"]["route"] = route
+            return out
+
         os.makedirs(self.staging, exist_ok=True)
         pid = self._extract_packet_id(packet)
         evidence_name = "packet-%s.md" % pid
         evidence_path = os.path.join(self.staging, evidence_name)
         with open(evidence_path, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(packet)
+            fh.write(packet + route_disclosure(route))
         try:
             evidence_rel = os.path.relpath(evidence_path, self.repo).replace(
                 os.sep, "/")
@@ -956,11 +1039,16 @@ class BridgeVerifyBackend:
         bridge = self._bridge_dir()
         args = ["node", os.path.join(bridge, "verify-cli.js"),
                 "--claim", claim, "--evidence-file", evidence_path,
-                "--tier", self.tier]
+                "--tier", self.tier,
+                # v3.0-233: the direction and the requester are ARGUMENTS, from the stamp
+                "--direction", route["direction"],
+                "--requester-vendor", route["requester_vendor"]]
+        if route.get("model"):
+            args += ["--model", route["model"]]
         if self.timeout_ms:
             args += ["--timeout-ms", str(self.timeout_ms)]
 
-        rc, stdout, stderr = self.runner(args)
+        rc, stdout, stderr = self._run_bridge(args, route)
         if rc != 0:
             out = self._fail_closed(
                 "bridge-error",
@@ -968,6 +1056,7 @@ class BridgeVerifyBackend:
                 % (rc, (stderr or "")[-BRIDGE_STDERR_EXCERPT_CHARS:]),
                 stderr_text=stderr)
             out["evidence_file"] = evidence_rel
+            out["substrate"]["route"] = route
             return out
         if not (stdout or "").strip():
             out = self._fail_closed(
@@ -976,6 +1065,7 @@ class BridgeVerifyBackend:
                 % (stderr or "")[-BRIDGE_STDERR_EXCERPT_CHARS:],
                 stderr_text=stderr)
             out["evidence_file"] = evidence_rel
+            out["substrate"]["route"] = route
             return out
         try:
             bridge_verdict = json.loads(stdout.strip())
@@ -986,6 +1076,7 @@ class BridgeVerifyBackend:
                 % (stderr or "")[-BRIDGE_STDERR_EXCERPT_CHARS:],
                 stderr_text=stderr)
             out["evidence_file"] = evidence_rel
+            out["substrate"]["route"] = route
             return out
 
         verifier = bridge_verdict.get("verifier") or {}
@@ -999,12 +1090,26 @@ class BridgeVerifyBackend:
         # stdout verifier.model claim (the old declared channel becomes a
         # cross-check, never the source of truth).
         attest_reason = None
+        alias_accepted = False
         if not isinstance(attestation, dict):
             attest_reason = "no attestation object returned by the bridge"
         else:
             argv_model = attestation.get("argv_model")
             runtime_model = attestation.get("runtime_model")
-            if runtime_model is not None and runtime_model != argv_model:
+            # v3.0-233: the claude CLI accepts an ALIAS ("fable") and reports the FULL id
+            # ("claude-fable-5-1"); the Claude-direction server records that honestly as
+            # model_match "alias". Accepted ONLY for an anthropic verifier whose argv/runtime
+            # pair is independently an alias pair (check-substrate.is_alias_of) -- the field
+            # alone is never trusted; "mismatch" (or any other value) still fails closed, and
+            # the OpenAI side (which sends no model_match) keeps exact equality. The verifier
+            # model is then DERIVED from runtime_model (the id that actually ran).
+            if (runtime_model is not None and runtime_model != argv_model
+                    and attestation.get("model_match") == "alias"
+                    and substrate.normalize_vendor(verifier.get("vendor")) == "anthropic"
+                    and substrate.is_alias_of(argv_model, runtime_model)):
+                alias_accepted = True
+            if runtime_model is not None and runtime_model != argv_model \
+                    and not alias_accepted:
                 attest_reason = (
                     "attestation argv/runtime model disagreement: "
                     "argv_model=%r runtime_model=%r" % (argv_model, runtime_model))
@@ -1038,13 +1143,14 @@ class BridgeVerifyBackend:
 
         if attestation_ok_flag:
             attest_record_rel = self._write_attest_record(
-                pid, attestation, verifier, evidence_path)
+                pid, attestation, verifier, evidence_path, route=route)
 
         if not attestation_ok_flag:
             substrate_info = dict(block, wellformed=None,
                                   derived_from_invocation=False,
                                   gate_ok=False, gate_kind=self.gate_kind,
-                                  attestation={"channel": None, "reason": attest_reason})
+                                  attestation={"channel": None, "reason": attest_reason},
+                                  route=route)
             return {"verdict": "substrate-gated",
                     "reason": "F17 attestation gate: %s" % attest_reason,
                     "uncertainty": bridge_verdict.get("uncertainty", "unknown"),
@@ -1053,6 +1159,11 @@ class BridgeVerifyBackend:
                     "bridge_verdict": bridge_verdict,
                     "gated_inner_verdict": bridge_verdict.get("verdict")}
 
+        if alias_accepted:
+            # recorded beside the route so the receipt says WHY argv != runtime passed
+            route = dict(route, alias_accepted={"argv_model": attestation.get("argv_model"),
+                                                "runtime_model": attestation.get("runtime_model"),
+                                                "model_match": "alias"})
         attestation_entry = {
             "channel": attestation.get("channel"),
             "artifact": attest_record_rel,
@@ -1077,7 +1188,7 @@ class BridgeVerifyBackend:
             substrate_info = dict(block, wellformed=None,
                                   derived_from_invocation=False,
                                   gate_ok=False, gate_kind=self.gate_kind,
-                                  attestation=attestation_entry)
+                                  attestation=attestation_entry, route=route)
             return {"verdict": "substrate-gated",
                     "reason": "F17 attestation channel gate: %s" % channel_reason,
                     "uncertainty": bridge_verdict.get("uncertainty", "unknown"),
@@ -1098,6 +1209,7 @@ class BridgeVerifyBackend:
                               derived_from_invocation=derived,
                               gate_ok=gate_ok, gate_kind=self.gate_kind)
         substrate_info["attestation"] = attestation_entry
+        substrate_info["route"] = route
 
         # BANNER CROSS-CHECK (second conveyance channel, not a harness
         # attestation -- see class docstring). Parse the FIRST
@@ -1109,7 +1221,9 @@ class BridgeVerifyBackend:
         else:
             banner_vendor, banner_model = banner_match.group(1), banner_match.group(2)
             if (banner_vendor == block["verifier_vendor"]
-                    and banner_model == block["verifier_model_id"]):
+                    and (banner_model == block["verifier_model_id"]
+                         or (alias_accepted
+                             and banner_model == attestation.get("argv_model")))):
                 substrate_info["banner_crosscheck"] = "match"
             else:
                 substrate_info["banner_crosscheck"] = "mismatch"
@@ -1139,6 +1253,23 @@ class BridgeVerifyBackend:
                                    block["absorb_model_id"],
                                    block["verifier_vendor"],
                                    block["verifier_model_id"]))
+            return {"verdict": "substrate-gated", "reason": gate_reason,
+                    "uncertainty": bridge_verdict.get("uncertainty", "unknown"),
+                    "verifier": verifier, "substrate": substrate_info,
+                    "evidence_file": evidence_rel,
+                    "bridge_verdict": bridge_verdict,
+                    "gated_inner_verdict": bridge_verdict.get("verdict")}
+
+        # v3.0-233: the leg must have been answered by the direction the engine chose
+        # and disclosed in the packet -- a verdict from any other vendor (a custom
+        # server, an env override, a wrapper that ignored --direction) is not the leg
+        # the receipt says it is. Fail closed, bridge verdict preserved.
+        if substrate.normalize_vendor(block["verifier_vendor"]) != route.get("direction"):
+            gate_reason = ("verifier route mismatch: the engine chose direction %s for "
+                           "author %s/%s, but the verdict came from %s/%s"
+                           % (route.get("direction"), route.get("author_vendor"),
+                              route.get("author_model"), block["verifier_vendor"],
+                              block["verifier_model_id"]))
             return {"verdict": "substrate-gated", "reason": gate_reason,
                     "uncertainty": bridge_verdict.get("uncertainty", "unknown"),
                     "verifier": verifier, "substrate": substrate_info,
@@ -1496,6 +1627,14 @@ def self_test():
          == _sha256("no header here\n")[:12])
 
     tmp = tempfile.mkdtemp(prefix="cb-")
+    # v3.0-233: the self-test never probes the machine for CLIs or reads the real operator
+    # registry -- both verifier directions are declared present and the registry home is an
+    # empty temp dir, unless a case passes its own; VERIFY_MODEL is cleared for the run.
+    global _ROUTE_ENV_OVERRIDE
+    _saved_route_override = _ROUTE_ENV_OVERRIDE
+    _ROUTE_ENV_OVERRIDE = {"available": ("openai", "anthropic"),
+                           "home": os.path.join(tmp, "no-home")}
+    _saved_verify_model = os.environ.pop("VERIFY_MODEL", None)
     try:
         staging = os.path.join(tmp, "verify-staging")
         _stamp_counter = [0]
@@ -1660,8 +1799,13 @@ def self_test():
         b5 = make_backend(confirmed_runner(vendor="openai", model="gpt-5.5"),
                           gate_kind="mystery")
         v5 = b5.verify(good_packet)
-        case("unknown gate_kind -> substrate-gated (fail-closed)",
-             v5["verdict"] == "substrate-gated")
+        # v3.0-233: an unknown gate kind has no verifier route, so it now fails closed one
+        # step EARLIER -- refused before anything is sent (it never reaches the gate)
+        case("unknown gate_kind -> fail-closed (route refused before any send)",
+             v5["verdict"] == "bridge-error" and "unknown gate kind" in v5["reason"])
+        case("unknown gate_kind -> substrate_gate_ok still fails closed on its own",
+             substrate.substrate_gate_ok("anthropic", "claude-sonnet-5", "openai",
+                                         "gpt-5.5", "mystery") is False)
 
         # runner failure modes
         b6 = make_backend(lambda args: (1, "", "boom"))
@@ -1918,6 +2062,214 @@ def self_test():
              v13["verdict"] == "confirmed")
         case("no banner -> banner_crosscheck == absent",
              v13["substrate"]["banner_crosscheck"] == "absent")
+
+
+        # ------------------------------------------- v3.0-233: verifier routing
+        # The verifier is chosen from the ARTIFACT's stamped author, tiered; every
+        # case below is hermetic (stub runners record the argv; nothing is spawned).
+        def make_backend_r(runner, vendor, model, gate_kind="routine",
+                           available=("openai", "anthropic"), home=None):
+            _stamp_counter[0] += 1
+            mp = os.path.join(tmp, "route-manifest-%d.json" % _stamp_counter[0])
+            with open(mp, "w", encoding="utf-8", newline="\n") as fh:
+                json.dump({"packets": []}, fh)
+            stamp_dispatch(mp, model=model, vendor=vendor,
+                           identity_source="attestation:self-test-fixture")
+            return BridgeVerifyBackend(tmp, gate_kind=gate_kind, staging=staging,
+                                       runner=runner, dispatch_manifest_path=mp,
+                                       available_vendors=available, home=home)
+
+        def flag(args, name):
+            return args[args.index(name) + 1] if name in args else None
+
+        def claude_runner(calls, argv="fable", runtime="claude-fable-5-1",
+                          match="alias", vendor="anthropic", requester="openai"):
+            def runner(args):
+                calls.append(list(args))
+                att = {"channel": "subprocess-runtime", "argv_model": argv,
+                       "runtime_model": runtime,
+                       "runtime_model_line": "modelUsage: " + runtime,
+                       "model_match": match, "exit_code": 0, "token_usage": None,
+                       "binary": "C:/stub/claude.exe", "ts": "2026-10-09T00:00:00Z"}
+                stderr = ("[cross-check] verifier=%s/%s requester=%s (the asker must "
+                          "be a non-%s substrate)\n" % (vendor, argv, requester, vendor))
+                return 0, json.dumps({
+                    "verdict": "confirmed", "reason": "ok", "uncertainty": "confident",
+                    "reason_classes": [], "missing_claims": [],
+                    "verifier": {"vendor": vendor, "model": runtime,
+                                 "requested_model": argv,
+                                 "requester_vendor": requester},
+                    "attestation": att}), stderr
+            return runner
+
+        def openai_runner(calls, model="gpt-6.1-sol", match=None, argv=None):
+            def runner(args):
+                calls.append(list(args))
+                att = _good_attestation(model)
+                if argv is not None:
+                    att["argv_model"] = argv
+                if match is not None:
+                    att["model_match"] = match
+                return 0, json.dumps({
+                    "verdict": "confirmed", "reason": "ok", "uncertainty": "confident",
+                    "verifier": {"vendor": "openai", "model": model},
+                    "attestation": att}), ""
+            return runner
+
+        # (1) a Codex-authored stamp is routed to Claude; the alias attestation passes
+        calls = []
+        bx = make_backend_r(claude_runner(calls), "openai", "gpt-6.1-sol")
+        vx = bx.verify(good_packet)
+        a0 = calls[0] if calls else []
+        case("v3.0-233: Codex-authored stamp -> --direction anthropic, "
+             "--requester-vendor openai (from the stamp, never the session)",
+             flag(a0, "--direction") == "anthropic"
+             and flag(a0, "--requester-vendor") == "openai"
+             and "--model" not in a0)
+        case("v3.0-233: Claude-direction alias attestation (fable -> claude-fable-5-1, "
+             "model_match alias) is ACCEPTED; the verifier model is the runtime id",
+             vx["verdict"] == "confirmed"
+             and vx["substrate"]["verifier_model_id"] == "claude-fable-5-1"
+             and vx["substrate"]["substrate_source"] == "invocation-metadata"
+             and vx["substrate"]["route"].get("alias_accepted", {}).get(
+                 "runtime_model") == "claude-fable-5-1")
+        case("v3.0-233: the alias banner (verifier=anthropic/fable) cross-checks as match",
+             vx["substrate"]["banner_crosscheck"] == "match")
+        ev_text = open(os.path.join(tmp, vx["evidence_file"].replace("/", os.sep)),
+                       encoding="utf-8").read() if vx.get("evidence_file") else ""
+        att_text = open(os.path.join(tmp, vx["substrate"]["attestation"]["artifact"]
+                                     .replace("/", os.sep)), encoding="utf-8").read() \
+            if vx["substrate"].get("attestation", {}).get("artifact") else ""
+        case("v3.0-233: the chosen server is disclosed in the packet AND the receipt",
+             "VERIFIER ROUTE" in ev_text and "verify-server.js" in ev_text
+             and "author (from the artifact's stamp): openai/gpt-6.1-sol" in ev_text
+             and '"server": "verify-server.js"' in att_text
+             and vx["substrate"]["route"]["server"] == "verify-server.js")
+
+        # (2) mismatch still fails closed; an "alias" label on a non-alias pair too
+        calls = []
+        vmm = make_backend_r(claude_runner(calls, argv="fable", runtime="claude-opus-5-5",
+                                           match="mismatch"),
+                             "openai", "gpt-6.1-sol").verify(good_packet)
+        case("v3.0-233: Claude-direction model_match mismatch -> substrate-gated (F17)",
+             vmm["verdict"] == "substrate-gated" and "F17" in vmm["reason"])
+        vlie = make_backend_r(claude_runner([], argv="fable", runtime="claude-opus-5-5",
+                                            match="alias"),
+                              "openai", "gpt-6.1-sol").verify(good_packet)
+        case("v3.0-233: an 'alias' label on a pair that is NOT an alias pair -> gated "
+             "(the field alone is never trusted)",
+             vlie["verdict"] == "substrate-gated" and "F17" in vlie["reason"])
+        voa = make_backend_r(openai_runner([], model="gpt-5.5", argv="gpt-5",
+                                           match="alias"),
+                             "anthropic", "claude-opus-5-5").verify(good_packet)
+        case("v3.0-233: the OpenAI side is unchanged -- argv != runtime fails closed even "
+             "if labelled alias", voa["verdict"] == "substrate-gated")
+
+        # (3) a Claude-authored stamp is routed to OpenAI
+        calls = []
+        vy = make_backend_r(openai_runner(calls), "anthropic",
+                            "claude-opus-5-5").verify(good_packet)
+        a0 = calls[0] if calls else []
+        case("v3.0-233: Claude-authored stamp -> --direction openai, "
+             "--requester-vendor anthropic; confirmed",
+             flag(a0, "--direction") == "openai"
+             and flag(a0, "--requester-vendor") == "anthropic"
+             and vy["verdict"] == "confirmed"
+             and vy["substrate"]["route"]["server"] == "codex-verify-server.js")
+
+        # (4) no far-side CLI: refused BEFORE anything is written or sent
+        calls = []
+        vz = make_backend_r(openai_runner(calls), "anthropic", "claude-opus-5-5",
+                            available=("anthropic",)).verify(good_packet)
+        case("v3.0-233: no far-side CLI and no second model -> ROUTE REFUSED naming what "
+             "to install or set; the bridge is never called",
+             vz["verdict"] == "bridge-error" and "ROUTE REFUSED" in vz["reason"]
+             and "Codex CLI" in vz["reason"] and "VERIFY_MODEL" in vz["reason"]
+             and calls == [] and vz["evidence_file"] == "")
+
+        # (5) the same-model refusal: VERIFY_MODEL is the author's own model (as an alias)
+        os.environ["VERIFY_MODEL"] = "opus"
+        try:
+            calls = []
+            vsm = make_backend_r(openai_runner(calls), "anthropic", "claude-opus-5-5",
+                                 available=("anthropic",)).verify(good_packet)
+        finally:
+            os.environ.pop("VERIFY_MODEL", None)
+        case("v3.0-233: same-vendor fallback naming the SAME model (opus == "
+             "claude-opus-5-5) -> refused, never run",
+             vsm["verdict"] == "bridge-error" and "SAME model" in vsm["reason"]
+             and calls == [])
+
+        # (6) a different same-vendor model from the registry: the policy selects it, the
+        # shipped bridge would refuse the same-vendor requester -> refused plainly
+        reg_home = os.path.join(tmp, "reg-home")
+        os.makedirs(os.path.join(reg_home, ".rheoscope"), exist_ok=True)
+        with open(os.path.join(reg_home, ".rheoscope", "frontier-models.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"anthropic_second": "claude-sonnet-5"}, fh)
+        calls = []
+        vsv = make_backend_r(openai_runner(calls), "anthropic", "claude-opus-5-5",
+                             available=("anthropic",), home=reg_home).verify(good_packet)
+        case("v3.0-233: routine same-vendor/different-model is selected but refused while "
+             "the bridge refuses same-vendor requesters (no false requester is declared)",
+             vsv["verdict"] == "bridge-error" and "bridge" in vsv["reason"]
+             and vsv["substrate"]["route"]["basis"] == "same-vendor-different-model"
+             and calls == [])
+        _saved_svl = substrate.BRIDGE_SAME_VENDOR_LEGS
+        substrate.BRIDGE_SAME_VENDOR_LEGS = True
+        try:
+            calls = []
+            make_backend_r(claude_runner(calls, argv="claude-sonnet-5",
+                                         runtime="claude-sonnet-5", match="exact",
+                                         requester="anthropic"),
+                           "anthropic", "claude-opus-5-5", available=("anthropic",),
+                           home=reg_home).verify(good_packet)
+        finally:
+            substrate.BRIDGE_SAME_VENDOR_LEGS = _saved_svl
+        a0 = calls[0] if calls else []
+        case("v3.0-233: once a bridge accepts it, the same-vendor leg passes the second "
+             "model explicitly (--model) with the true requester",
+             flag(a0, "--direction") == "anthropic" and flag(a0, "--model") == "claude-sonnet-5"
+             and flag(a0, "--requester-vendor") == "anthropic")
+
+        # (7) a vendor-tier leg never falls back to the same vendor
+        calls = []
+        vvt = make_backend_r(openai_runner(calls), "openai", "gpt-6.1-sol",
+                             gate_kind="migration", available=("openai",),
+                             home=reg_home).verify(good_packet)
+        case("v3.0-233: vendor-tier leg with only the author's CLI -> refused",
+             vvt["verdict"] == "bridge-error" and "vendor-tier" in vvt["reason"]
+             and calls == [])
+
+        # (8) a verdict from a vendor other than the chosen direction is gated
+        vrm = make_backend_r(openai_runner([], model="gpt-5.5"), "openai",
+                             "gpt-6.1-sol").verify(good_packet)
+        case("v3.0-233: a verdict from a different direction than the engine chose -> "
+             "substrate-gated (route mismatch), even when the routine gate would pass",
+             vrm["verdict"] == "substrate-gated" and "route mismatch" in vrm["reason"])
+
+        # (9) a VERIFY_MODEL naming the author's vendor never reaches the other CLI
+        os.environ["VERIFY_MODEL"] = "claude-sonnet-5"
+        _real_run = subprocess.run
+        seen_env = []
+
+        class _P:
+            returncode, stdout, stderr = 1, "", "stub"
+
+        def _fake_run(args, **kw):
+            seen_env.append(kw.get("env"))
+            return _P()
+        subprocess.run = _fake_run
+        try:
+            bd = make_backend_r(None, "anthropic", "claude-opus-5-5")
+            bd.verify(good_packet)
+        finally:
+            subprocess.run = _real_run
+            os.environ.pop("VERIFY_MODEL", None)
+        case("v3.0-233: VERIFY_MODEL=claude-sonnet-5 on a Claude-authored leg routed to "
+             "OpenAI is dropped from the bridge's environment",
+             bd.route()["drop_env_model"] is True and seen_env
+             and isinstance(seen_env[0], dict) and "VERIFY_MODEL" not in seen_env[0])
 
         # ------------------------------------------------------- emit_packets
         repo = os.path.join(tmp, "repo")
@@ -2989,6 +3341,11 @@ def self_test():
              and vg_res["dispatch_guard"]["authorization"]["sha256"]
              == _sha256(open(guard_auth_file, encoding="utf-8").read()))
     finally:
+        _ROUTE_ENV_OVERRIDE = _saved_route_override
+        if _saved_verify_model is not None:
+            os.environ["VERIFY_MODEL"] = _saved_verify_model
+        else:
+            os.environ.pop("VERIFY_MODEL", None)
         shutil.rmtree(tmp, ignore_errors=True)
 
     label = "compile-backends self-test"

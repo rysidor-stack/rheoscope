@@ -12,10 +12,26 @@
 #
 # Honest residual (recorded, not hidden): marker presence catches edits TO the declared
 # tier lines -- the incident's exact shape -- not every conceivable routing rewrite
-# around them. The runtime backstop stays check-substrate.py (policy pin, 23/23) and the
+# around them. The runtime backstop stays check-substrate.py (policy pin, 47/47 since v3.0-233) and the
 # journaled substrate blocks (F17/F18) on every leg.
 #
 # Row schema: id, file, marker (exact substring, one line), means, decision-ref.
+#
+# THE DIRECTION RULE (v3.0-233, engine half; recorded here so a rewrite of the routing is
+# visible the same way a tier edit is). The verifier for a leg is chosen from the
+# ARTIFACT's stamped author -- the dispatch stamp's vendor/model for a compile leg, the
+# views' verified: absorb fields (or the operator's --author-vendor attestation) for a
+# content audit -- never from the session, by check-substrate.choose_verifier, tiered
+# exactly like the gate:
+#   routine (compile verify, routing leg): the OPPOSITE vendor when its CLI is present;
+#     else the SAME vendor with a DIFFERENT model (VERIFY_MODEL, or "<vendor>_second" in
+#     ~/.rheoscope/frontier-models.json); else refuse. Never a same-model leg. (While the
+#     shipped bridge refuses a same-vendor requester, the same-vendor route is selected
+#     and refused with that reason: BRIDGE_SAME_VENDOR_LEGS.)
+#   migration / design (content audits, design gates): the opposite vendor, or refuse.
+# Every leg passes --direction <chosen> --requester-vendor <author vendor> to verify-cli.js
+# and records the route in the packet and the receipt. The rows marked (v3.0-233) anchor
+# that rule; moving the direction choice back to a literal or to the session trips them.
 
 rows:
   - id: driver-routine-dispatch
@@ -40,6 +56,31 @@ rows:
     decision-ref: v3.0-76
   - id: bridge-direction-doc
     file: .claude/skills/bridge/verify-cli.js
-    marker: "routes to an OpenAI Codex/GPT verifier"
-    means: the Claude-side bridge's declared direction; a vendor-pin rewrite of the bridge (the surface a downstream instance's edit touched) removes or contradicts this line
-    decision-ref: v3.0-77
+    marker: "anthropic: path.join(__dirname, 'verify-server.js'),"
+    means: the bridge keeps BOTH answering directions selectable per call (--direction); a vendor-pin rewrite of the bridge (the surface a downstream instance's edit touched) removes this line. (The pre-v3.0.63 marker "routes to an OpenAI Codex/GPT verifier" no longer exists in the shipped bridge -- an adopted register still carrying it reports BLOCKING until this row is updated.)
+    decision-ref: v3.0-77; v3.0-233 (bridge half, v3.0.63)
+  - id: substrate-direction-opposite-first
+    file: deploy/check-substrate.py
+    marker: '_OPPOSITE_ORDER = {"openai": ("anthropic",), "anthropic": ("openai",)}'
+    means: (v3.0-233) a leg is routed to the OPPOSITE vendor of the artifact's author first, on every tier
+    decision-ref: v3.0-233 (audit 2026-10-06 root cause 1; five-pass run 2026-10-07)
+  - id: substrate-vendor-tier-no-fallback
+    file: deploy/check-substrate.py
+    marker: 'return refuse("this is a vendor-tier leg (%s): the verifier must be a different VENDOR "'
+    means: (v3.0-233) a migration/design leg never falls back to the author's vendor -- it refuses
+    decision-ref: v3.0-233; v3.0-76
+  - id: backends-route-from-stamp
+    file: deploy/compile-backends.py
+    marker: "self.absorb_vendor, self.absorb_model_id, self.gate_kind, avail,"
+    means: (v3.0-233) the compile verify and routing legs choose the verifier from the DISPATCH STAMP's author and the constructed gate kind, never the session
+    decision-ref: v3.0-233; v3.0-183
+  - id: backends-direction-passed
+    file: deploy/compile-backends.py
+    marker: '"--direction", route["direction"],'
+    means: (v3.0-233) the chosen direction is passed to verify-cli.js explicitly (no ambient default)
+    decision-ref: v3.0-233
+  - id: audit-route-vendor-tier
+    file: deploy/audit-content.py
+    marker: "route = _substrate.choose_verifier(vendor, model, _substrate.MIGRATION, available,"
+    means: (v3.0-233) every content-audit leg is routed by ITS author at the vendor tier (audit-content-v2 reuses this function)
+    decision-ref: v3.0-233

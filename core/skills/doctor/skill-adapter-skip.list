@@ -2,10 +2,10 @@
 # Read by gen-skill-adapters.py (beside this file) and by both init validators' parity check.
 # One skill directory name per line; '#' starts a comment; an inline comment is the reason.
 #
-# REMOVAL CONDITION: backlog v3.0-233 (every bridge skill routes by the author stamp, so no
-# skill is Claude-only). When 233 lands, delete the two entries below and regenerate; the
-# file itself stays (an empty list is valid). Do NOT add skills here: an adapter makes a
-# skill discoverable, not Claude-runnable, and hiding skills from a non-Claude driver is
-# the v3.0-182 mistake this list is a stop-gap for (v3.0-236).
-cross-check       # still dispatches the Claude->GPT bridge unconditionally; same-vendor from Codex (v3.0-76 class)
-cross-check-loop  # same reason as cross-check
+# EMPTY BY DESIGN since v3.0-236's routing remainder: cross-check and cross-check-loop used to
+# sit here because they dispatched Claude->GPT unconditionally (same-vendor from a Codex
+# session, the v3.0-76 class). They now read the session driver and pass --direction (the
+# other vendor) and --requester-vendor (their own), so every bridge skill routes cross-vendor
+# from either driver and none is Claude-only. The file stays (an empty list is valid). Do NOT
+# add skills here: an adapter makes a skill discoverable, not Claude-runnable, and hiding
+# skills from a non-Claude driver is the v3.0-182 mistake this list was a stop-gap for.

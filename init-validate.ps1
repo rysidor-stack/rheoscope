@@ -175,8 +175,8 @@ if (Test-Path $coreSkillsLeftover) {
 
 # 7b. Skill-adapter parity (v3.0-236): every installed .claude/skills/<name>/SKILL.md that is
 #     not on the skip list has an .agents/skills/<name>/SKILL.md adapter whose pointed-at
-#     target exists. The skip list is the data file beside the generator (single home); its
-#     removal condition is backlog v3.0-233. Native check, no python needed here.
+#     target exists. The skip list is the data file beside the generator (single home); empty
+#     since v3.0.64 (every skill routes by author). Native check, no python needed here.
 $adapterSkip = @()
 $skipList = Join-Path $scriptRoot '.claude/skills/doctor/skill-adapter-skip.list'
 if (Test-Path $skipList -PathType Leaf) {

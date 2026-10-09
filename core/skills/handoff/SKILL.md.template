@@ -64,13 +64,17 @@ not a new folder; at `locked`/`superseded`, ask: new handoff or revisit?
 - **Hypothesis** (one sentence, named so the verifier can attack it; ratify with operator)
 - **Load-bearing questions** (numbered, falsifiable where possible)
 - **Scope in / scope out**; **required reference materials**; **inquiry-specific anti-patterns**
-- **Target substrate**: default is the bridge's cross-vendor leg (OpenAI/GPT, mechanically
-  recorded). Name it as such in meta. Deep-research targets → plan for `--file-external`.
+- **Target substrate**: default is the bridge's cross-vendor leg, whose vendor is the opposite
+  family of the author (§ Leg choice below; mechanically recorded). Name it as such in meta.
+  Deep-research targets → plan for `--file-external`.
 
 ## Step 3 — build the folder and packet
 
 Per the protocol doc: create `<envelope>/<YYYY-MM-DD>-<slug>/` with `meta.yaml` (status
-`open`, pruned shape, `authored_by` = this session's substrate identity), `context.md`,
+`open`, pruned shape, `authored_by` = this session's substrate identity, which MUST name its
+vendor family — e.g. "Anthropic Claude <model> (Claude Code orchestrator)" or "OpenAI GPT
+<model> (Codex orchestrator)"; establish it from the session's agent markers per § Leg
+choice, never from memory), `context.md`,
 `brief.md` (six sections), `README.md` (orientation only; no duplicated methodology), and
 the INDEX Active row. Inline every reference one level deep into `packet-round-1.md`
 (§ 0–§ 6 per the protocol; inline mode — the leg is tool-less and reads nothing else).
@@ -81,11 +85,43 @@ never truncate § 4 prior outputs.
 PII, or untrusted scraped text in the packet — it enters the other vendor's context. Redact
 or abort; never dispatch a tainted packet.
 
+## Leg choice (v3.0-234 — every bridge leg, answer and close, interactive and retried)
+
+The bridge reaches two leg vendors: `openai` (contained `codex exec`) and `anthropic`
+(contained, tool-less `claude -p`). Which one a leg uses is decided by the handoff's author,
+never by which tool happens to be running this pass:
+
+1. **Author family** = the vendor family `meta.yaml.authored_by` names: Claude/Anthropic →
+   `anthropic`; GPT/Codex/OpenAI → `openai`; any other family (Gemini, Grok, …) → that
+   family. (When authoring, this session's own family comes from its agent markers:
+   `CLAUDECODE` / `CLAUDE_CODE_SESSION_ID` / `CLAUDE_CODE_ENTRYPOINT` ⇒ `anthropic`;
+   `CODEX_SANDBOX` / `CODEX_THREAD_ID` / `CODEX_SESSION_ID` ⇒ `openai`; both or neither ⇒ ask
+   the operator once which tool is driving.) If `authored_by` names no family you can map,
+   do not guess and do not dispatch: ask the operator once (interactive) or leave the leg
+   parked with that reason (unattended).
+2. **The leg-choice rule: the leg vendor is the opposite FAMILY of the author** — author
+   `anthropic` → leg `openai`; author `openai` → leg `anthropic`; an author of another family
+   → `openai` unless the rotation check (`--round N`) excludes it, then `anthropic`.
+3. **Pass both explicitly on every dispatch** — `--vendor <leg vendor>` and
+   `--requester-vendor <author family>` and `--meta-file <folder>/meta.yaml` (the leg reads `authored_by` itself and REFUSES a requester flag that contradicts it — v3.0.64) — never rely on handoff-leg.js's defaults (they fall
+   back to the RUNNING session's markers, which is the wrong party when a nightly tick or a
+   different tool retries the leg). The leg refuses (exit 64) a requester equal to its own
+   vendor; exit 64 is a routing error, not a dead leg (see Step 4).
+4. **Record both** in `meta.yaml` — `leg_vendor` and `requester_vendor` on the round's
+   `answered_by` entry (and on `locked_by` for the close) — and check them against the
+   receipt: the attestation sidecar's `vendor` and `requester_vendor` must equal what you
+   passed. A mismatch is a malformed deliverable (Step 4's re-dispatch-once rule).
+
 ## Step 4 — dispatch the answer leg (no approvals, no couriering)
+
+Choose the leg per § Leg choice, then:
 
 ```
 node "${CROSS_VENDOR_BRIDGE_DIR:-.claude/skills/bridge}/handoff-leg.js" \
   --role answer \
+  --vendor <leg vendor: opposite family of authored_by> \
+  --requester-vendor <author family from authored_by> \
+  --meta-file <folder>/meta.yaml \
   --packet-file <folder>/packet-round-N.md \
   --out <folder>/output-round-N.md \
   --attest-out <folder>/output-round-N.attest.json \
@@ -121,19 +157,24 @@ asks the one question.
 
 The leg is contained (read-only, tool-less, no network) and lands the deliverable atomically;
 exit non-zero = `LEG FAILED` = nothing landed. On failure: leave status `open`, report loudly,
-done — Step 0 retries it next invocation or nightly tick. Never hand-courier instead. Run the
+done — Step 0 retries it next invocation or nightly tick. Never hand-courier instead. **Exit 64
+is different:** the leg refused the vendor pair (same family, or an unknown vendor) — a retry
+would refuse again, so fix the routing per § Leg choice (it is a dispatch defect, or an
+`authored_by` that names the wrong family) before dispatching again; never drop the flags. Run the
 leg backgrounded (a background shell or the harness's background task) so this session keeps
 working while the other vendor answers — the deliverable lands atomically, so nothing here
 waits on it (v3.0.54, backlog v3.0-162).
 
 On success, validate the deliverable (verdict tag; brief questions addressed; substrate
-signature present) — if malformed, delete the output file and re-dispatch once; twice
+signature present; the sidecar's `vendor`/`requester_vendor` equal the flags you passed) — if
+malformed, delete the output file and re-dispatch once; twice
 malformed → leave at `open` and report. Then file:
 
 - `meta.yaml`: `status: answered`, `answered` date, `rounds_completed: N`,
   `hypothesis_outcome` from the verdict tag, and **`answered_by` copied from the
   attestation sidecar** (`vendor`/`runtime_model` + "contained bridge handoff-leg,
-  read-only, tool-less" + date). F17 discipline: identity is copied from the mechanical
+  read-only, tool-less" + date), plus `leg_vendor` and `requester_vendor` (the sidecar's
+  `vendor` and `requester_vendor`). F17 discipline: identity is copied from the mechanical
   record, never typed from memory or from the leg's own prose.
 - INDEX Active row → `answered`.
 
@@ -157,6 +198,13 @@ mechanics in details tails.
 The authoring session NEVER locks a T1. Fire the close protocol as a headless cross-vendor
 leg:
 
+0. **Close preflight (refuse before firing):** derive the author family from
+   `meta.yaml.authored_by` and the close leg's vendor per § Leg choice (opposite family).
+   **If the close leg's family equals the author's family — or the author family cannot be
+   determined — refuse: do not dispatch, do not write `close: pending`** (a park would only
+   retry the same breach), and report it as a routing defect in plain words. handoff-leg.js
+   refuses the same pair with exit 64; the preflight is here so the firewall never depends on
+   the leg noticing.
 1. **Assemble `<folder>/close-packet.md`**: inline the close protocol
    (`.claude/skills/handoff-close/SKILL.md`), `meta.yaml`, `brief.md`, `context.md`, every
    `output-round-*.md`, any existing confidence-audit draft, plus the concrete targets: the
@@ -166,12 +214,16 @@ leg:
    ```
    node "${CROSS_VENDOR_BRIDGE_DIR:-.claude/skills/bridge}/handoff-leg.js" \
      --role close \
+     --vendor <close leg vendor: opposite family of authored_by> \
+     --requester-vendor <author family from authored_by> \
+     --meta-file <folder>/meta.yaml \
      --packet-file <folder>/close-packet.md \
      --out <folder>/close-deliverable.json \
      --attest-out <folder>/close-deliverable.attest.json \
      --effort high
    ```
-3. **Leg failed** (non-zero exit, nothing landed): set `close: pending` in `meta.yaml`
+3. **Leg failed** (non-zero exit other than 64, nothing landed; exit 64 is the preflight's
+   refusal raised by the leg — handle it as in point 0): set `close: pending` in `meta.yaml`
    (status stays `answered`), report, stop this branch. The park is information (it
    surfaces in the decision inbox), never an operator task; Step 0 or the nightly
    standing-loop tick retries it. **There is no manual fallback** — operator ruling
@@ -193,10 +245,12 @@ leg:
    authored them): write `decision_raw` to the packet-named raw path, `confidence_audit`
    to `<folder>/confidence-audit.md`, meta → `status: locked`, `locked` date,
    `locked_by_raw_file`, `hypothesis_outcome`, clear `close:`, and **`locked_by` copied
-   from `close-deliverable.attest.json`** (F17 — never typed). INDEX → Archive with the
-   leg's outcome word. Flight-plan mark if one exists. Register the raw and run
-   `check-loop-state.py` as above. The three-substrate record now reads: author (this
-   session's family) ≠ answer leg ≠ close leg substrate — all mechanically recorded.
+   from `close-deliverable.attest.json`** (F17 — never typed), with its `leg_vendor` and
+   `requester_vendor`. INDEX → Archive with the leg's outcome word. Flight-plan mark if one
+   exists. Register the raw and run `check-loop-state.py` as above. The record now reads:
+   every answering family ≠ the author family (`authored_by`), and the close leg's family ≠
+   the author's, run in a fresh context that wrote no output round — all mechanically
+   recorded.
 
    **The close-out report** (v3.0.25, both tiers; per § Reporting to the operator — this
    list is what a lock report must COVER, the rules live there): (1) what is now locked, in
@@ -219,14 +273,17 @@ asymptotic-confidence trap and the tier round-cap; overrides recorded in
 `round_overrides`), append the round addendum to `brief.md`, build `packet-round-N.md`
 (§ 4 carries ALL prior outputs verbatim, never truncated).
 
-**Substrate rotation check before dispatch:** the round's substrate must differ from ALL
-prior `answered_by` substrates. The bridge leg is OpenAI/GPT — if a prior round was
-already bridge-answered, the bridge is same-vendor for this round and MUST NOT be used:
-route to `--file-external` (deep-research/other family) or have a fresh session on a
-different family produce the output (that session invokes `/handoff --round N` and, after
-stating its substrate satisfies the constraint, writes `output-round-N.md` itself per the
-protocol's receiving rules). When the bridge IS legal for the round, dispatch and file
-exactly as Steps 4. Then proceed to Step 5 (lock) as normal.
+**Substrate rotation check before dispatch:** `authored_by` is **round 0**. The round's
+answerer must differ from the author's family AND from every prior `answered_by` family.
+The bridge offers two leg vendors (`openai`, `anthropic`); strike the author's family and
+every family a prior round already answered with. If one remains, dispatch it per § Leg
+choice and Step 4 (`--vendor` = the remaining vendor, `--requester-vendor` = the author
+family). If none remains — e.g. a Claude author whose round 1 was answered by the OpenAI
+leg — the bridge MUST NOT be used for this round: route to `--file-external`
+(deep-research/other family) or have a fresh session on a different family produce the
+output (that session invokes `/handoff --round N` and, after stating its substrate
+satisfies the constraint, writes `output-round-N.md` itself per the protocol's receiving
+rules). Then proceed to Step 5 (lock) as normal.
 
 ## `--file-external <folder>` — file a deep-research output
 
@@ -259,7 +316,9 @@ brief, context, README (immutable after authoring); re-litigate filed round verd
   park-and-retry is the contract; automation-or-wait, never an operator step
 - Locking a T1 in the authoring session (the firewall; the close leg exists for this)
 - Skipping the convergence check at `--round N` because the operator seems sure
-- Round-dispatching the bridge when a prior round was already bridge-answered
-  (same-vendor "cross"-check — the v3.0-76 conflation class)
+- Dispatching a leg whose vendor equals the author's family, or a round whose vendor equals
+  any prior answerer's (same-vendor "cross"-check — the v3.0-76 conflation class)
+- Omitting `--vendor`/`--requester-vendor` and letting the leg default from whichever tool
+  is running the pass (the author decides the leg, not the runner)
 - Writing `close: pending` for an operator's lock decline (pending means a DEAD LEG, not
   a contested deliberation)

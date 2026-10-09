@@ -764,6 +764,19 @@ def _render_routing_packet(compile_seq, rec, scoped, read_event, clears_by):
     return "\n".join(lines)
 
 
+def _route_summary(verdict):
+    """v3.0-233: the verifier route a BridgeVerifyBackend chose from the artifact's
+    author stamp, as recorded in the verdict's substrate block -- or None (a
+    fixture backend, or a verdict with no substrate). Journaled additively."""
+    sub = verdict.get("substrate") if isinstance(verdict, dict) else None
+    route = sub.get("route") if isinstance(sub, dict) else None
+    if not isinstance(route, dict):
+        return None
+    return {k: route.get(k) for k in (
+        "direction", "requester_vendor", "author_vendor", "author_model",
+        "basis", "server", "gate_kind", "refusal")}
+
+
 def _routing_leg(repo, compile_seq, rec, verify_backend, read_event):
     """Run the routing leg for compile record REC once; return the
     routing_verify entry and the artifact paths it wrote, or (None, []) when
@@ -895,6 +908,13 @@ def _routing_leg(repo, compile_seq, rec, verify_backend, read_event):
              else None,
              "substrate": verdict.get("substrate")
              if isinstance(verdict, dict) else None}
+    # v3.0-233: the verifier route the backend chose from the artifact's author
+    # stamp (direction, requester, server, basis) rides the journal entry beside
+    # the substrate block, and a REFUSED route keeps its plain remedy sentence,
+    # so the ledger says why the leg did not run without opening the artifact.
+    route = _route_summary(verdict)
+    if route is not None:
+        entry["route"] = route
     outer = str((verdict or {}).get("verdict", "")).lower() \
         if isinstance(verdict, dict) else ""
     used = {r["id"] for r in coverage_debt_rows(repo)}
@@ -3294,6 +3314,8 @@ def verify_run(repo, compile_seq, verify_backend, run_type="verify"):
                     "reason_classes": r_classes,
                     "disposition": leg_disp}
                 attempt.update(attr_fields)   # v3.0-191, additive
+                if _route_summary(verdict) is not None:   # v3.0-233, additive
+                    attempt["route"] = _route_summary(verdict)
                 absorption_verify_attempts.append(attempt)
 
         # F15: journal the standalone routing-census's input/output hashes for
@@ -7326,6 +7348,115 @@ def self_test():
              _lf_back == _lf_text.encode("utf-8"))
     finally:
         shutil.rmtree(_crlf_base, ignore_errors=True)
+
+    # v3.0-233: the routing leg runs through the REAL BridgeVerifyBackend (loaded
+    # from compile-backends.py; stub runners, nothing spawned) and journals the
+    # direction the backend chose from the artifact's author stamp -- both
+    # directions, the alias attestation, the mismatch, the same-model refusal and
+    # the no-far-side-CLI refusal.
+    _rt_base = tempfile.mkdtemp(prefix="cv2-route-")
+    try:
+        _cb_spec = importlib.util.spec_from_file_location(
+            "compile_backends_v2selftest", os.path.join(_HERE, "compile-backends.py"))
+        _cb = importlib.util.module_from_spec(_cb_spec)
+        _cb_spec.loader.exec_module(_cb)
+        _cb._ROUTE_ENV_OVERRIDE = {"home": os.path.join(_rt_base, "no-home")}
+        _saved_vm = os.environ.pop("VERIFY_MODEL", None)
+        _ev = "raw/rt233.md"
+        _ev_text = "Deliveries arrive on Tuesdays.\n"
+        _rec = {"claim_routing": {_ev: {"claims": [
+            {"id": "c1", "text": "Deliveries arrive on Tuesdays",
+             "owner": "wiki/rt.md"}]}},
+            "absorbed": [{"view": "wiki/rt.md", "events": [_ev]}]}
+
+        def _stamped(seq, vendor, model):
+            mp = os.path.join(_rt_base, "manifest-%d.json" % seq)
+            with open(mp, "w", encoding="utf-8", newline="\n") as fh:
+                json.dump({"packets": []}, fh)
+            _cb.stamp_dispatch(mp, model=model, vendor=vendor,
+                               identity_source="attestation:self-test-fixture")
+            return mp
+
+        def _rt_runner(calls, vendor, argv, runtime, match):
+            def runner(args):
+                calls.append(list(args))
+                att = {"channel": "subprocess-runtime", "argv_model": argv,
+                       "runtime_model": runtime, "runtime_model_line": "x",
+                       "exit_code": 0, "token_usage": None, "ts": "t"}
+                if match is not None:
+                    att["model_match"] = match
+                return 0, json.dumps({
+                    "verdict": "confirmed", "reason": "ok",
+                    "uncertainty": "confident", "reason_classes": [],
+                    "missing_claims": [],
+                    "verifier": {"vendor": vendor, "model": runtime},
+                    "attestation": att}), ""
+            return runner
+
+        def _leg(seq, vendor, model, runner, available):
+            be = _cb.BridgeVerifyBackend(
+                _rt_base, dispatch_manifest_path=_stamped(seq, vendor, model),
+                gate_kind="routine", runner=runner, available_vendors=available,
+                staging=os.path.join(_rt_base, "staging"))
+            entry, _arts = _routing_leg(_rt_base, seq, _rec, be,
+                                        lambda e: _ev_text)
+            return entry or {}
+
+        def _flag(calls, name):
+            a = calls[0] if calls else []
+            return a[a.index(name) + 1] if name in a else None
+
+        c1 = []
+        e1 = _leg(9001, "openai", "gpt-6.1-sol",
+                  _rt_runner(c1, "anthropic", "fable", "claude-fable-5-1", "alias"),
+                  ("openai", "anthropic"))
+        case("v3.0-233: routing leg, Codex-authored stamp -> routed to Claude "
+             "(--direction anthropic --requester-vendor openai); the alias "
+             "attestation is accepted and the leg confirms",
+             _flag(c1, "--direction") == "anthropic"
+             and _flag(c1, "--requester-vendor") == "openai"
+             and e1.get("disposition") == "confirmed"
+             and (e1.get("route") or {}).get("server") == "verify-server.js"
+             and (e1.get("route") or {}).get("author_vendor") == "openai")
+        c2 = []
+        e2 = _leg(9002, "anthropic", "claude-opus-5-5",
+                  _rt_runner(c2, "openai", "gpt-6.1-sol", "gpt-6.1-sol", None),
+                  ("openai", "anthropic"))
+        case("v3.0-233: routing leg, Claude-authored stamp -> routed to OpenAI, "
+             "confirmed, route journaled",
+             _flag(c2, "--direction") == "openai"
+             and _flag(c2, "--requester-vendor") == "anthropic"
+             and e2.get("disposition") == "confirmed"
+             and (e2.get("route") or {}).get("direction") == "openai")
+        e3 = _leg(9003, "openai", "gpt-6.1-sol",
+                  _rt_runner([], "anthropic", "fable", "claude-opus-5-5", "mismatch"),
+                  ("openai", "anthropic"))
+        case("v3.0-233: routing leg, Claude-direction model_match mismatch -> "
+             "incomplete (an unattested verdict never counts)",
+             e3.get("disposition") == "incomplete")
+        c4 = []
+        e4 = _leg(9004, "anthropic", "claude-opus-5-5",
+                  _rt_runner(c4, "openai", "gpt-6.1-sol", "gpt-6.1-sol", None),
+                  ("anthropic",))
+        case("v3.0-233: routing leg, no far-side CLI -> incomplete, nothing sent, "
+             "and the plain remedy is journaled on the route",
+             e4.get("disposition") == "incomplete" and c4 == []
+             and "Codex CLI" in str((e4.get("route") or {}).get("refusal")))
+        os.environ["VERIFY_MODEL"] = "claude-opus-5-5"
+        try:
+            c5 = []
+            e5 = _leg(9005, "anthropic", "claude-opus-5-5",
+                      _rt_runner(c5, "anthropic", "x", "x", None), ("anthropic",))
+        finally:
+            os.environ.pop("VERIFY_MODEL", None)
+        case("v3.0-233: routing leg, same-vendor fallback naming the author's own "
+             "model -> refused (never a same-model leg)",
+             e5.get("disposition") == "incomplete" and c5 == []
+             and "SAME model" in str((e5.get("route") or {}).get("refusal")))
+        if _saved_vm is not None:
+            os.environ["VERIFY_MODEL"] = _saved_vm
+    finally:
+        shutil.rmtree(_rt_base, ignore_errors=True)
 
     if failed:
         print("compile-v2 orchestration: FAIL (%d/%d)" % (total - failed, total))

@@ -267,6 +267,75 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.63 → v3.0.64 (Codex-led and mixed-driver projects, part 2: the knowledge engine and the decision skills choose their reviewer from who authored the work, and compile stops asking which model you are using)
+
+**Adopt v3.0.63 first** if you have not: this release's engine calls the bridge flags v3.0.63 added.
+
+**Two lanes, in either order** — nothing in one depends on the other.
+
+**Step 1 — OPERATOR-COPY lane (trust surfaces; you copy and commit them yourself — under
+`required`, `git commit -S`):**
+- `deploy/compile-driver.py` (v3.0-233: the pre-write probe checks the CLI of whichever direction
+  the run needs — claude at or above 2.1.220, or codex at its floor — and pins it; 293/293 in the
+  template tree, 303/303 in an instance —
+  `python deploy/compile-driver.py --self-test`).
+- `deploy/compile-backends.py` (v3.0-233: the verify leg is chosen from the dispatch stamp's author
+  and recorded in the packet, receipt and journal; the F17 gate accepts a Claude-direction verdict
+  whose model was requested by alias; 204/204).
+- `deploy/audit-content.py` (v3.0-233: the content audit reads the author vendor from each view's
+  record instead of assuming "anthropic", routes to the other vendor, and accepts a verdict only from
+  the side it chose; a corpus with no record naming its author now REFUSES and asks for
+  `--author-vendor` with an attested `--author-source`; 59/59).
+
+**Step 2 — SESSION lane (copy, commit together):**
+- `deploy/check-substrate.py` (v3.0-233: one routing rule for every leg — routine: the other vendor
+  when its CLI is present, otherwise refuse (a same-vendor second model is policy-compliant but the
+  bridge does not take it yet, backlog v3.0-242); audits and design gates: the other vendor, required;
+  a routine leg also needs the author's model; a placeholder author ('unknown') is refused; model ids
+  compared after normalization; 50/50).
+- `deploy/compile-v2.py` (the routing leg routes the same way; 320/320) and
+  `deploy/audit-content-v2.py` (the same routed-direction check; 71/71).
+- `deploy/session-model.py` (new, v3.0-241: reads the model from the driving tool's own session
+  record — Claude Code's transcript, Codex's rollout, matched by exact session id — so compile asks
+  nothing; 19/19).
+- `deploy/verify-routing-register.yaml.example` (the direction rule). If you ADOPTED the register
+  (in an instance, deploy/verify-routing-register.yaml), update its `bridge-direction-doc` row to the
+  example's new marker: v3.0.63 changed the sentence it matched, so that row reports BLOCKING until
+  you do.
+- Your compile skill (in an instance, .claude/skills/compile/SKILL.md), from the template tree's
+  `capabilities/knowledge-os/extracted/compile/SKILL.md.template`: the identity paragraph's new first
+  bullet (the session record; the roster becomes the fallback), and the consent and run-report
+  wording per tier (v3.0-179). Your existing compile consent still covers.
+  `capabilities/knowledge-os/extracted/engine/OPERATIONS.md` (in an instance, docs/engine/OPERATIONS.md):
+  the same wording.
+- Your handoff skills (in an instance, .claude/skills/handoff/SKILL.md and
+  .claude/skills/handoff-close/SKILL.md), from `core/skills/handoff/SKILL.md.template` and
+  `core/skills/handoff-close/SKILL.md.template`: the leg is the opposite family of
+  `meta.yaml.authored_by`, the rotation check counts the author as round 0, and a close preflight
+  refuses a same-family leg (v3.0-234); every leg is launched with `--meta-file <folder>/meta.yaml`,
+  so the record, not a flag, names the author. With them, `.claude/skills/bridge/handoff-leg.js`
+  (`--meta-file`: a requester flag that contradicts the handoff's own `authored_by` is refused;
+  27/27 — `node .claude/skills/bridge/handoff-leg.js --self-test`).
+- Your cross-check skills (in an instance, .claude/skills/cross-check/SKILL.md and
+  .claude/skills/cross-check-loop/SKILL.md), from `core/skills/cross-check/SKILL.md.template` and
+  `core/skills/cross-check-loop/SKILL.md.template`, with `.claude/skills/cross-check-loop/converge.js`
+  and `.claude/skills/cross-check-loop/selftest.sh` (36 passed): they read who is driving and review
+  with the other vendor; the repo-grounding bullet is current (v3.0-189).
+- `.claude/skills/doctor/doctor.py`, `.claude/skills/doctor/SKILL.md` (v3.0-239: a core-only
+  project's absent trust tools SKIP instead of giving migration advice; v3.0-236: the scheduled-wrapper
+  scan covers `.codex/*`; 155/155), `.claude/skills/doctor/gen-skill-adapters.py` and
+  `.claude/skills/doctor/skill-adapter-skip.list` (now empty: Codex sees the cross-check skills too).
+  Then regenerate: `python .claude/skills/doctor/gen-skill-adapters.py`, and commit `.agents/skills/`.
+- `TEMPLATE-README.md` (what a core-only project's doctor shows), `./init-validate.sh` and
+  `./init-validate.ps1` (a comment).
+
+**What changes in your day.**
+- **Compile stops asking which model you are using** — it reads it from the session's own record,
+  including after a mid-session `/model` switch. It asks only if no record can be found.
+- **Work Codex authored is reviewed by Claude, and the reverse,** in compile, content audits,
+  handoffs and cross-checks, decided by who wrote it, not by which tool you happen to be in.
+- **A Codex-only machine** (no Claude CLI) cannot run routine knowledge review yet (backlog v3.0-242).
+
 ## v3.0.62 → v3.0.63 (Codex-led and mixed-driver projects, part 1: the doctor stops reporting protections the driving tool cannot see, the cross-vendor bridge works in both directions, and Codex gets the skill menu in every project)
 
 **Who needs this:** any project you drive from Codex as well as Claude Code — or might. A project driven only from Claude Code gains the doctor's per-tool row and the both-direction bridge without changing how it works.
@@ -330,6 +399,12 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 - **Codex sees the skill menu** in every project, not only knowledge-os ones.
 - **Nothing else changes yet** for a Claude-only project: review still goes Claude → GPT by
   default. Review chosen by author, and the Codex hooks, come in the next releases.
+- **Launch Codex directly, not from inside a Claude Code shell** (added 2026-10-09, found by the
+  stranger test): a Codex started from a Claude Code terminal inherits Claude's session markers, so
+  the doctor reports the session as "ambiguous" and the bridge refuses until you pass
+  `--requester-vendor openai`. That is the designed, safe behaviour; launching Codex on its own
+  avoids it. (A Codex PowerShell shell also reports the bridge's refusal exit code 64 as 1; the
+  message is unchanged.)
 
 ## v3.0.61 → v3.0.62 (the perimeter pair: `.envrc` joins the secrets rule, a copy written as `/bin/cp` is still a copy, `echo cp ...` is prose again, and the project's own file permissions finally match)
 

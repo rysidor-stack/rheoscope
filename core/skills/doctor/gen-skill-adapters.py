@@ -21,10 +21,11 @@ forwarding stub to this file, kept so the doctor's check and existing instructio
 resolve.
 
 SKIPPED skills are listed in `skill-adapter-skip.list` beside this file (data, not code).
-The list is a stop-gap: it hides the two bridge skills that still route Claude->GPT
-unconditionally. Its removal condition is backlog v3.0-233 (every bridge skill routes by
-the author stamp); do not add skills to it -- an adapter makes a skill discoverable, not
-Claude-runnable, and hiding skills from a non-Claude driver is the v3.0-182 mistake.
+The list is empty by design since v3.0-236's routing remainder: the two bridge skills it
+used to hide (cross-check, cross-check-loop) now read the session driver and route to the
+other vendor, so none is Claude-only. Do not add skills to it -- an adapter makes a skill
+discoverable, not Claude-runnable, and hiding skills from a non-Claude driver is the
+v3.0-182 mistake.
 
 Usage:
   gen-skill-adapters.py [--root DIR]         regenerate .agents/skills/ (idempotent)

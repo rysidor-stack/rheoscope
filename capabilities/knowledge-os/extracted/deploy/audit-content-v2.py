@@ -17,10 +17,16 @@ recall floor on dense views the 2026-07-03 efficacy fixture exposed. Two stages/
 
 Efficacy floor (upgraded): the planted fixture's removed claim must surface as a
 MISSING row (matched via the spec's absence_probes) in the planted leg's locate table.
-Substrate gates (LLM-5 MIGRATION, F17/F18) are inherited from v1 verbatim.
+Substrate gates (LLM-5 MIGRATION, F17/F18) are inherited from v1 verbatim, and so is
+the v3.0-233 author rule: each leg's author is read from the corpus records (or the
+operator's --author-vendor/--author-source attestation), and every fired leg is routed to
+the OPPOSITE vendor of that author (no same-vendor fallback on this vendor-tier gate).
 
 Usage:
   audit-content-v2.py --prepare --root DIR --out DIR --planted SPEC [--events e1,..]
+                   [--author-vendor V --author-source operator-attested:<date>]
+                   # v3.0-233: who wrote views no corpus record covers (never assumed);
+                   # also accepted by --prepare-clearance
   audit-content-v2.py --prepare-clearance --root DIR --out DIR --planted SPEC
                    --claims-file PATH [--closure]
                    # F13 clearance mode (2026-07-06): locate-from-supplied-claim-list.
@@ -236,7 +242,7 @@ def parse_locate(reason):
 
 
 # --------------------------------------------------------------------------- prepare
-def prepare(root, out, planted_specs, events=None):
+def prepare(root, out, planted_specs, events=None, author=None):
     _v1._assert_out_safe(root, out)
     pop = _v1.enumerate_population(root)
     if events:
@@ -306,10 +312,16 @@ def prepare(root, out, planted_specs, events=None):
             continue
         emit(erel, views, False, None)
     legs.sort(key=lambda x: x["id"])
+    author_errors = _v1.assign_authors(root, legs, author)   # v3.0-233
+    if author_errors:
+        print("RESULT: INCONCLUSIVE -- the author of these views is not known, so no "
+              "verifier vendor can be chosen:\n  " + "\n  ".join(author_errors))
+        return 2
+    m_vendor, m_model = _v1.manifest_author(legs)
     manifest = {"protocol": "v2-enumerate-locate", "root_sha": salt,
                 "root": os.path.abspath(root).replace("\\", "/"),
-                "absorb_vendor": _v1.ABSORB_VENDOR,
-                "absorb_model_id": _v1.ABSORB_MODEL_ID,
+                "absorb_vendor": m_vendor,
+                "absorb_model_id": m_model,
                 "deferred_events": sorted(deferred), "legs": legs}
     with open(os.path.join(out, "manifest.json"), "w", encoding="utf-8",
               newline="\n") as fh:
@@ -320,15 +332,27 @@ def prepare(root, out, planted_specs, events=None):
 
 
 # --------------------------------------------------------------------------- fire
-def _fire_leg(manifest, batch, packet_rel, claim, vname, timeout_ms):
+def _fire_leg(manifest, batch, packet_rel, claim, vname, timeout_ms, route=None):
+    """One bridge call. v3.0-233: `route` (from _v1.leg_route, chosen by fire_phase from
+    the leg's author) supplies --direction/--requester-vendor, and the evidence sent is the
+    packet plus the VERIFIER ROUTE disclosure (routed/), with the route kept in routes/."""
+    if not route or not route.get("ok"):
+        return False, "no verifier route (v3.0-233): %s" % ((route or {}).get("refusal"))
     bridge = os.environ.get("CROSS_VENDOR_BRIDGE_DIR") or os.path.join(
         manifest["root"], ".claude", "skills", "bridge")
+    evidence = _v1.routed_evidence(batch, vname[:-5] if vname.endswith(".json") else vname,
+                                   os.path.join(batch, packet_rel.replace("/", os.sep)),
+                                   route)
     args = ["node", os.path.join(bridge, "verify-cli.js"), "--claim", claim,
-            "--evidence-file", os.path.join(batch, packet_rel.replace("/", os.sep)),
-            "--tier", "T2"]
+            "--evidence-file", evidence, "--tier", "T2"] + _v1.route_args(route)
     if timeout_ms:
         args += ["--timeout-ms", str(timeout_ms)]
-    proc = subprocess.run(args, capture_output=True, text=True,
+    # v3.0.64 review round 2: a VERIFY_MODEL naming the author's vendor never reaches the other
+    # vendor's CLI (parity with compile-backends and v1)
+    env = dict(os.environ)
+    if route.get("drop_env_model"):
+        env.pop("VERIFY_MODEL", None)
+    proc = subprocess.run(args, capture_output=True, text=True, env=env,
                           encoding="utf-8", errors="replace")
     if proc.returncode != 0 or not (proc.stdout or "").strip():
         return False, (proc.stderr or "").strip()[-200:]
@@ -338,7 +362,8 @@ def _fire_leg(manifest, batch, packet_rel, claim, vname, timeout_ms):
     return True, ""
 
 
-def fire_phase(batch, phase, timeout_ms=0, full_run_authorized=False, events=None):
+def fire_phase(batch, phase, timeout_ms=0, full_run_authorized=False, events=None,
+               available=None):
     with open(os.path.join(batch, "manifest.json"), "r", encoding="utf-8") as fh:
         manifest = json.load(fh)
     todo = []
@@ -368,8 +393,16 @@ def fire_phase(batch, phase, timeout_ms=0, full_run_authorized=False, events=Non
     fired = failed = 0
     for leg, packet, vname in todo:
         claim = leg["enum_claim"] if phase == "enum" else leg["locate_claim"]
-        print("firing %s %s (%s)..." % (phase, leg["id"], leg["event"]))
-        ok, err = _fire_leg(manifest, batch, packet, claim, vname, timeout_ms)
+        # v3.0-233: the opposite vendor of THIS leg's author, or a refusal
+        route = _v1.leg_route(leg, manifest, available)
+        if not route.get("ok"):
+            failed += 1
+            print("  REFUSED %s %s (route): %s" % (phase, leg["id"], route.get("refusal")))
+            continue
+        print("firing %s %s (%s) -> %s..." % (phase, leg["id"], leg["event"],
+                                             route["direction"]))
+        ok, err = _fire_leg(manifest, batch, packet, claim, vname, timeout_ms,
+                            route=route)
         if ok:
             fired += 1
         else:
@@ -681,7 +714,7 @@ def load_clearance_claims(path):
 
 
 def prepare_clearance(root, out, claims_file, planted_specs, out_root=None,
-                      closure=False):
+                      closure=False, author=None):
     """Clearance mode (F13 option (a), 2026-07-06): builds a batch whose ONLY legs
     are locate legs derived from a SUPPLIED claim list -- NO enumerate stage at all.
     Mirrors prepare()'s CLI shape and refusal patterns; reuses _build_locate_chunks
@@ -782,10 +815,16 @@ def prepare_clearance(root, out, claims_file, planted_specs, out_root=None,
         legs.append(leg)
 
     legs.sort(key=lambda x: x["id"])
+    author_errors = _v1.assign_authors(root, legs, author)   # v3.0-233
+    if author_errors:
+        print("RESULT: INCONCLUSIVE -- the author of these views is not known, so no "
+              "verifier vendor can be chosen:\n  " + "\n  ".join(author_errors))
+        return 2
+    m_vendor, m_model = _v1.manifest_author(legs)
     manifest = {"protocol": "v2-clearance", "root_sha": salt,
                 "root": os.path.abspath(root).replace("\\", "/"),
-                "absorb_vendor": _v1.ABSORB_VENDOR,
-                "absorb_model_id": _v1.ABSORB_MODEL_ID,
+                "absorb_vendor": m_vendor,
+                "absorb_model_id": m_model,
                 "claims_file": os.path.abspath(claims_file).replace("\\", "/"),
                 "generated_from": claims_doc.get("generated_from"),
                 "deferred_events": sorted(deferred), "legs": legs}
@@ -906,16 +945,25 @@ def ingest(batch):
                 for n in ch.get("claims", []):
                     table.setdefault(n, ("FOUND", "chunk-confirmed", ""))
             crec = _v1._substrate_record(
-                {"id": leg["id"], "packet_sha256": ""}, verdict, manifest)
+                {"id": leg["id"], "packet_sha256": "",
+                 "absorb_vendor": leg.get("absorb_vendor"),
+                 "absorb_model_id": leg.get("absorb_model_id")}, verdict, manifest)
             ok_form, _why = _substrate.verified_block_wellformed(crec)
-            if not (ok_form and _substrate.substrate_derived_from_invocation(crec)
+            # v3.0.64 review round 2: the chunk's verdict must come from the direction its route
+            # CHOSE (routes/<leg>-locate-<chunk>.json), not merely from a non-author vendor
+            chosen = _v1.routed_direction(batch, os.path.basename(lp)[:-5])
+            ok_dir = bool(chosen) and (_substrate.normalize_vendor(crec["verifier_vendor"])
+                                       == _substrate.normalize_vendor(chosen))
+            if not (ok_form and ok_dir and _substrate.substrate_derived_from_invocation(crec)
                     and _substrate.substrate_gate_ok(
                         crec["absorb_vendor"], crec["absorb_model_id"],
                         crec["verifier_vendor"], crec["verifier_model_id"],
                         _substrate.MIGRATION)):
                 leg_substrate_ok = False
         rec = _v1._substrate_record(
-            {"id": leg["id"], "packet_sha256": ""}, verdict, manifest)
+            {"id": leg["id"], "packet_sha256": "",
+             "absorb_vendor": leg.get("absorb_vendor"),
+             "absorb_model_id": leg.get("absorb_model_id")}, verdict, manifest)
         rec["artifact"] = "verdicts/%s-locate-*.json" % leg["id"]
         status = "indecisive"
         missing = []
@@ -1004,6 +1052,16 @@ def ingest(batch):
 
 
 # --------------------------------------------------------------------------- self-test
+def _fixture_route(batch, vname, obj):
+    """Self-test only: record the route a real fire writes beside a verdict (v3.0.64 review
+    round 2 -- ingest now checks the verdict came from the routed direction)."""
+    os.makedirs(os.path.join(batch, "routes"), exist_ok=True)
+    vendor = ((obj or {}).get("verifier") or {}).get("vendor")
+    with open(os.path.join(batch, "routes", vname[:-5] if vname.endswith(".json") else vname)
+              + ".json", "w", encoding="utf-8", newline="\n") as fh:
+        json.dump({"direction": vendor}, fh)
+
+
 def self_test():
     import shutil
     import tempfile
@@ -1121,7 +1179,8 @@ def self_test():
         # (a) claims-file parse + leg build: exactly 2+1 locate chunks, correct
         # chunk membership incl. the remainder chunk
         cout = os.path.join(cbase, "batch")
-        rc = prepare_clearance(cbase, cout, cclaims_path, [cspec_path])
+        rc = prepare_clearance(cbase, cout, cclaims_path, [cspec_path],
+                               author=("anthropic", "operator-attested:2026-10-09 self-test"))
         case("clearance: prepare-clearance rc=0", rc == 0)
         cman = json.load(open(os.path.join(cout, "manifest.json"), encoding="utf-8"))
         case("clearance: manifest protocol tag", cman["protocol"] == "v2-clearance")
@@ -1169,18 +1228,21 @@ def self_test():
         _orig_fire_leg = _self_mod._fire_leg
         _stub_calls = []
 
-        def _stub_fire_leg(manifest_, batch_, packet_rel, claim, vname, timeout_ms):
+        def _stub_fire_leg(manifest_, batch_, packet_rel, claim, vname, timeout_ms,
+                           route=None):
             _stub_calls.append((packet_rel, claim, vname))
             with open(os.path.join(batch_, "verdicts", vname), "w",
                       encoding="utf-8", newline="\n") as fh:
                 json.dump({"verifier": {"vendor": "openai", "model": "gpt-5.5"},
                            "uncertainty": "confident", "verdict": "confirmed",
                            "reason": "C1: FOUND wiki/topic/va.md -- \"x\""}, fh)
+            _fixture_route(batch_, vname, {"verifier": {"vendor": "openai"}})
             return True, ""
 
         _self_mod._fire_leg = _stub_fire_leg
         try:
-            rc_fire = fire_phase(cout, "locate", events={"raw/2026-01-10-eA.md"})
+            rc_fire = fire_phase(cout, "locate", events={"raw/2026-01-10-eA.md"},
+                                 available=("openai", "anthropic"))
         finally:
             _self_mod._fire_leg = _orig_fire_leg
         va0 = os.path.join(cout, "verdicts", caleg["id"] + "-locate-0.json")
@@ -1234,6 +1296,7 @@ def self_test():
             with open(os.path.join(cout, "verdicts", name), "w", encoding="utf-8",
                       newline="\n") as fh:
                 json.dump(obj, fh)
+            _fixture_route(cout, name, obj)
 
         vmeta = {"verifier": {"vendor": "openai", "model": "gpt-5.5"},
                  "uncertainty": "confident"}
@@ -1357,6 +1420,7 @@ def self_test():
             with open(os.path.join(out, "verdicts", name), "w", encoding="utf-8",
                       newline="\n") as fh:
                 json.dump(obj, fh)
+            _fixture_route(out, name, obj)
 
         vmeta = {"verifier": {"vendor": "openai", "model": "gpt-5.5"},
                  "uncertainty": "confident"}
@@ -1430,6 +1494,13 @@ def self_test():
         wv(rleg["id"] + "-locate-0.json", dict(vmeta, verdict="confirmed", reason=""))
         case("ingest: confirmed chunk fills unanswered as FOUND -> PASS (0)",
              ingest(out) == 0)
+        # v3.0.64 review round 2: a chunk verdict from a vendor the route did NOT choose fails the
+        # leg's substrate, even though it differs from the author's vendor
+        with open(os.path.join(out, "routes", rleg["id"] + "-locate-0.json"), "w",
+                  encoding="utf-8", newline="\n") as fh:
+            json.dump({"direction": "anthropic"}, fh)
+        case("ingest (v3.0.64 r2): an openai chunk verdict where the route chose anthropic -> NOT accepted",
+             ingest(out) != 0)
         wv(rleg["id"] + "-locate-0.json", dict(vmeta, verdict="rejected", reason=""))
 
         # enum supplement: under-floor enum -> supplement packet -> exhaustion or
@@ -1583,6 +1654,123 @@ def self_test():
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
+    # ------------------------------------------------ v3.0-233: author-routed legs
+    # A clearance batch over views whose records name the author; _fire_leg runs for
+    # real with subprocess.run stubbed (nothing spawns node/codex/claude).
+    import contextlib as _ctx
+    import io as _io3
+    rbases = []
+    _real_run = subprocess.run
+
+    class _Proc:
+        def __init__(self, out):
+            self.returncode, self.stdout, self.stderr = 0, out, ""
+
+    def routed_batch(author):
+        rb = tempfile.mkdtemp(prefix="f13v2-route-")
+        rbases.append(rb)
+        os.makedirs(os.path.join(rb, "raw"))
+        os.makedirs(os.path.join(rb, "wiki", "topic"))
+        deriv = _v1._fixture_deriv(author)
+        for name, body in (("ea", "Event A says one thing."),
+                           ("ep", "The cap is fixed at 25 legs per invocation.")):
+            with open(os.path.join(rb, "raw", "2026-02-01-%s.md" % name), "w",
+                      encoding="utf-8", newline="\n") as fh:
+                fh.write("---\ndate: 2026-02-01\n---\n%s\n" % body)
+            with open(os.path.join(rb, "wiki", "topic", "v%s.md" % name), "w",
+                      encoding="utf-8", newline="\n") as fh:
+                fh.write("---\ntitle: V\nsources:\n  - raw/2026-02-01-%s.md\n---\n%s"
+                         "# V\n%s\n" % (name, deriv, body))
+        spec = os.path.join(rb, "planted.yaml")
+        with open(spec, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("view: wiki/topic/vep.md\nevent: raw/2026-02-01-ep.md\n"
+                     "class: d1-dropped-clause\ndescription: drop the cap\n"
+                     "absence_probes:\n  - \"cap is fixed at 25\"\nedits:\n"
+                     "  - find: \"The cap is fixed at 25 legs per invocation.\"\n"
+                     "    replace: \"\"\n")
+        claims = os.path.join(rb, "claims.json")
+        with open(claims, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"generated_from": "fixture", "events": {
+                "raw/2026-02-01-ea.md": {"views": ["wiki/topic/vea.md"], "claims": [
+                    {"n": 1, "text": "Event A says one thing.",
+                     "view": "wiki/topic/vea.md"}]}}}, fh)
+        bdir = os.path.join(rb, ".claude", "skills", "bridge")
+        os.makedirs(bdir)
+        with open(os.path.join(bdir, "verify-cli.js"), "w", encoding="utf-8") as fh:
+            fh.write("// dummy\n")
+        out_b = os.path.join(rb, "batch")
+        buf = _io3.StringIO()
+        with _ctx.redirect_stdout(buf):
+            rc = prepare_clearance(rb, out_b, claims, [spec])
+        return rc, out_b
+
+    def fire_with(out_b, available, vendor, model):
+        calls = []
+
+        def fake_run(args, **kw):
+            calls.append(list(args))
+            return _Proc(json.dumps({
+                "verdict": "confirmed", "uncertainty": "confident",
+                "reason": "C1: FOUND wiki/topic/vea.md -- \"x\"",
+                "verifier": {"vendor": vendor, "model": model}}))
+        subprocess.run = fake_run
+        buf = _io3.StringIO()
+        try:
+            with _ctx.redirect_stdout(buf):
+                rc = fire_phase(out_b, "locate", available=available)
+        finally:
+            subprocess.run = _real_run
+        return rc, calls, buf.getvalue()
+
+    def flag(args, name):
+        return args[args.index(name) + 1] if name in args else None
+
+    try:
+        rc, ob = routed_batch(("openai", "gpt-6.1-sol"))
+        rman = json.load(open(os.path.join(ob, "manifest.json"), encoding="utf-8")) \
+            if rc == 0 else {"legs": []}
+        case("v3.0-233 v2: a Codex-authored corpus's legs carry absorb_vendor openai "
+             "(read from the records)",
+             rc == 0 and rman["legs"] and all(x.get("absorb_vendor") == "openai"
+                                              for x in rman["legs"]))
+        rc, calls, _t = fire_with(ob, ("openai", "anthropic"), "anthropic",
+                                  "claude-fable-5-1")
+        case("v3.0-233 v2: every locate leg of a Codex-authored corpus is routed to "
+             "Claude (--direction anthropic --requester-vendor openai), with the route "
+             "disclosed in the evidence sent",
+             rc == 0 and calls and all(flag(a, "--direction") == "anthropic"
+                                       and flag(a, "--requester-vendor") == "openai"
+                                       and "VERIFIER ROUTE" in open(
+                                           flag(a, "--evidence-file"),
+                                           encoding="utf-8").read() for a in calls)
+             and os.listdir(os.path.join(ob, "routes")))
+        for f in os.listdir(os.path.join(ob, "verdicts")):
+            os.remove(os.path.join(ob, "verdicts", f))
+        rc, calls, txt = fire_with(ob, ("openai",), "openai", "gpt-6-astra")
+        case("v3.0-233 v2: no far-side (Claude) CLI -> every leg REFUSED, nothing sent",
+             rc == 2 and calls == [] and "Claude Code CLI" in txt)
+        rc, calls, _t = fire_with(ob, ("openai", "anthropic"), "openai", "gpt-6-astra")
+        buf = _io3.StringIO()
+        with _ctx.redirect_stdout(buf):
+            rc_in = ingest(ob)
+        case("v3.0-233 v2 ingest: a verdict from the AUTHOR's vendor (GPT on a "
+             "Codex-authored corpus) fails the MIGRATION firewall -> INCONCLUSIVE",
+             rc_in == 2 and "substrate fails" in buf.getvalue())
+        rc, ob2 = routed_batch(("anthropic", "claude-opus-5-5"))
+        rc, calls, _t = fire_with(ob2, ("openai", "anthropic"), "openai", "gpt-6.1-sol")
+        case("v3.0-233 v2: a Claude-authored corpus is routed to OpenAI "
+             "(--direction openai --requester-vendor anthropic)",
+             rc == 0 and calls and all(flag(a, "--direction") == "openai"
+                                       and flag(a, "--requester-vendor") == "anthropic"
+                                       for a in calls))
+        rc, _ob3 = routed_batch(None)
+        case("v3.0-233 v2: no corpus record and no attestation -> prepare-clearance "
+             "refuses (the author is never assumed)", rc == 2)
+    finally:
+        subprocess.run = _real_run
+        for rb in rbases:
+            shutil.rmtree(rb, ignore_errors=True)
+
     if failed:
         print("audit-content-v2 (F13): FAIL (%d/%d)" % (total - failed, total))
         return 1
@@ -1609,12 +1797,20 @@ def main(argv):
                    if a == "--planted" and i + 1 < len(args)]
         events = opt("--events")
         events = [e.strip() for e in events.split(",")] if events else None
-        return prepare(opt("--root"), opt("--out"), planted, events)
+        author, aerr = _v1.parse_author_args(opt("--author-vendor"), opt("--author-source"))
+        if aerr:
+            print("RESULT: INCONCLUSIVE -- %s" % aerr)
+            return 2
+        return prepare(opt("--root"), opt("--out"), planted, events, author=author)
     if "--prepare-clearance" in args:
         planted = [args[i + 1] for i, a in enumerate(args)
                    if a == "--planted" and i + 1 < len(args)]
+        author, aerr = _v1.parse_author_args(opt("--author-vendor"), opt("--author-source"))
+        if aerr:
+            print("RESULT: INCONCLUSIVE -- %s" % aerr)
+            return 2
         return prepare_clearance(opt("--root"), opt("--out"), opt("--claims-file"),
-                                 planted, closure="--closure" in args)
+                                 planted, closure="--closure" in args, author=author)
     fire_events = opt("--events")
     fire_events = set(e.strip() for e in fire_events.split(",")) if fire_events \
         else None

@@ -268,7 +268,7 @@ function closePreamble(requesterVendor, legVendor) {
 }
 
 function parseArgs(argv) {
-  const a = { role: '', packetFile: '', out: '', attestOut: '', model: '', effort: '', timeoutMs: 0, vendor: '', requesterVendor: '' };
+  const a = { role: '', packetFile: '', out: '', attestOut: '', model: '', effort: '', timeoutMs: 0, vendor: '', requesterVendor: '', metaFile: '' };
   for (let i = 2; i < argv.length; i++) {
     const k = argv[i];
     const next = () => { const v = argv[++i]; if (v === undefined) die(64, 'missing value for ' + k); return v; };
@@ -282,6 +282,7 @@ function parseArgs(argv) {
       case '--timeout-ms': a.timeoutMs = parseInt(next(), 10); break;
       case '--vendor': a.vendor = next(); break;
       case '--requester-vendor': a.requesterVendor = next(); break;
+      case '--meta-file': a.metaFile = next(); break;
       case '-h': case '--help': a.help = true; break;
       default: die(64, 'unknown argument: ' + k);
     }
@@ -302,6 +303,8 @@ const HELP = [
   '  --requester-vendor <vendor>  Who AUTHORED the handoff (default: HANDOFF_REQUESTER_VENDOR, else the',
   '                               opposite of --vendor). Stated in the prompt. REFUSED (exit 64) when it',
   '                               equals --vendor: a same-family close leg is a firewall breach, not a leg.',
+  '  --meta-file    <path>        The handoff\'s meta.yaml: its authored_by sets the requester, and a',
+  '                               --requester-vendor that contradicts it is REFUSED (v3.0.64).',
   '  --model        <id>          Leg model (default: resolved -- HANDOFF_LEG_MODEL, the operator registry,\n' +
   '                               the vendor CLI\'s own default, then a fallback; `node models.js`).',
   '  --effort       <level>       reasoning effort (default medium; close legs may warrant high).',
@@ -310,9 +313,36 @@ const HELP = [
   'stdout = envelope JSON only. stderr = diagnostics. Non-zero exit on ANY failure (fail loud).',
 ].join('\n');
 
+// v3.0.64 review round 3: the handoff's own record names its author. The family of
+// meta.yaml's authored_by (a model or vendor string) -> anthropic|openai|xai, or null.
+function authorFamily(s) {
+  const t = String(s || '').toLowerCase();
+  if (/claude|anthropic|opus|sonnet|haiku|fable/.test(t)) return 'anthropic';
+  if (/gpt|openai|codex|\bo[0-9]/.test(t)) return 'openai';
+  if (/grok|xai/.test(t)) return 'xai';
+  return null;
+}
+function metaAuthoredBy(text) {
+  const m = /^\s*authored_by\s*:\s*["']?([^"'\r\n#]+?)["']?\s*(#.*)?$/m.exec(String(text || ''));
+  return m ? m[1].trim() : null;
+}
+
 // Resolve the leg + requester vendors; returns {vendor, requester} or {error}. Pure (self-test).
-function resolveVendors(args, env) {
+function resolveVendors(args, env, readFile) {
   const e = env || process.env;
+  if (args.metaFile) {
+    // the record decides: a contradicting --requester-vendor is REFUSED, never trusted
+    let text;
+    try { text = (readFile || ((p) => require('node:fs').readFileSync(p, 'utf8')))(args.metaFile); }
+    catch (err) { return { error: 'cannot read --meta-file ' + args.metaFile + ': ' + err.message }; }
+    const by = metaAuthoredBy(text);
+    const fam = authorFamily(by);
+    if (!fam) return { error: '--meta-file has no authored_by this leg can map to a vendor family (' + JSON.stringify(by) + ')' };
+    if (args.requesterVendor && MODELS.normalizeVendor(args.requesterVendor) !== fam)
+      return { error: '--requester-vendor ' + args.requesterVendor + ' contradicts the handoff record (authored_by ' +
+        JSON.stringify(by) + ' -> ' + fam + ') -- the record decides; refusing' };
+    args = Object.assign({}, args, { requesterVendor: fam });
+  }
   const rawVendor = args.vendor || e.HANDOFF_LEG_VENDOR || 'openai';
   const vendor = MODELS.normalizeVendor(rawVendor);
   if (vendor !== 'openai' && vendor !== 'anthropic') {
@@ -565,6 +595,17 @@ if (process.argv.includes('--self-test')) {
     ['--vendor anthropic defaults the requester to openai',
      (() => { const v = resolveVendors(base({ vendor: 'anthropic' }), E); return v.vendor === 'anthropic' && v.requester === 'openai'; })()],
     ['HANDOFF_LEG_VENDOR env selects the leg', resolveVendors(base(), { HANDOFF_LEG_VENDOR: 'anthropic' }).vendor === 'anthropic'],
+    // v3.0.64 review round 3: the handoff's own record decides the requester
+    ['REFUSAL: authored_by OpenAI + an OpenAI leg + a FALSE --requester-vendor anthropic (the record decides)',
+     /contradicts the handoff record/.test(resolveVendors(base({ vendor: 'openai', requesterVendor: 'anthropic', metaFile: 'm' }), E,
+       () => 'title: x\nauthored_by: openai/gpt-6.1-sol\n').error || '')],
+    ['the record alone (no flag) sets the requester, and a same-family leg is then refused',
+     /equals the leg vendor/.test(resolveVendors(base({ vendor: 'openai', metaFile: 'm' }), E,
+       () => 'authored_by: "gpt-6.1-sol"\n').error || '')
+     && resolveVendors(base({ vendor: 'anthropic', metaFile: 'm' }), E, () => 'authored_by: gpt-6.1-sol\n').requester === 'openai'],
+    ['an authored_by that maps to no family, or an unreadable meta file, is REFUSED',
+     /no authored_by/.test(resolveVendors(base({ metaFile: 'm' }), E, () => 'authored_by: someone\n').error || '')
+     && /cannot read --meta-file/.test(resolveVendors(base({ metaFile: 'm' }), E, () => { throw new Error('ENOENT'); }).error || '')],
     ['REFUSAL: requester == leg vendor (openai/openai)', /equals the leg vendor/.test(resolveVendors(base({ requesterVendor: 'openai' }), E).error || '')],
     ['REFUSAL: requester == leg vendor (anthropic/anthropic, via env)', /equals the leg vendor/.test(resolveVendors(base({ vendor: 'anthropic' }), { HANDOFF_REQUESTER_VENDOR: 'claude' }).error || '')],
     ['REFUSAL: an unsupported leg vendor (xai)', /--vendor must be/.test(resolveVendors(base({ vendor: 'xai' }), E).error || '')],

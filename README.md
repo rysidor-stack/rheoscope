@@ -2,7 +2,7 @@
 
 Most AI-run projects share the same weakness: the work happens fast, and nobody can prove what actually happened. Knowledge lives in chat transcripts that evaporate. Builds get declared done on a feeling. Decisions get re-argued every month because nobody wrote down why.
 
-Rheoscope is a trust machine: an operating system for projects where AI does the work and a human makes only the decisions. Every fact in its knowledge base traces to a dated source. Every build starts from a written, checkable spec, and the machinery refuses to start without one. Every claim that matters gets challenged by a different vendor's AI before it counts, and the verdict is kept as a receipt. The human sees one plain-English briefing a day, plus the handful of calls that genuinely need a person.
+Rheoscope is a trust machine: an operating system for projects where AI does the work and a human makes only the decisions. Every fact in its knowledge base traces to a dated source. Every build starts from a written, checkable spec, and the machinery refuses to start without one. Every claim that matters gets challenged by a separate AI model before it counts — another vendor's on the checks that need it, and the verdict is kept as a receipt. The human sees one plain-English briefing a day, plus the handful of calls that genuinely need a person.
 
 It is a template: unpack it, answer a founding interview about your venture, and the whole factory (the knowledge engine, the spec-gated build discipline, the verification machinery, the sensors, the security perimeter) is yours, wired for that project alone.
 
@@ -87,7 +87,9 @@ big enough to bear one exists, and fired the day it was declared, because one al
 
 None of this works if the model checking the work is the model that did it: same-vendor grading
 is a correlated failure risk, not a hypothetical. So `/cross-check` and the compile engine's
-verify leg call out to a genuinely different vendor's model through a builder/verifier firewall,
+verify leg call out to a separate model through a builder/verifier firewall -- the other vendor's
+whenever its CLI is installed, and always on content audits and design gates, chosen from who
+authored the work (a routine leg needs only a different model; AGENTS.md states the tiers),
 and every verdict gets kept as a receipt rather than argued over once and forgotten. Claims that
 don't resolve in one round escalate: `/cross-check` for a fast single-shot opinion,
 `/cross-check-loop` when a decision has several load-bearing claims and needs convergence across

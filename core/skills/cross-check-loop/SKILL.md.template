@@ -5,7 +5,7 @@ description: Converge a multi-claim decision or build-completion across cross-ve
 
 # /cross-check-loop — Cross-Vendor Verification Loop
 
-You (a Claude session) are about to call something done or commit a decision that rests on **several
+You (the driving session — Claude Code or Codex) are about to call something done or commit a decision that rests on **several
 interlocking sub-claims** — a build-completion with three features, a dispatch certification, a
 decision whose pieces depend on each other. One `/cross-check` shot can't hold that: correcting one
 piece can invalidate another, and you'd never see the ripple. This skill runs the **convergence
@@ -16,8 +16,10 @@ full locked handoff** (`core/handoffs/HANDOFF-AUTHORING.md`).
 It builds directly on two proven things — do not reinvent them:
 - The **evidence contract** of [`/cross-check`](../cross-check/SKILL.md): feed the verifier RAW
   primary artifacts, never your own narrative. **That contract carries through EVERY round here.**
-- The fail-loud cross-vendor primitive `the bundled bridge runtime (`bridge/verify-cli.js`)` (Claude → an OpenAI GPT verifier).
-  The runner `converge.js` calls it once per active claim per round. You never call a same-vendor check.
+- The fail-loud cross-vendor primitive, the bundled bridge's `bridge/verify-cli.js`, routed to the
+  **other** vendor than yours (a Claude session → an OpenAI Codex/GPT verifier; a Codex session → an
+  Anthropic Claude verifier). The runner `converge.js` calls it once per active claim per round, passing
+  the `--direction` and `--requester-vendor` you give it. You never call a same-vendor check.
 
 The mechanical bookkeeping — running the per-claim verify calls, enforcing the anti-echo gate, the
 tier round cap, the provenance requirement, and the evidence-hash audit trail — lives in
@@ -27,9 +29,16 @@ what must be mechanical so you can't fool yourself; the rest is the work.
 
 ## Non-negotiables (read before every run)
 
-1. **Cross-vendor only counts if the verifier ≠ the substrate under test.** You are Claude; every
-   round's load-bearing check is a **GPT** verdict via `verify-cli.js`. The convergence must come from
-   independent scrutiny, not from you agreeing with your own prior conclusions.
+1. **Cross-vendor only counts if the verifier ≠ the substrate under test.** Establish your own vendor
+   once, before round 1, exactly as `/cross-check` non-negotiable #1 does: `CLAUDECODE` /
+   `CLAUDE_CODE_SESSION_ID` / `CLAUDE_CODE_ENTRYPOINT` ⇒ Claude (`anthropic`); `CODEX_SANDBOX` /
+   `CODEX_THREAD_ID` / `CODEX_SESSION_ID` ⇒ Codex (`openai`); both or neither ⇒ ask the operator once
+   which tool is driving. Every round then runs with `--direction <the OTHER vendor>
+   --requester-vendor <your own>` (step 2), so every round's load-bearing check is the other vendor's
+   verdict. `converge.js` refuses (exit 64, before any verify call) a direction equal to the requester,
+   and with no flags it reads the same markers — refusing on both/none rather than guessing. The
+   convergence must come from independent scrutiny, not from you agreeing with your own prior
+   conclusions.
 2. **THE CENTRAL HONESTY RULE — every round re-grounds in FRESH primary artifacts.** Never feed a
    round the prior round's verdict, or your own prior synthesis, as evidence. That is a same-substrate
    echo — a rubber stamp wearing a multi-round costume. "Converged" must mean *independent scrutiny
@@ -39,7 +48,7 @@ what must be mechanical so you can't fool yourself; the rest is the work.
    evidence is byte-identical (same SHA) to the artifact it was last verified against. **What the
    script CANNOT detect:** narrative prose that mimics a real artifact and carries a plausible
    provenance line. That residual is a session honor obligation (the evidence contract, step 1), and
-   the GPT verifier's skeptic mandate is the behavioral backstop — not a deterministic gate.
+   the verifier's skeptic mandate is the behavioral backstop — not a deterministic gate.
 3. **Convergence is QUALITATIVE.** The only question is: *did this round surface a NEW load-bearing
    finding, named in writing?* New finding (a revision, rejection, or judgment divergence) → another
    round, within the cap. Nothing new → converged. **Never** a confidence percentage or a delta number.
@@ -51,7 +60,7 @@ what must be mechanical so you can't fool yourself; the rest is the work.
    approving any irreversible/real-world action (human sign-off) stay separate.
 6. **Fail loud.** Any `verify-cli` non-zero exit or any gate violation HALTS the round with
    `CONVERGE HALT:` / `VERIFY FAILED:`. Never fake convergence or emit a silent "looks fine."
-7. **Taint.** Whatever you put in a claim or evidence file enters the GPT verifier's context. Keep
+7. **Taint.** Whatever you put in a claim or evidence file enters the other vendor's verifier context. Keep
    secrets, customer PII, and untrusted scraped text out of every claim and every artifact. If a claim
    can't be evidenced without them, redact or route to a contained session. Two concrete leak paths the
    script narrows but cannot fully close: (a) `converge.js` requires every `evidence_file` to resolve
@@ -137,14 +146,19 @@ conclusion — your reasoning is the thing under test; it can't be its own evide
 claim's `provenance` line naming the primary source of each piece, and assert to yourself, in writing,
 **"no evidence item is my own narrative, summary, or conclusion."** If you can't produce that line, you
 have no cross-vendor check to run — go get the artifacts. (`converge.js` requires a non-empty provenance
-and rejects verdict-shaped evidence; the GPT verifier is a skeptic that rejects summary-only evidence —
+and rejects verdict-shaped evidence; the verifier is a skeptic that rejects summary-only evidence —
 both are backstops, not substitutes for this discipline.)
 
 ### 2 — Run a round
 ```
-node converge.js <run-dir>/ledger.json            # verifies every pending/recheck claim, cross-vendor
+node converge.js <run-dir>/ledger.json --direction <the OTHER vendor> --requester-vendor <your own>
+                                                  # verifies every pending/recheck claim, cross-vendor
 node converge.js <run-dir>/ledger.json --status   # lint + print state; no verify calls; exits 3 if an active claim fails a gate
 ```
+A Claude session passes `--direction openai --requester-vendor anthropic`; a Codex session passes
+`--direction anthropic --requester-vendor openai`. Exit 64 with "same-vendor round" means the pair was
+wrong — fix the flags, never drop them. Each round record carries the `direction` and
+`requester_vendor` it ran with.
 The script verifies each active claim via `verify-cli.js` (parallel, bounded), writes each verdict to
 `verdicts/`, records the verdict + evidence SHA into the ledger, auto-settles only the clean cases,
 parks everything else in `needs-action`, enforces the cap, and prints a status table + a **proposal**
@@ -211,8 +225,8 @@ lifts into a real packet (the handoff protocol § packet-round-N). It must carry
 - **Prior artifacts (§4 of a packet)** — the rounds already run: per claim, each verdict + uncertainty +
   the evidence SHA and `verdicts/<id>-r<n>.json` path. This is the loop's value to the handoff —
   pre-grounded prior rounds, not a cold start.
-- **Substrate already used** — the `verifier.vendor/model` your round verdicts recorded (e.g. `openai/gpt-6-astra`;
-  resolved at run time, so read it from the verdicts) via `verify-cli.js` for rounds 1..N, so the handoff
+- **Substrate already used** — the `verifier.vendor/model` your round verdicts recorded (e.g. `openai/<model>` or
+  `anthropic/<model>`; resolved at run time, so read it from the verdicts) via `verify-cli.js` for rounds 1..N, so the handoff
   knows to challenge on a *different* substrate (and that the Builder/Verifier firewall already held).
 - **What's still contested** — the specific divergence or the correction that wouldn't settle.
 
@@ -230,10 +244,11 @@ steps you do not perform inside this loop.
   (non-negotiable #3); load-bearing results get recorded where the session already records things.
 - **No automatic decomposition or cascade** — those are judgments (steps 0 and 4). The script only
   enforces that a cascade is *named*, never infers one.
-- **No new verifier or vendor path** — it orchestrates the existing `verify-cli.js`; the repo-grounded
-  verifier and the Codex-side mirror are separate, later builds.
+- **No new verifier or vendor path** — it orchestrates the existing `verify-cli.js` in whichever
+  `--direction` is the other vendor; it does not expose repo-grounding (that is single-shot
+  `/cross-check` step 3a).
 - **No cap override** — the handoff protocol allows a named override inside a handoff; this loop deliberately does
   not, because hitting the cap is exactly when you should be escalating, not pressing on.
 
-> Mirror direction: a Codex/GPT session that needs a *Claude* second opinion uses `claude-verify`. A
-> Codex-side convergence loop is a later, separate build — this skill is Claude → GPT only.
+> Both directions run through this one skill (v3.0-236): a Claude driver loops against GPT, a Codex
+> driver loops against Claude — the driver's vendor picks `--direction`, nothing else changes.

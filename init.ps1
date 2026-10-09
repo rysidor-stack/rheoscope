@@ -919,22 +919,29 @@ if (Test-Path $bridgeDir) {
 # /doctor: post-init sanity check. Degrades gracefully -- the doctor.py file is being
 # authored in a parallel work leg, so this invocation silently skips if it hasn't landed
 # yet. A doctor failure NEVER fails init; it only surfaces issues to fix before first use.
+$pyCmd = Get-Command python3 -ErrorAction SilentlyContinue
+if (-not $pyCmd) { $pyCmd = Get-Command python -ErrorAction SilentlyContinue }
+
+# Skill-discovery adapters for non-Claude agents (.agents/skills/, backlog v3.0-201 /
+# v3.0-236): generated UNCONDITIONALLY -- the generator ships with the core doctor skill,
+# not with knowledge-os, so a core-only project gives Codex the same skill menu. Never
+# fatal: a failure is a WARNING with the command to run by hand. Commit the generated tree
+# with the rest of the birth commit.
+$genAdapters = Join-Path $scriptRoot '.claude/skills/doctor/gen-skill-adapters.py'
+if ($pyCmd -and (Test-Path $genAdapters -PathType Leaf)) {
+    & $pyCmd.Source $genAdapters --root $scriptRoot *> $null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Output "skill adapters generated (.agents/skills/) for non-Claude agents"
+    } else {
+        Write-Output "WARNING: could not generate .agents/skills/ -- run: python .claude/skills/doctor/gen-skill-adapters.py"
+    }
+} else {
+    Write-Output "WARNING: skill adapters not generated (python or .claude/skills/doctor/gen-skill-adapters.py missing) -- run: python .claude/skills/doctor/gen-skill-adapters.py"
+}
+
 $doctorPy = Join-Path $scriptRoot '.claude/skills/doctor/doctor.py'
 if (Test-Path $doctorPy -PathType Leaf) {
-    $pyCmd = Get-Command python3 -ErrorAction SilentlyContinue
-    if (-not $pyCmd) { $pyCmd = Get-Command python -ErrorAction SilentlyContinue }
     if ($pyCmd) {
-        # v3.0-201: generate the skill-discovery adapters for non-Claude agents here, so a fresh
-        # project's doctor does not WARN "skill-adapters: 14 missing"
-        $genAdapters = Join-Path $scriptRoot 'deploy/gen-skill-adapters.py'
-        if (Test-Path $genAdapters -PathType Leaf) {
-            & $pyCmd.Source $genAdapters --root $scriptRoot *> $null
-            if ($LASTEXITCODE -eq 0) {
-                Write-Output "skill adapters generated (.agents/skills/) for non-Claude agents"
-            } else {
-                Write-Output "WARNING: could not generate .agents/skills/ -- run: python deploy/gen-skill-adapters.py"
-            }
-        }
         Write-Output "Running /doctor ($($pyCmd.Name) .claude/skills/doctor/doctor.py)..."
         # Pass the project root explicitly: init may be invoked from outside the project
         # root, and doctor.py defaults to cwd -- --root pins it to the right directory.

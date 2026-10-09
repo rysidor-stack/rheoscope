@@ -28,20 +28,44 @@ post-init, with no env var required.
 
 ## Prereqs
 - Node ≥ 18.
-- `codex` and/or `claude` CLIs on PATH and logged in (subscriptions). `cross-check` (Claude→GPT) needs
-  `codex`; the future Codex-side mirror (Codex→Claude) uses `claude`. With neither installed the skills
-  **fail loud** — they never silently pass.
+- `codex` and/or `claude` CLIs on PATH and logged in (subscriptions). The OpenAI direction
+  (`codex-verify-server.js`, `handoff-leg.js --vendor openai`) needs `codex` ≥ 0.144; the Anthropic
+  direction (`verify-server.js`, `handoff-leg.js --vendor anthropic`) needs `claude` ≥ 2.1.220 (the
+  oldest CLI the empty-allow-list containment was proven on; `--json-schema` / `--effort` /
+  `--no-session-persistence` verified on 2.1.291). With neither installed the skills **fail loud** — they
+  never silently pass.
 - `init` runs a **preflight** at instantiation that prints whether `node`/`codex` are present, so you
   know up front whether these skills are ready or inert (a missing prereq leaves them inert, not broken).
 
 ## Verify (from the project root, post-init)
 ```
 node .claude/skills/bridge/verify-cli.js --help
+node .claude/skills/bridge/codex-verify-server.js --self-test   # hermetic, OpenAI direction
+node .claude/skills/bridge/verify-server.js --self-test         # hermetic, Anthropic direction (stubbed CLI)
+node .claude/skills/bridge/handoff-leg.js --self-test           # both directions + the same-vendor refusal
 bash .claude/skills/cross-check-loop/selftest.sh         # 26 offline gate tests, no network
 # live smoke (codex logged in): expect verdict + verifier.vendor=openai
 node .claude/skills/bridge/verify-cli.js --claim "Array.prototype.flat() defaults to depth 2" \
      --evidence "ECMAScript: Array.prototype.flat() default depth is 1." --tier T4
+# the other direction (claude logged in, NOT from inside a Claude Code session): verifier.vendor=anthropic
+node .claude/skills/bridge/verify-cli.js --direction anthropic --requester-vendor openai --claim "..." --evidence "..."
 ```
+
+## Direction is an argument, never a literal (v3.0-233 / v3.0-234)
+Both servers speak the same `verify` protocol and the same input schema, and `verify-cli.js` routes to
+either: `--direction openai` (the default when neither flag is given — unchanged behaviour) spawns
+`codex-verify-server.js`; `--direction anthropic` spawns `verify-server.js`; `--server <path>` names any
+verify-protocol server. The banner and the verdict's `verifier.vendor` state the server actually used.
+`handoff-leg.js` takes the same choice as `--vendor openai|anthropic` (env `HANDOFF_LEG_VENDOR`), with a
+Claude-direction answer and close leg that spawn a contained, tool-less `claude -p` through
+`verify-server.js`'s shared walk/argv/envelope code. The REQUESTER (who authored the thing under test) is
+an argument too — `--requester-vendor` on both tools (env `VERIFY_REQUESTER_VENDOR` /
+`HANDOFF_REQUESTER_VENDOR`), default the opposite of the leg's vendor — and every prompt preamble is
+built from it; the literal "The requester is a different AI vendor (Anthropic Claude)" is gone from
+both servers and both legs. A requester equal to the leg's own vendor is **refused** before anything is
+spawned (verify: `isError`; handoff-leg: exit 64) — a same-family close leg would lock a same-family T1.
+The bridge does not choose the direction: the skill/engine reads the artifact's author stamp
+(`meta.yaml.authored_by`) and passes it — that routing is the engine half of these entries.
 
 ## Which model verifies (v3.0.58, backlog v3.0-204)
 No leg pins a model id. Each asks `models.js`, which answers from the first of: the caller's `--model` /
@@ -65,11 +89,38 @@ from the packet's REASON CLASS vocabulary; `[]` on a confirm or when the evidenc
 and `missing_claims` (on a routing-completeness packet, each load-bearing claim no routing line
 accounts for, as `{event, quote, claim}` with the sentence quoted verbatim; `[]` otherwise). The
 compile engine classifies from `reason_classes` alone and never searches the reason prose for
-class words. The GPT-direction server (`codex-verify-server.js`) enforces both lists through its
-strict output schema; the Claude-direction server (`verify-server.js`) has no output schema, asks
-for both in its instructions and passes its answer through as given, so a verdict from it can
-lack them -- the engine then reads the missing class list as unclassified and blocking. An
-ordinary `/cross-check` gets both lists empty and can ignore them.
+class words. **Both directions enforce the same `VERDICT_SCHEMA`** (v3.0-233; the Claude server's
+self-test asserts it is byte-identical to the Codex server's): the GPT direction through OpenAI
+strict structured output (`--output-schema`), the Claude direction through `claude --json-schema`
+PLUS an in-process validator that refuses (`isError`) any verdict violating the schema — a missing
+list, an off-vocabulary class, an extra field — instead of passing it through. An ordinary
+`/cross-check` gets both lists empty and can ignore them.
+
+### Remaining differences between the two servers (stated, not hidden)
+- **Attestation `runtime_model` source.** Codex self-reports on stderr (`model:` line, `tokens used`
+  footer); Claude self-reports inside its JSON envelope (`modelUsage` key, `usage` object). Both land
+  in the same attestation shape: `channel: "subprocess-runtime"`, `argv_model`, `runtime_model`,
+  `runtime_model_line`, `exit_code`, `token_usage`, `ts`. The Claude side adds `binary` (the resolved
+  CLI path), `model_match` and a fuller `token_usage` (input/output/cache splits, `tokens_used` = their
+  sum) — additive fields only.
+- **Alias ids.** The claude CLI accepts aliases (`fable`, `opus`) and reports full ids
+  (`claude-fable-5-1…`), so `argv_model` and `runtime_model` are equal only when a full id was
+  requested; `model_match` records `exact` / `alias` / `mismatch` honestly. The knowledge engine's
+  attestation gate (`compile-backends.py`) compares the two with raw equality and will gate an
+  alias-requested Claude verdict until it reads `model_match` — the engine half of v3.0-233.
+- **`verifier` block.** Both carry `vendor`, `model`, `reasoning_effort`, `requester_vendor` and
+  `repo_grounding` when active. The Claude side's `model` is the id the CLI reported (what the gate
+  derives) with `requested_model` beside it, plus `cost_estimate_usd` (notional; subscription-billed)
+  and `session_id`; the Codex side's `model` is the requested id and it adds `tokens_used` only when
+  the footer was present.
+- **Containment mechanics** differ by CLI (hardened `--disable` set / `web_search="disabled"` /
+  `--strict-config` vs. empty `--tools ""` allow-list / deny-list / `--strict-mcp-config` /
+  `--no-session-persistence`); the contract is the same: tool-less by absence (one exception the CLI
+  adds under `--json-schema`: `StructuredOutput`, the answer channel, with no file, shell or network
+  capability -- observed live on claude 2.1.291; zero MCP servers), refused outright when no `claude`
+  at or above the version floor exists (no bare-name fallback), fresh tmpdir cwd,
+  nothing persisted, no network. Repo-grounding runs through the same `repo-grounding.js` gate on
+  both.
 
 ## Security posture (do not regress)
 - **Both verifiers run CONTAINED + tool-less + on a resolved frontier model** (see above). The Claude

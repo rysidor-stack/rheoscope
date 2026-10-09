@@ -10,6 +10,14 @@ This project runs on the Rheoscope harness. Its governance is substrate-neutral:
 4. `CONTEXT.md` — the project glossary. Use its terms; respect its `_Avoid_:` lists.
 5. The current flight plan under `wiki/flight-plans/` (if one exists) — what this phase is doing and where work stands.
 
+Session reflexes — the same ones root `CLAUDE.md` gives Claude Code (v3.0.63, backlog v3.0-232: they were missing here, so a Codex-led project was never told to close with the attended sweep that acknowledges pending items):
+
+- **Open** substantive sessions with `/flight-plan` (read `.claude/skills/flight-plan/SKILL.md`, or its `.agents/skills/` adapter, and follow it); use `/orient` for questions about how the harness itself works.
+- **During work:** new knowledge lands as `raw/` intake; reasoning that should outlive the chat runs through `/reason` so its findings land as records.
+- **Decisions:** hard-to-reverse (T1) decisions never lock in the session that authored them — route them to `/handoff`.
+- **Harness defects** noticed in passing → `/log-backlog`, same session.
+- **Close** of major work: land the raw intake, update the records you touched, and run `/sweep` — attended (you, with the operator present). Only an attended sweep acknowledges the pending items; skip it and the missed-cycle alarms accumulate.
+
 Conventions that most often trip up sessions arriving without orientation:
 
 - **Knowledge intake goes through `raw/` + `/compile`** (when the knowledge-os capability is enabled) — never write wiki articles directly. See `.claude/skills/compile/SKILL.md` where present.
@@ -21,4 +29,4 @@ Conventions that most often trip up sessions arriving without orientation:
 
   The canonical, executable statement of the first two is `substrate_gate_ok()` in `deploy/check-substrate.py` (where the knowledge-os capability is enabled); the third lives in `core/governance/CLAUDE.md` § Session discipline. **Read the relevant one before concluding that a leg is misrouted.** Never "harden" a routine gate into a vendor gate to settle a doubt or to satisfy an operator's surprise: a routine leg can fire locally against a tool-capable verifier, whereas a vendor gate on the same leg forces every verification into an outbound evidence packet — that conversion is how one compile becomes a queue of egress approvals. If you believe a gate's tier is wrong, say so and stop; changing a tier is a decision, not a fix. Always record your real vendor/model; never fill another substrate's role under your own.
 - **T1 decisions never lock in the session that authored them** — the decision-lock firewall in `core/governance/CLAUDE.md` § Session discipline applies to every substrate.
-- **The security perimeter does not travel with you.** The PreToolUse hooks in `.claude/settings.local.json` mediate Claude Code tool calls only; other tools do not inherit them. The deny patterns in `core/security/hooks/` still describe what must never run from this tree — honor them by policy, and configure your own tool's guardrails (e.g. Codex sandbox/approval settings) accordingly.
+- **The security perimeter is two layers, and only one of them is per tool** (v3.0-232). CALL-TIME: the PreToolUse hooks in `.claude/settings.local.json` mediate Claude Code tool calls only; the template does not yet ship Codex hooks (backlog v3.0-235), so a Codex session meets no call-time denial — it can write `.env`/credential files and protected files, and skip the commit scanner with `git commit --no-verify`. COMMIT-TIME: the git pre-commit scanner and `deploy/trust.py`'s committed-identity rule hold for every agent. Honor the deny patterns in `core/security/hooks/` by policy, never use `--no-verify`, and say plainly in your first report that this session has no call-time guards. `/doctor`'s `perimeter-live` row reports which layer is live for your session.

@@ -96,6 +96,11 @@ that fits no class is MORE interesting, not less.
    expectations. Every reader prompt opens with the standing "do all work yourself inline; do
    NOT use the Agent tool" rule, carries the lens/mode table, rule 3 verbatim, the
    dismissed-registry, and a cap (≤5 strong candidates each).
+   No subagent tool (a Codex session, or any agent without one — v3.0-236): run the
+   readers serially in this session, one cluster at a time with the same prompt, or send
+   each reader prompt to one `codex exec` child and take its stdout as the reader's
+   return. The standing rule holds either way — readers are leaves; agents never spawn
+   agents.
 4. **Derivative-depth guard.** Content whose `sources:` trace to prior discovery events is
    derived. A candidate whose EVERY leg is derived content is synthesis-on-synthesis — flagged;
    depth ≤1 by default, operator opt-in beyond.

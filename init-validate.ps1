@@ -173,6 +173,41 @@ if (Test-Path $coreSkillsLeftover) {
     AddFailure "core/skills/ still exists - init did not consume it into .claude/skills/"
 }
 
+# 7b. Skill-adapter parity (v3.0-236): every installed .claude/skills/<name>/SKILL.md that is
+#     not on the skip list has an .agents/skills/<name>/SKILL.md adapter whose pointed-at
+#     target exists. The skip list is the data file beside the generator (single home); its
+#     removal condition is backlog v3.0-233. Native check, no python needed here.
+$adapterSkip = @()
+$skipList = Join-Path $scriptRoot '.claude/skills/doctor/skill-adapter-skip.list'
+if (Test-Path $skipList -PathType Leaf) {
+    foreach ($line in (Get-Content $skipList -Encoding UTF8)) {
+        $entry = ($line -replace '#.*$', '') -replace '\s', ''
+        if ($entry.Length -gt 0) { $adapterSkip += $entry }
+    }
+}
+$skillsRoot = Join-Path $scriptRoot '.claude/skills'
+if (Test-Path $skillsRoot) {
+    foreach ($skillDir in (Get-ChildItem -Path $skillsRoot -Directory)) {
+        $name = $skillDir.Name
+        if (-not (Test-Path (Join-Path $skillDir.FullName 'SKILL.md') -PathType Leaf)) { continue }
+        if ($adapterSkip -ccontains $name) { continue }
+        $adapter = Join-Path $scriptRoot ".agents/skills/$name/SKILL.md"
+        if (-not (Test-Path $adapter -PathType Leaf)) {
+            AddFailure "Skill adapter missing: .agents/skills/$name/SKILL.md (run: python .claude/skills/doctor/gen-skill-adapters.py)"
+            continue
+        }
+        $targetLine = Get-Content $adapter -Encoding UTF8 | Where-Object { $_ -match '^\s+\.claude/skills/[^/\s]+/SKILL\.md\s*$' } | Select-Object -First 1
+        if (-not $targetLine) {
+            AddFailure "Skill adapter names no target: .agents/skills/$name/SKILL.md"
+        } else {
+            $target = $targetLine.Trim()
+            if (-not (Test-Path (Join-Path $scriptRoot $target) -PathType Leaf)) {
+                AddFailure "Skill adapter target missing: .agents/skills/$name -> $target"
+            }
+        }
+    }
+}
+
 # 8. VERSION must NOT exist post-init (consumed at instantiation; the project's single
 #    version source is project.yaml.template_version, per v2.0 #10a).
 $versionLeftover = Join-Path $scriptRoot 'VERSION'

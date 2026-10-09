@@ -157,6 +157,40 @@ done
 [[ -f "$SCRIPT_ROOT/.claude/skills/bridge/verify-cli.js" ]] || add_fail "Core skill missing: .claude/skills/bridge/verify-cli.js"
 [[ -d "$SCRIPT_ROOT/core/skills" ]] && add_fail "core/skills/ still exists - init did not consume it into .claude/skills/"
 
+# 7b. Skill-adapter parity (v3.0-236): every installed .claude/skills/<name>/SKILL.md that is
+#     not on the skip list has an .agents/skills/<name>/SKILL.md adapter whose pointed-at
+#     target exists. The skip list is the data file beside the generator (single home); its
+#     removal condition is backlog v3.0-233. Native check, no python needed here.
+ADAPTER_SKIP=()
+if [[ -f "$SCRIPT_ROOT/.claude/skills/doctor/skill-adapter-skip.list" ]]; then
+    while IFS= read -r line; do
+        line="${line%%#*}"; line="${line//[[:space:]]/}"
+        [[ -n "$line" ]] && ADAPTER_SKIP+=("$line")
+    done < "$SCRIPT_ROOT/.claude/skills/doctor/skill-adapter-skip.list"
+fi
+is_adapter_skipped() {
+    local n="$1" s
+    [[ ${#ADAPTER_SKIP[@]} -eq 0 ]] && return 1
+    for s in "${ADAPTER_SKIP[@]}"; do [[ "$n" == "$s" ]] && return 0; done
+    return 1
+}
+for canon in "$SCRIPT_ROOT"/.claude/skills/*/SKILL.md; do
+    [[ -f "$canon" ]] || continue
+    name="$(basename "$(dirname "$canon")")"
+    is_adapter_skipped "$name" && continue
+    adapter="$SCRIPT_ROOT/.agents/skills/$name/SKILL.md"
+    if [[ ! -f "$adapter" ]]; then
+        add_fail "Skill adapter missing: .agents/skills/$name/SKILL.md (run: python .claude/skills/doctor/gen-skill-adapters.py)"
+        continue
+    fi
+    target="$(grep -oE '^[[:space:]]+\.claude/skills/[^/[:space:]]+/SKILL\.md[[:space:]]*$' "$adapter" | head -1 | tr -d '[:space:]')"
+    if [[ -z "$target" ]]; then
+        add_fail "Skill adapter names no target: .agents/skills/$name/SKILL.md"
+    elif [[ ! -f "$SCRIPT_ROOT/$target" ]]; then
+        add_fail "Skill adapter target missing: .agents/skills/$name -> $target"
+    fi
+done
+
 # 8. VERSION must NOT exist post-init (consumed at instantiation; the project's single
 #    version source is project.yaml.template_version, per v2.0 #10a).
 [[ -f "$SCRIPT_ROOT/VERSION" ]] && add_fail "VERSION file still exists - init did not consume it (project.yaml.template_version is the project's version source)"

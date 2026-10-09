@@ -70,8 +70,11 @@ and the HUMAN-GATE consumers (`deploy/trust.py`, `compile-driver.py`,
 that list is a named **class** (`core/security/hooks/trust-surfaces.txt`) with three
 properties you should know when adopting a release:
 
-1. **A session cannot write them through either tool lane.** The Edit/Write guard and the
-   Bash/PowerShell guard both deny (not ask) any write-shaped command naming a class path.
+1. **A Claude Code session cannot write them through either tool lane.** The Edit/Write guard
+   and the Bash/PowerShell guard both deny (not ask) any write-shaped command naming a class path.
+   These are Claude Code hooks: a Codex session meets no such denial until the template ships
+   Codex hooks (backlog v3.0-235) — the copy is still yours to run, by rule, and the committed-
+   identity check below catches an unmediated write after the fact (v3.0-232).
    So when a MIGRATION recipe says "copy the new hook" or "copy `deploy/trust.py`", the
    session will be denied — **that copy is yours to run, in your own terminal**, from the
    template's bytes (the recipe names the file and the template path). The session reads,

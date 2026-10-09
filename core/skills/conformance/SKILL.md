@@ -51,6 +51,11 @@ ships on a feeling.
    generalized to judgment rows; the grade lands in the receipt with per-criterion reasoning,
    never a bare scalar; grading disagreements escalate to the hub, never average out.
 
+   Without a subagent tool (a Codex session, or any agent lacking one — v3.0-236), the
+   rows are driven serially in this session one at a time, or each row's replay goes to
+   one `codex exec` child that returns its evidence on stdout; the orchestrator still only
+   dispatches and adjudicates, and agents never spawn agents — every child is a leaf.
+
 3. **Classify every red row** via the amendment log (`manifest-format.md` §8). A red row with
    an open amendment behind it is **DECLARED nonconformance** — a work-queue item, red by
    design. A red row with no amendment behind it is **UNDECLARED nonconformance** — a defect.

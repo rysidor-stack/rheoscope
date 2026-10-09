@@ -219,8 +219,9 @@ for example 05:30 daily, running just after the sweep. That's the whole recipe �
 backlog v3.0-180) apply to this wrapper exactly as to the sweep's.
 
 **The wrapper must set `RHEOSCOPE_UNATTENDED=1`** (v3.0.47, backlog v3.0-134) — e.g. the first line
-of the `.cmd`: `set RHEOSCOPE_UNATTENDED=1`. The egress hook reads it: in an unattended run every
-egress-shaped call ASKS and, with nobody present, fails closed; in an attended session the same
+of the `.cmd`: `set RHEOSCOPE_UNATTENDED=1`. The egress hook reads it — in a Claude Code run (the hook is Claude
+Code's; a scheduled `codex exec` run has no egress gate until backlog v3.0-235): in an unattended
+run every egress-shaped call ASKS and, with nobody present, fails closed; in an attended session the same
 call is allowed and logged (`.claude/egress-log.jsonl`, surfaced by `/sweep`). A scheduled run
 launched without the marker would run with attended permissions — the arming review checks the
 wrapper carries it.

@@ -202,10 +202,18 @@ const VERDICT_SCHEMA = {
 const SCHEMA_FILE = path.join(os.tmpdir(), 'codex-verify-verify.schema.json');
 try { fs.writeFileSync(SCHEMA_FILE, JSON.stringify(VERDICT_SCHEMA)); } catch (e) { /* surfaced at call time */ }
 
-const VERIFIER_INSTRUCTIONS = [
-  'You are a CROSS-VENDOR VERIFICATION ORACLE. The requester is a different AI vendor',
-  '(Anthropic Claude); you are OpenAI Codex/GPT. Independently adjudicate the CLAIM below',
-  'using the EVIDENCE, and take a clear position — do not hedge into uselessness.',
+// v3.0-233: the requester vendor is an ARGUMENT (VERIFY_REQUESTER_VENDOR; verify-cli
+// --requester-vendor), default the opposite of this leg (anthropic); the old literal "(Anthropic
+// Claude)" was false under a Codex-led project. A same-vendor requester is REFUSED at call time.
+const LEG_VENDOR = 'openai';
+const MODELS = require('./models.js');
+function requesterVendorRes(env) {
+  return MODELS.resolveRequesterVendor(LEG_VENDOR, { env: env || process.env, envName: 'VERIFY_REQUESTER_VENDOR' });
+}
+function verifierInstructions(requesterVendor) { return [
+  'You are a CROSS-VENDOR VERIFICATION ORACLE. ' + MODELS.requesterSentence(requesterVendor, LEG_VENDOR),
+  'Independently adjudicate the CLAIM below using the EVIDENCE, and take a clear position — do',
+  'not hedge into uselessness.',
   '',
   'DEFAULT TO SKEPTICISM. The requester authored or drove the thing under test and may be',
   'wrong or framing it favorably. Confirm ONLY if the EVIDENCE positively establishes the',
@@ -234,13 +242,14 @@ const VERIFIER_INSTRUCTIONS = [
   '                load-bearing claim no routing line accounts for: {"event": the event path,',
   '                "quote": the exact sentence copied from that event, "claim": the claim in one',
   '                sentence}.',
-].join('\n');
+].join('\n'); }
+const VERIFIER_INSTRUCTIONS = verifierInstructions(MODELS.oppositeVendor(LEG_VENDOR)); // default-direction text (self-test)
 
-function buildPacket(args, groundedEvidence) {
+function buildPacket(args, groundedEvidence, requesterVendor) {
   const claim = String(args.claim || '');
   const evidence = args.evidence ? String(args.evidence) : '';
   const tier = args.tier ? String(args.tier) : '';
-  let p = VERIFIER_INSTRUCTIONS + '\n\n';
+  let p = verifierInstructions(requesterVendor || MODELS.oppositeVendor(LEG_VENDOR)) + '\n\n';
   if (groundedEvidence) {
     // Trusted preamble for repo-grounded runs: the file content below the requester's block was
     // read from disk by the bridge (the requester chose paths, not bytes). Prefer it on conflict.
@@ -416,6 +425,14 @@ if (process.argv.includes('--self-test')) {
     ['the instructions name both fields and forbid negated classes',
      VERIFIER_INSTRUCTIONS.includes('"reason_classes"') && VERIFIER_INSTRUCTIONS.includes('"missing_claims"')
      && VERIFIER_INSTRUCTIONS.includes('never a class you mention to rule it out')],
+    // v3.0-233: the requester is an argument, never the literal "(Anthropic Claude)"
+    ['default requester text names Anthropic Claude as the OPPOSITE of this leg, from the argument',
+     VERIFIER_INSTRUCTIONS.includes('The requester is a different AI vendor (Anthropic Claude); you are OpenAI Codex/GPT.')
+     && verifierInstructions('xai').includes('(xAI Grok); you are OpenAI Codex/GPT.')],
+    ['a same-vendor requester (openai) is REFUSED, an xai requester accepted',
+     requesterVendorRes({ VERIFY_REQUESTER_VENDOR: 'openai' }).vendor === null
+     && requesterVendorRes({ VERIFY_REQUESTER_VENDOR: 'xai' }).vendor === 'xai'
+     && requesterVendorRes({}).vendor === 'anthropic'],
   ];
   let fails = 0;
   for (const [name, ok] of cases) {
@@ -494,6 +511,13 @@ async function handle(line) {
       const args = params.arguments || {};
       if (!args.claim) return replyError(msg.id, -32602, 'verify requires a `claim`');
 
+      // ---- requester vendor preflight (v3.0-233): same-vendor is refused, never run ----
+      const rq = requesterVendorRes();
+      if (rq.error) {
+        log('refused: ' + rq.error);
+        return reply(msg.id, { content: [{ type: 'text', text: 'VERIFY FAILED: ' + rq.error }], isError: true });
+      }
+
       // ---- OPT-IN repo-grounding (default-deny): activate ONLY when BOTH params are present ----
       const wantsRepoRoot = args.repoRoot != null && String(args.repoRoot).trim() !== '';
       const wantsAllowlist = Array.isArray(args.readAllowlist) && args.readAllowlist.length > 0;
@@ -518,7 +542,7 @@ async function handle(line) {
         log('repo-grounding ACTIVE: ' + gate.files.length + ' file(s), ' + (gate.denied || []).length + ' denied; model is tool-less');
       }
 
-      const r = await runVerifier(buildPacket(args, groundedEvidence), { toolless: !!groundedEvidence });
+      const r = await runVerifier(buildPacket(args, groundedEvidence, rq.vendor), { toolless: !!groundedEvidence });
       if (!r.ok) {
         return reply(msg.id, { content: [{ type: 'text', text: 'VERIFY FAILED: ' + r.error }], isError: true });
       }
@@ -535,7 +559,7 @@ async function handle(line) {
         }
       }
 
-      const verifier = { vendor: 'openai', model: VERIFY_MODEL, reasoning_effort: VERIFY_EFFORT };
+      const verifier = { vendor: LEG_VENDOR, model: VERIFY_MODEL, reasoning_effort: VERIFY_EFFORT, requester_vendor: rq.vendor };
       if (r.tokens != null) verifier.tokens_used = r.tokens; // codex omits the token footer in non-TTY mode; include only if present
       if (groundInfo) verifier.repo_grounding = groundInfo;
       const payload = Object.assign({}, base, { verifier, attestation: r.attestation || null });
@@ -548,4 +572,4 @@ async function handle(line) {
 
 process.on('SIGTERM', () => process.exit(0));
 process.on('SIGINT', () => process.exit(0));
-log('codex-verify MCP server ready — verifier=' + CODEX_BIN + ' exec (model=' + VERIFY_MODEL + ' [' + MODEL_RES.source + '], read-only, --ignore-user-config)');
+log('codex-verify MCP server ready — verifier=' + CODEX_BIN + ' exec (model=' + VERIFY_MODEL + ' [' + MODEL_RES.source + '], requester=' + (requesterVendorRes().vendor || 'REFUSED: ' + requesterVendorRes().error) + ', read-only, --ignore-user-config)');

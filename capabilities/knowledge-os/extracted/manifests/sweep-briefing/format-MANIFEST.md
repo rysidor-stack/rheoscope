@@ -5,7 +5,7 @@ version: "1.0"
 status: CERTIFIED
 source_artifacts:
   - path: .claude/skills/sweep/SKILL.md
-    sha256: f36fabbe07d8e346ba42358a37813cb55d0d2819ea982465e099bc5e5db0ecb1
+    sha256: 277fb053a07f33a3117aeedb64a817e74d71d5d721b17951a6772853f679482a
   - path: manifests/sweep-briefing/source/exemplar-1.md
     sha256: 7bc6f7c180da8a08f9f6782393cb617e512af2f2f4d65893bf216da9568b392f
   - path: manifests/sweep-briefing/source/exemplar-2.md
@@ -174,3 +174,4 @@ bare") — declared above.
   desk write-steps — outside the pinned contract's "The briefing" section, but the pin
   covers the whole file). Status stays CERTIFIED per §8; certified_by unchanged.
 - **A4** | date 2026-10-02 | rows: 18 unchanged (13 VALIDATOR + 5 RUBRIC) | provenance: v3.0.61 (backlog v3.0-215, v3.0-201) -- the `/sweep` SKILL.md source pin is re-hashed above: the Scheduling recipe now names the unattended writes (heartbeat rows, the render receipt, the briefing), where the wrapper sets the unattended marker (a `.ps1` after its `param()` block) and that an unattended run never defers its briefing; step 17 says the same, and its (b) says what to record for a parentless first commit. All outside the pinned contract's "The briefing" section; the contract observable is byte-unchanged and no fixture is re-authored. Status stays CERTIFIED per §8; certified_by unchanged.
+- **A5** | date 2026-10-09 | rows: 18 unchanged (13 VALIDATOR + 5 RUBRIC) | provenance: v3.0.63 (backlog v3.0-236) -- the `/sweep` SKILL.md source pin is re-hashed above: § Scheduling gains a `codex exec` nightly recipe beside the Claude one (the unattended marker, an explicit sandbox flag, the network grant the bridge legs need, the never-defer rule, and Codex's hook trust step). Outside the pinned contract's "The briefing" section; the contract observable is byte-unchanged and no fixture is re-authored. Status stays CERTIFIED per §8; certified_by unchanged.

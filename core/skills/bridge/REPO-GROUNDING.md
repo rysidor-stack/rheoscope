@@ -106,7 +106,10 @@ server-mediated confined reads and **removes** the model's shell. It loosens not
 
 - MCP `verify` tool gains optional `repoRoot` (abs path) + `readAllowlist` (repo-relative files/dirs;
   `.` = whole repo, still fully gated). Both absent → **byte-identical** inline-only behavior.
-- `verify-cli.js`: `--repo-root <path>` + repeatable `--read <relpath>`.
+  **Both servers** expose the same two parameters and run the same `repo-grounding.js` gate (v3.0-233:
+  `verify-server.js`, the Claude direction, used to drop them silently; it now grounds exactly as the
+  Codex server does, with the same L1–L5 layers and the same return-path scrub).
+- `verify-cli.js`: `--repo-root <path>` + repeatable `--read <relpath>`, in either `--direction`.
 - The verdict carries an auditable `verifier.repo_grounding` block: `{ toolless:true, files_read:[{path,
   bytes, sha256}], denied:[{path, reason}] }` — the asker sees exactly what was read and what was refused.
 
@@ -164,8 +167,10 @@ exfil channel sitting next to live production credentials. I can wire this on re
   (deny on hit) and never echo matched bytes.
 - **TOCTOU.** A file could change between realpath-check and read; the read content still passes L4
   before inlining, so a swapped-in secret is caught by content scan, not just by the name check.
-- **Only the codex verifier.** The Claude side is tool-less by construction; repo-grounding it is a
-  different containment problem (out of scope).
+- **Both verifiers, since v3.0-233.** The Claude side was tool-less by construction (empty allow-list,
+  deny-list, `--strict-mcp-config`) but ignored `repoRoot`/`readAllowlist`; it now runs the identical
+  server-mediated gate. The containment problem on that side is simpler (the model never had a read
+  tool to strip), so the five layers apply unchanged.
 - **No dynamic model exploration.** The model can't follow references beyond the allowlist; if it needs
   a file it wasn't given, it returns `needs-operational-data` naming it (existing behavior). This is a
   deliberate safety trade: the asker designates the safe read set up front.

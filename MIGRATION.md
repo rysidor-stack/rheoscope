@@ -267,6 +267,70 @@ no-self-adjudication bright line, extended to `--baseline-reset` in OPERATIONS �
 > may carry local patches to other deploy/ scripts (the first production instance fork carries a console-
 > encoding repair). Diff before overwriting anything you did not author this adoption.
 
+## v3.0.62 → v3.0.63 (Codex-led and mixed-driver projects, part 1: the doctor stops reporting protections the driving tool cannot see, the cross-vendor bridge works in both directions, and Codex gets the skill menu in every project)
+
+**Who needs this:** any project you drive from Codex as well as Claude Code — or might. A project driven only from Claude Code gains the doctor's per-tool row and the both-direction bridge without changing how it works.
+
+**Two lanes, in either order** — nothing in one depends on the other.
+
+**Step 1 — OPERATOR-COPY lane (one trust surface; you copy and commit it yourself — under
+`required`, `git commit -S`):**
+- `core/security/hooks/README.md` (text only: a note at the top saying which sessions the hooks
+  cover — Claude Code only, until Codex hooks ship in backlog v3.0-235).
+
+**Step 2 — SESSION lane (copy, commit together):**
+- The bridge, all of it — `.claude/skills/bridge/verify-server.js`,
+  `.claude/skills/bridge/verify-cli.js`, `.claude/skills/bridge/codex-verify-server.js`,
+  `.claude/skills/bridge/handoff-leg.js`, `.claude/skills/bridge/models.js`,
+  `.claude/skills/bridge/README.md`, `.claude/skills/bridge/REPO-GROUNDING.md`
+  (v3.0-233/234, bridge half): the Claude-direction verifier now returns the same verdict shape,
+  repo-grounding and attestation as the OpenAI one; `verify-cli.js --direction anthropic|openai`
+  and `--requester-vendor` pick the side; the handoff leg gains `--vendor anthropic`; every entry
+  point REFUSES a same-vendor review (exit 64), and with no flag it reads who is asking from the
+  session itself — so a Codex session asking the OpenAI side with no flag is refused, not
+  mislabelled. Defaults are unchanged for a Claude session: with no flag, review still goes to the
+  OpenAI side. Boards: `node .claude/skills/bridge/verify-server.js --self-test` (33/33),
+  `codex-verify-server.js` (9/9), `handoff-leg.js` (24/24), `models.js` (36/36). The knowledge
+  engine does not yet choose the side by author — that is the engine half of v3.0-233, next.
+- `.claude/skills/doctor/doctor.py` and `.claude/skills/doctor/SKILL.md` (v3.0-232: rows
+  `perimeter-live` — which tool's hooks exist and which protect THIS session — and
+  `far-side-verifier`; hooks-wired, trust-surfaces and codex-auth say which tool they hold for;
+  the skill-adapters row uses the core generator; 148/148 —
+  `python .claude/skills/doctor/doctor.py --self-test`).
+- `.claude/skills/doctor/gen-skill-adapters.py` and `.claude/skills/doctor/skill-adapter-skip.list`
+  (new, v3.0-236: the skill-menu generator for Codex now lives in core; 14/14 with `--self-test`).
+  In a knowledge-os project also copy `deploy/gen-skill-adapters.py` (now a forwarding stub). Then
+  regenerate: `python .claude/skills/doctor/gen-skill-adapters.py`, and commit `.agents/skills/`
+  (the adapters change: quoted frontmatter, a new pointer line).
+- `.claude/skills/sweep/SKILL.md` (v3.0-236: a `codex exec` nightly recipe beside the Claude one),
+  together with `manifests/sweep-briefing/format-MANIFEST.md` (its pin re-hashed, A5),
+  `.claude/skills/standing-loop/SKILL.md` (v3.0-232: the egress-hook sentence names the tool it
+  holds for), and the fan-out fallbacks in `.claude/skills/preflight/SKILL.md`,
+  `.claude/skills/reason/SKILL.md`, `.claude/skills/conformance/SKILL.md` and, in a knowledge-os
+  project, your discover skill (in an instance, .claude/skills/discover/SKILL.md), from the template
+  tree's `capabilities/knowledge-os/extracted/discover/SKILL.md`.
+- Your compile skill (in an instance, .claude/skills/compile/SKILL.md), from the template tree's
+  `capabilities/knowledge-os/extracted/compile/SKILL.md.template`: one fan-out fallback paragraph.
+  Your flight-plan skill (in an instance, .claude/skills/flight-plan/SKILL.md), from
+  `core/skills/flight-plan/SKILL.md.template`: Step 0's hooks paragraph now checks the session's own
+  tool. Your governance contract (in an instance, core/governance/CLAUDE.md), from
+  `core/governance/CLAUDE.md.template`: two sentences say the hooks mediate Claude Code only.
+  Apply each over your substituted copy.
+- `AGENTS.md` (v3.0-232: the session reflexes — open with `/flight-plan`, close with an attended
+  `/sweep` — and the two perimeter layers), `core/onboarding/UPDATING.md`,
+  `core/security/CREDENTIALS.md`, `TEMPLATE-README.md` (text).
+- `./init-validate.sh` and `./init-validate.ps1` (v3.0-236: they now check every skill has its
+  `.agents/skills/` adapter) — copy them if you re-validate. `./init.sh` and `./init.ps1` changed
+  too (they generate the adapters for every project), but init is one-shot: changed, no action
+  needed on an existing instance.
+
+**What changes in your day.**
+- **The doctor tells the truth about Codex sessions.** Open a Codex session and run the doctor: it
+  says plainly that this session has no call-time safety hooks, and what still protects you.
+- **Codex sees the skill menu** in every project, not only knowledge-os ones.
+- **Nothing else changes yet** for a Claude-only project: review still goes Claude → GPT by
+  default. Review chosen by author, and the Codex hooks, come in the next releases.
+
 ## v3.0.61 → v3.0.62 (the perimeter pair: `.envrc` joins the secrets rule, a copy written as `/bin/cp` is still a copy, `echo cp ...` is prose again, and the project's own file permissions finally match)
 
 **Two lanes, in either order** — nothing in one depends on the other. Almost all of this

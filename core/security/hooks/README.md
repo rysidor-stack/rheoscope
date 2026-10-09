@@ -1,5 +1,7 @@
 # Security Perimeter — Claude Code Hooks
 
+> **Which sessions this covers (v3.0-232).** These hooks run only in Claude Code sessions. A Codex session in the same project is not mediated by them until the template ships Codex hooks (backlog v3.0-235); for it, only the commit-time layer holds (the pre-commit scanner below and `deploy/trust.py`'s committed-identity rule). `/doctor`'s `perimeter-live` row says which layer is live for the session running it.
+
 This directory holds PreToolUse hooks that block named risks before they reach the filesystem or network.
 
 **This perimeter is deliberately negative — it says what must not happen.** The positive

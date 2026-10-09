@@ -23,6 +23,8 @@ State the subject as one sentence. Classify it, and declare the pass plan **with
 
 Read the artifacts the subject touches before any pass runs — reasoning over unread evidence is the default pass wearing a costume. Read-only evidence legs may fan out per `/preflight` step-2 conventions (cheapest adequate tier, self-contained prompts, agents never spawn agents, judgment stays in this session).
 
+Without a subagent tool (a Codex session, or any agent lacking one — v3.0-236), the legs run serially in this session or as one `codex exec` child per leg, each a leaf that returns evidence and never spawns its own agents; the passes themselves are never delegated.
+
 ### 3. Run the passes
 
 In whatever order the subject demands — the passes are tools, not a liturgy. Each pass closes only when its **Done-when** from the doctrine holds:

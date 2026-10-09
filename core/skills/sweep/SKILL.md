@@ -364,6 +364,25 @@ wrapper built from it could never clear the missed-sweep alarm):
    sensor still running is reported in the briefing as still running, and the briefing is
    written before the session exits — never handed to a later check.
 
+**The same recipe driven by Codex (v3.0-236)** — the headless session is `codex exec`
+instead of a Claude Code launch; the three parts are unchanged, with these specifics:
+
+1. **The wrapper sets `RHEOSCOPE_UNATTENDED=1` exactly as above**, then launches
+   `codex exec --sandbox workspace-write "<prompt>"` from the project root (or
+   `codex exec ... < prompt.txt`). Always pass the sandbox flag explicitly: `workspace-write`
+   lets the run append its heartbeat rows and write the briefing and nothing outside the
+   project; it has no network, which a read-only sweep does not need. If the project's
+   sweep includes bridge legs that must reach a vendor, say so in the wrapper and widen
+   the sandbox for that run only (`-c sandbox_workspace_write.network_access=true`).
+2. **The prompt names the same three writes** (heartbeat rows, the render table,
+   `SWEEP-BRIEFING.md`) — Codex has no allowed-tools list, so the sandbox plus the prompt's
+   write list is the whole guard.
+3. **The prompt carries the same "never defer the briefing" rule, verbatim.** One Codex
+   difference: Codex runs this project's hooks only after the operator has trusted them in
+   that Codex install (the `/hooks` command inside Codex); until then a headless run has
+   no hook-side marker check, so `/doctor`'s `hooks-wired` is the only evidence the
+   unattended marker reached the session.
+
 /sweep itself needs no changes to support it. The briefing save belongs to the scheduled
 session, never to `/sweep` itself: a direct, manual `/sweep` writes only step 17's
 receipt-class rows and table — the read-only rule above stands unchanged.

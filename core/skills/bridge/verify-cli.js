@@ -2,10 +2,10 @@
 'use strict';
 /**
  * verify-cli — a thin, FAIL-LOUD command-line front-end for the cross-vendor-verify cross-vendor
- * `verify` tool. It drives the EXISTING codex-verify-server.js over MCP (initialize ->
- * tools/list -> tools/call) exactly as a mounted Claude Code session would, and prints the
- * verdict JSON. It adds no new mechanism — it just makes the proven server callable from ANY
- * session as a one-shot subprocess, without that session having to pre-mount the MCP config.
+ * `verify` tool. It drives one of the two bundled verifier servers over MCP (initialize ->
+ * tools/list -> tools/call) exactly as a mounted session would, and prints the verdict JSON.
+ * It adds no new mechanism — it just makes the proven servers callable from ANY session as a
+ * one-shot subprocess, without that session having to pre-mount the MCP config.
  *
  * Why a CLI instead of mounting the MCP per session:
  *   - Works from a session that did NOT launch with --mcp-config (like a running orchestrator).
@@ -13,13 +13,18 @@
  *     (taint co-residency) — you invoke it deliberately, you don't carry it.
  *   - One chokepoint to FAIL LOUD: a missing verifier, a garbage verdict, or a timeout exits
  *     non-zero with "VERIFY FAILED: ..." on stderr. It never prints a fake "looks fine."
- *   - It spawns codex.exe (which authenticates inside a Claude Code session); it never spawns
- *     `claude -p` (which 401s there). So the Claude->GPT direction works from inside CC.
+ *   - From inside a Claude Code session the OpenAI direction is the one that authenticates
+ *     (codex.exe uses ~/.codex/auth.json; a nested `claude -p` 401s there). From a Codex session
+ *     it is the reverse. The caller picks the direction; the CLI never assumes one.
  *
- * DIRECTION: this CLI always routes to the codex-verify server -> an OpenAI Codex/GPT verifier.
- * It is the CLAUDE-SIDE tool: the asker must be a NON-OpenAI substrate (e.g. Claude) for the
- * result to count as cross-vendor. A Codex/GPT asker must instead use claude-verify (-> Claude).
- * The skill that drives this CLI owns that verifier-not-equal-author rule.
+ * DIRECTION (v3.0-233): `--direction openai` (the DEFAULT when neither flag is given -- unchanged
+ * behaviour) routes to codex-verify-server.js -> an OpenAI Codex/GPT verifier; `--direction
+ * anthropic` routes to verify-server.js -> a contained, tool-less Anthropic Claude verifier;
+ * `--server <path>` names any verify-protocol server explicitly. The banner and the verdict's
+ * `verifier.vendor` reflect the server ACTUALLY used (each server stamps its own vendor). The
+ * requester vendor (`--requester-vendor`, default the opposite of the verifier) is passed to the
+ * server, which REFUSES a same-vendor pairing. The skill that drives this CLI still owns the
+ * verifier-not-equal-author rule: it reads the artifact's author stamp and picks the direction.
  *
  * stdout = the verdict JSON ONLY (machine-consumable / pipeable).
  * stderr = all human diagnostics (banner, failures).
@@ -28,6 +33,7 @@
  *   node verify-cli.js --claim "<one falsifiable sentence>" \
  *                      --evidence-file <path to RAW primary artifacts> \
  *                      [--tier T2|T3|T4] [--model <id>] [--effort medium] [--timeout-ms 180000]
+ *                      [--direction openai|anthropic | --server <path>] [--requester-vendor <vendor>]
  *   node verify-cli.js --claim "..." --evidence "<inline string>"   # small evidence only
  *
  * Exit codes: 0 = parseable verdict returned; 2 = verifier/tool error (isError);
@@ -38,7 +44,22 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const DEFAULT_SERVER = path.join(__dirname, 'codex-verify-server.js');
+// The bundled servers, by the vendor that ANSWERS. The default direction stays openai (the
+// Claude-side tool's historical behaviour); the skill picks per the artifact's author stamp.
+const SERVERS = {
+  openai: path.join(__dirname, 'codex-verify-server.js'),
+  anthropic: path.join(__dirname, 'verify-server.js'),
+};
+const DEFAULT_DIRECTION = 'openai';
+const DEFAULT_SERVER = SERVERS[DEFAULT_DIRECTION];
+
+// Which vendor a server path answers as: a bundled server by its basename, else 'custom'
+// (the verdict's verifier.vendor, stamped by the server itself, is the authority after the run).
+function vendorOfServer(serverPath) {
+  const b = path.basename(serverPath).toLowerCase();
+  for (const v of Object.keys(SERVERS)) if (path.basename(SERVERS[v]).toLowerCase() === b) return v;
+  return 'custom';
+}
 
 function die(code, msg) {
   process.stderr.write('VERIFY FAILED: ' + msg + '\n');
@@ -46,7 +67,7 @@ function die(code, msg) {
 }
 
 function parseArgs(argv) {
-  const a = { server: DEFAULT_SERVER, tier: '', model: '', effort: '', timeoutMs: 0, repoRoot: '', read: [] };
+  const a = { server: '', direction: '', requesterVendor: '', tier: '', model: '', effort: '', timeoutMs: 0, repoRoot: '', read: [] };
   for (let i = 2; i < argv.length; i++) {
     const k = argv[i];
     const next = () => { const v = argv[++i]; if (v === undefined) die(64, 'missing value for ' + k); return v; };
@@ -58,7 +79,9 @@ function parseArgs(argv) {
       case '--model': a.model = next(); break;
       case '--effort': a.effort = next(); break;
       case '--timeout-ms': a.timeoutMs = parseInt(next(), 10); break;
-      case '--server': a.server = next(); break;
+      case '--server': a.server = next(); break;                // any verify-protocol server
+      case '--direction': a.direction = next(); break;          // openai|anthropic -> bundled server
+      case '--requester-vendor': a.requesterVendor = next(); break;
       case '--repo-root': a.repoRoot = next(); break;            // opt-in repo-grounding
       case '--read': a.read.push(next()); break;                 // repeatable allowlist entry
       case '-h': case '--help': a.help = true; break;
@@ -69,7 +92,7 @@ function parseArgs(argv) {
 }
 
 const HELP = [
-  'verify-cli — cross-vendor second opinion (Claude-side: routes to an OpenAI Codex/GPT verifier)',
+  'verify-cli — cross-vendor second opinion (routes to a contained OpenAI Codex/GPT OR Anthropic Claude verifier)',
   '',
   '  --claim         <text>   REQUIRED. One falsifiable sentence to adjudicate.',
   '  --evidence-file <path>   RAW primary artifacts (diff/test-output/source/data). PREFERRED.',
@@ -79,6 +102,15 @@ const HELP = [
   '                           the Codex CLI\'s own default, then a fallback; `node models.js`).',
   '  --effort        <level>  model_reasoning_effort (default medium).',
   '  --timeout-ms    <n>      Verifier timeout (default server default, 180000).',
+  '',
+  '  DIRECTION (who ANSWERS; default openai -- unchanged when neither flag is given):',
+  '  --direction     openai|anthropic  openai -> codex-verify-server.js (contained `codex exec`);',
+  '                           anthropic -> verify-server.js (contained, tool-less `claude -p`).',
+  '  --server        <path>   Any verify-protocol MCP server script (overrides --direction; the',
+  '                           banner then says custom/<basename> until the verdict names its vendor).',
+  '  --requester-vendor <v>   Who AUTHORED the thing under test (default: the opposite of the',
+  '                           verifier). Passed to the server as VERIFY_REQUESTER_VENDOR; a server',
+  '                           REFUSES a requester equal to its own vendor (same-vendor is not cross-vendor).',
   '',
   '  REPO-GROUNDING (opt-in; default-deny; the bridge reads, the model is tool-less):',
   '  --repo-root     <path>   Absolute repo root the bridge may read from. Needs >=1 --read.',
@@ -100,21 +132,39 @@ function main() {
     catch (e) { die(64, 'could not read --evidence-file ' + args.evidenceFile + ': ' + e.message); }
     if (!evidence.trim()) die(64, '--evidence-file ' + args.evidenceFile + ' is empty');
   }
-  if (!fs.existsSync(args.server)) die(64, 'server not found: ' + args.server);
+  // ---- direction / server selection (v3.0-233) ----
+  if (args.direction && args.server) die(64, '--direction and --server are mutually exclusive');
+  if (args.direction && !SERVERS[args.direction]) die(64, '--direction must be openai or anthropic (got ' + JSON.stringify(args.direction) + ')');
+  const server = args.server || SERVERS[args.direction || DEFAULT_DIRECTION];
+  if (!fs.existsSync(server)) die(64, 'server not found: ' + server);
+  const vendor = args.direction || vendorOfServer(server);
 
   const env = Object.assign({}, process.env);
   if (args.model) env.VERIFY_MODEL = args.model;
   if (args.effort) env.VERIFY_EFFORT = args.effort;
   if (args.timeoutMs) env.VERIFY_TIMEOUT_MS = String(args.timeoutMs);
+  if (args.requesterVendor) env.VERIFY_REQUESTER_VENDOR = args.requesterVendor;
 
   // Guard a little longer than the verifier's own timeout so the inner timeout surfaces first.
   const serverTimeout = args.timeoutMs || parseInt(env.VERIFY_TIMEOUT_MS || '180000', 10);
   const guardMs = serverTimeout + 40000;
 
-  process.stderr.write('[cross-check] verifier=openai/' + require('./models.js').resolveModel('openai', { explicit: args.model, envNames: ['VERIFY_MODEL'], env, skipLive: true }).model +
-    ' (asker MUST be a non-OpenAI substrate for this to count as cross-vendor)\n');
+  // The banner names the vendor of the server ACTUALLY used (never a hard-coded openai/) and the
+  // model that vendor's row resolves to; a custom server shows its basename.
+  const MODELS = require('./models.js');
+  const bannerModel = (vendor === 'openai' || vendor === 'anthropic')
+    ? MODELS.resolveModel(vendor, { explicit: args.model, envNames: ['VERIFY_MODEL'], env, skipLive: true }).model
+    : path.basename(server);
+  const rq = (vendor === 'openai' || vendor === 'anthropic')
+    ? MODELS.resolveRequesterVendor(vendor, { explicit: args.requesterVendor, env, envName: 'VERIFY_REQUESTER_VENDOR' })
+    : { vendor: args.requesterVendor || '?', error: null };
+  if (rq.error) die(64, rq.error);
+  process.stderr.write('[cross-check] verifier=' + vendor + '/' + bannerModel + ' requester=' + rq.vendor +
+    (vendor === 'custom'
+      ? ' (custom server; the verdict\'s verifier.vendor is the authority)\n'
+      : ' (the asker must be a non-' + vendor + ' substrate for this to count as cross-vendor)\n'));
 
-  const srv = spawn(process.execPath, [args.server], { stdio: ['pipe', 'pipe', 'inherit'], env });
+  const srv = spawn(process.execPath, [server], { stdio: ['pipe', 'pipe', 'inherit'], env });
 
   const guard = setTimeout(() => {
     try { srv.kill(); } catch (e) {}

@@ -285,7 +285,8 @@ def check_codex_auth(ctx):
         return Result("FAIL", "codex-auth",
                        "failed to execute codex (%s). FIX: reinstall the codex CLI." % out)
     status, detail = _classify_codex(rc, out)
-    return Result(status, "codex-auth", detail)
+    return Result(status, "codex-auth", detail + " (the OpenAI side of cross-vendor review; in a "
+                  "Codex-driven session see far-side-verifier for the Claude side)")
 
 def _jq_install_hint():
     if sys.platform == "win32":
@@ -565,12 +566,143 @@ def check_hooks_wired(ctx):
                        "param())." % ", ".join(unmarked))
 
     return Result("PASS", "hooks-wired",
-                   "settings.local.json present, valid JSON, both hooks wired with correct "
-                   "matcher coverage (Bash + PowerShell for block-dangerous-bash.sh, "
+                   "(Claude Code sessions) settings.local.json present, valid JSON, both hooks "
+                   "wired with correct matcher coverage (Bash + PowerShell for block-dangerous-bash.sh, "
                    "Edit/Write for block-env-writes.sh)")
 
 
 _FILE_RULE_RE = re.compile(r"^(Read|Edit|Write)\((.*)\)$")
+
+
+# v3.0-232 (the honesty patch): which agent is driving THIS session, read from the markers the
+# harness already trusts for session detection (promote.py SESSION_MARKERS). The driver is a
+# property of the session, not the project: one project is worked by both tools.
+_CLAUDE_MARKERS = ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT")
+_CODEX_MARKERS = ("CODEX_SANDBOX", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_HOME_SESSION")
+
+
+def session_driver(env=None):
+    """'claude', 'codex', 'both' (markers of each -- e.g. a Codex shell launched from Claude),
+    or 'unknown' (an operator's terminal, a scheduled wrapper, or a marker this list lacks)."""
+    env = os.environ if env is None else env
+    c = any((env.get(k) or "").strip() for k in _CLAUDE_MARKERS)
+    x = any((env.get(k) or "").strip() for k in _CODEX_MARKERS)
+    return "both" if (c and x) else "claude" if c else "codex" if x else "unknown"
+
+
+def _codex_hook_commands(root):
+    """The `command` strings of every hook entry a project ships for Codex: .codex/hooks.json
+    parsed as JSON (every handler's command/command_windows), plus `command = ...` lines from
+    .codex/config.toml that are not comments. Text that merely MENTIONS a script (a comment, a
+    description) is not a hook (v3.0.63 review round 1)."""
+    cmds = []
+    hj = Path(root) / ".codex" / "hooks.json"
+    try:
+        data = json.loads(hj.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if k in ("command", "command_windows", "commandWindows") and isinstance(v, str):
+                    cmds.append(v)
+                else:
+                    walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+    walk(data)
+    try:
+        for line in (Path(root) / ".codex" / "config.toml").read_text(encoding="utf-8").splitlines():
+            m = re.match(r"\s*command(?:_windows)?\s*=\s*(['\"])(.*)\1\s*(#.*)?$", line)
+            if m:
+                cmds.append(m.group(2))
+    except OSError:
+        pass
+    return cmds
+
+
+def _codex_hooks_state(root):
+    """'present' when the project's Codex hook entries run both hook scripts, 'partial' when one,
+    'absent' otherwise. NEVER 'wired': Codex runs a project hook only after the operator trusts
+    that exact definition in its /hooks screen, and that trust is not checked here (v3.0-235
+    reads it), so a present definition is not a live guard."""
+    joined = "\n".join(_codex_hook_commands(root))
+    named = [h for h in HOOK_SCRIPTS if h in joined]
+    return "present" if len(named) == len(HOOK_SCRIPTS) else "partial" if named else "absent"
+
+
+def check_perimeter_live(ctx):
+    """v3.0-232: the security perimeter has two layers, and only one of them is per-tool.
+    CALL-TIME: the PreToolUse hooks, which run only for a tool that loads them (Claude Code
+    reads .claude/settings.local.json; Codex reads .codex/hooks.json, which the template does
+    not ship yet -- v3.0-235). COMMIT-TIME: the git pre-commit scanner and trust.py's
+    committed-identity rule, which hold for any agent. This row says, per tool, which call-time
+    layer exists, and which one is live for the session running the doctor -- never a bare
+    'wired' that a Codex session would read as its own."""
+    root = ctx["root"]
+    hw = ctx.get("_hooks_wired") or check_hooks_wired(ctx)
+    claude = "wired" if hw.status == "PASS" else ("partial" if hw.status == "WARN" else "absent")
+    codex = _codex_hooks_state(root)
+    driver = ctx.get("session_driver") or session_driver()
+    per_tool = "Claude Code hooks: %s; Codex hooks: %s%s" % (
+        claude, codex, " (trust not checked -- Codex runs them only once trusted in /hooks)"
+        if codex != "absent" else "")
+    commit = ("commit-time checks (secret scanner, committed-identity) apply to every agent; "
+              "neither layer catches `git commit --no-verify` from an agent without hooks, "
+              "or outbound network calls")
+    if driver == "claude" and claude == "wired":
+        return Result("PASS", "perimeter-live",
+                      "%s; live for this Claude session: call-time hooks + commit-time checks. "
+                      "(%s.)" % (per_tool, commit))
+    if driver == "codex" and codex == "present":
+        return Result("WARN", "perimeter-live",
+                      "%s; this Codex session's hook definitions exist but their trust is "
+                      "unverified, so they may not be running. Only %s. FIX: open Codex's /hooks "
+                      "and trust the project's hooks; until v3.0-235 ships a trust check, treat "
+                      "this session as unguarded." % (per_tool, commit))
+    if driver in ("claude", "codex"):
+        return Result("WARN", "perimeter-live",
+                      "%s; this %s session has NO call-time guards: it can write secrets "
+                      "files and protected files and skip the commit scanner, and nothing "
+                      "stops it until commit time. Only %s. FIX: %s"
+                      % (per_tool, driver.capitalize(), commit,
+                         "drive this project from Claude Code for work that touches protected "
+                         "files, until Codex hooks ship (backlog v3.0-235); keep the scanner "
+                         "installed (doctor precommit-scanner)" if driver == "codex" else
+                         "wire the hooks (see hooks-wired's FIX)"))
+    if driver == "both":
+        return Result("WARN", "perimeter-live",
+                      "%s; this run carries BOTH Claude and Codex session markers (e.g. one tool "
+                      "launched from the other), so which tool's hooks guard it is ambiguous -- "
+                      "treat it as guarded only by the commit-time layer. %s. FIX: run the doctor "
+                      "from the tool that is actually driving, launched directly, to see its "
+                      "row." % (per_tool, commit.capitalize()))
+    return Result("PASS", "perimeter-live",
+                  "%s; driver of this run: unknown (no agent marker -- an operator terminal or a "
+                  "scheduled wrapper), so no call-time layer applies to this run itself. %s."
+                  % (per_tool, commit.capitalize()))
+
+
+def check_far_side_verifier(ctx):
+    """v3.0-232: in a Codex-driven session the cross-vendor review's far side is Claude, which
+    codex-auth never checks. Presence only (the Claude-direction verifier's install and
+    registration are v3.0-233); no network, no prompt."""
+    driver = ctx.get("session_driver") or session_driver()
+    if driver != "codex":
+        return Result("SKIP", "far-side-verifier",
+                      "this session is not Codex-driven; codex-auth covers the far side")
+    exe = shutil.which("claude")
+    if not exe:
+        return Result("WARN", "far-side-verifier",
+                      "this session is Codex-driven, and the claude CLI is not on PATH: a "
+                      "decision or audit this session authors cannot get its different-vendor "
+                      "review. FIX: install Claude Code and run `claude` once to log in.")
+    return Result("PASS", "far-side-verifier",
+                  "Codex-driven session; claude CLI present at %s -- presence only: its login is "
+                  "not checked here (no prompt, no network), and the engine's routing to it is "
+                  "backlog v3.0-233" % exe)
 
 
 def check_permission_paths(ctx):
@@ -1179,8 +1311,9 @@ def check_trust_surfaces(ctx):
     sc = check_precommit_scanner(ctx)
     if hw.status == "PASS" and sc.status == "PASS":
         out.append(Result("PASS", fam + ":wiring",
-                          "untracked members wired: settings wire all three hook entries, "
-                          "scanner byte-current"))
+                          "untracked members wired: the Claude Code settings wire all three "
+                          "hook entries (call-time, Claude sessions only -- see perimeter-live), "
+                          "scanner byte-current (commit-time, every agent)"))
     else:
         out.append(Result("FAIL", fam + ":wiring",
                           "perimeter unwired: hooks-wired=%s (%s); precommit-scanner=%s (%s). "
@@ -1679,12 +1812,17 @@ def check_sensor_reachability(ctx):
 # --------------------------------------------------------------------------------------
 
 def check_skill_adapters(ctx):
-    path = ctx["root"] / "deploy" / "gen-skill-adapters.py"
+    # v3.0-236: the generator lives in core (.claude/skills/doctor/) in EVERY project since
+    # v3.0.63; deploy/gen-skill-adapters.py is a forwarding stub kept for older instances
+    path = ctx["root"] / ".claude" / "skills" / "doctor" / "gen-skill-adapters.py"
+    if not path.is_file():
+        path = ctx["root"] / "deploy" / "gen-skill-adapters.py"
     if not path.is_file():
         return Result("SKIP", "skill-adapters",
-                       "no deploy/gen-skill-adapters.py (adapter generation not wired "
-                       "for this project -- non-Claude agents rely on AGENTS.md prose "
-                       "for skill discovery).")
+                       "no gen-skill-adapters.py (neither .claude/skills/doctor/ nor deploy/) -- "
+                       "an instance older than v3.0.63; non-Claude agents rely on AGENTS.md "
+                       "prose for skill discovery.")
+    rel = path.relative_to(ctx["root"]).as_posix()
     rc, out = _run([ctx["python"], str(path), "--check"], timeout=60,
                    cwd=str(ctx["root"]))
     if rc == 0:
@@ -1692,16 +1830,16 @@ def check_skill_adapters(ctx):
     if rc == 1:
         return Result("WARN", "skill-adapters",
                        "adapters out of sync with .claude/skills: %s "
-                       "FIX: run `python deploy/gen-skill-adapters.py` and commit the "
-                       "regenerated .agents/skills/ tree." % _tail(out))
+                       "FIX: run `python %s` and commit the "
+                       "regenerated .agents/skills/ tree." % (_tail(out), rel))
     if rc == "TIMEOUT":
         return Result("WARN", "skill-adapters",
                        "gen-skill-adapters.py --check timed out; state unverified. "
                        "FIX: run it manually.")
     return Result("WARN", "skill-adapters",
                    "gen-skill-adapters.py --check exited unexpected code %s: %s "
-                   "FIX: run `python deploy/gen-skill-adapters.py --check` directly to "
-                   "see the full error." % (rc, _tail(out)))
+                   "FIX: run `python %s --check` directly to "
+                   "see the full error." % (rc, _tail(out), rel))
 
 def _effective_corpus_list(root):
     """Parse project.yaml's corpus binding (v3.0.18, backlog v3.0-88) into the same
@@ -1822,7 +1960,11 @@ def run_all(root, fast_selftests=False):
     add(_safe(check_codex_auth, "codex-auth", ctx))
     add(_safe(check_jq, "jq", ctx))
     add(_safe(check_python_sensors, "python-sensors", ctx))
-    add(_safe(check_hooks_wired, "hooks-wired", ctx))
+    r_hw = _safe(check_hooks_wired, "hooks-wired", ctx)
+    add(r_hw)
+    ctx["_hooks_wired"] = r_hw if not isinstance(r_hw, list) else None
+    add(_safe(check_perimeter_live, "perimeter-live", ctx))
+    add(_safe(check_far_side_verifier, "far-side-verifier", ctx))
     add(_safe(check_permission_paths, "permission-paths", ctx))
     add(_safe(check_precommit_scanner, "precommit-scanner", ctx))
     add(_safe(check_trust_surfaces, "trust-surfaces", ctx))
@@ -1904,6 +2046,60 @@ def self_test():
             json.dumps({"hooks": {"PreToolUse": [
                 {"hooks": [{"command": "$X/core/security/hooks/block-dangerous-bash.sh"}]}]}}),
             encoding="utf-8")
+        r = note(check_hooks_wired(ctx))
+        # v3.0-232: the session driver and the per-tool perimeter row
+        check("session-driver (v3.0-232): Claude marker -> claude; Codex marker -> codex; "
+              "both -> both; none -> unknown",
+              session_driver({"CLAUDECODE": "1"}) == "claude"
+              and session_driver({"CODEX_SANDBOX": "seatbelt"}) == "codex"
+              and session_driver({"CLAUDECODE": "1", "CODEX_SANDBOX": "x"}) == "both"
+              and session_driver({}) == "unknown"
+              and session_driver({"CLAUDECODE": "  "}) == "unknown")
+        _hw_pass = Result("PASS", "hooks-wired", "x")
+        r = note(check_perimeter_live({"root": root, "session_driver": "codex",
+                                       "_hooks_wired": _hw_pass}))
+        check("perimeter-live (v3.0-232): a Codex session with Claude hooks wired and no Codex "
+              "hooks WARNs that it has NO call-time guards -- never a bare 'wired'",
+              r.status == "WARN" and "Claude Code hooks: wired" in r.detail
+              and "Codex hooks: absent" in r.detail and "NO call-time guards" in r.detail
+              and "--no-verify" in r.detail)
+        r = note(check_perimeter_live({"root": root, "session_driver": "claude",
+                                       "_hooks_wired": _hw_pass}))
+        check("perimeter-live (v3.0-232): a Claude session with its hooks wired PASSes, naming "
+              "both layers", r.status == "PASS" and "call-time hooks + commit-time" in r.detail)
+        (root / ".codex").mkdir(exist_ok=True)
+        (root / ".codex" / "hooks.json").write_text(
+            '{"hooks":{"PreToolUse":[{"hooks":[{"command":"core/security/hooks/'
+            'block-dangerous-bash.sh"},{"command":"core/security/hooks/block-env-writes.sh"}]}]}}',
+            encoding="utf-8")
+        r = note(check_perimeter_live({"root": root, "session_driver": "codex",
+                                       "_hooks_wired": _hw_pass}))
+        check("perimeter-live (v3.0.63 review r1): a Codex session whose project ships .codex/hooks.json "
+              "running both scripts WARNs -- present, trust unverified -- never PASS",
+              r.status == "WARN" and "Codex hooks: present" in r.detail and "trust" in r.detail)
+        (root / ".codex" / "hooks.json").write_text(
+            '{"_note": "see core/security/hooks/block-dangerous-bash.sh and block-env-writes.sh", '
+            '"hooks": {}}', encoding="utf-8")
+        (root / ".codex" / "config.toml").write_text(
+            '# command = "bash core/security/hooks/block-dangerous-bash.sh"\n'
+            '# block-env-writes.sh is planned\n', encoding="utf-8")
+        check("perimeter-live (v3.0.63 review r1): script names in a note or a comment are not "
+              "hook entries -- Codex hooks: absent",
+              "Codex hooks: absent" in note(check_perimeter_live(
+                  {"root": root, "session_driver": "codex", "_hooks_wired": _hw_pass})).detail)
+        (root / ".codex" / "config.toml").unlink()
+        r = note(check_perimeter_live({"root": root, "session_driver": "both",
+                                       "_hooks_wired": _hw_pass}))
+        check("perimeter-live (v3.0.63 review r1): both markers -> WARN 'ambiguous', never the "
+              "'no agent marker' text", r.status == "WARN" and "ambiguous" in r.detail
+              and "no agent marker" not in r.detail)
+        (root / ".codex" / "hooks.json").unlink()
+        r = note(check_perimeter_live({"root": root, "session_driver": "unknown",
+                                       "_hooks_wired": _hw_pass}))
+        check("perimeter-live (v3.0-232): an unmarked run (terminal, scheduler) PASSes and says "
+              "no call-time layer applies to it", r.status == "PASS" and "no agent marker" in r.detail)
+        r = note(check_far_side_verifier({"root": root, "session_driver": "claude"}))
+        check("far-side-verifier (v3.0-232): SKIPs outside a Codex session", r.status == "SKIP")
         r = note(check_hooks_wired(ctx))
         check("hooks-wired: warn when one hook missing",
               r.status == "WARN" and "block-env-writes.sh" in r.detail)
@@ -2627,6 +2823,15 @@ def self_test():
             "print('skill-adapters current (15 adapters)')\n", encoding="utf-8")
         r = note(check_skill_adapters(ctx))
         check("skill-adapters: current (exit 0) -> PASS", r.status == "PASS")
+        core_gen = root / ".claude" / "skills" / "doctor"
+        core_gen.mkdir(parents=True, exist_ok=True)
+        (core_gen / "gen-skill-adapters.py").write_text(
+            "import sys\nprint('skill-adapters DRIFT: stale=[core]')\nsys.exit(1)\n",
+            encoding="utf-8")
+        r = note(check_skill_adapters(ctx))
+        check("skill-adapters (v3.0-236): the core generator (.claude/skills/doctor/) is preferred "
+              "over the deploy/ stub, and the FIX names the path actually run",
+              r.status == "WARN" and ".claude/skills/doctor/gen-skill-adapters.py" in r.detail)
 
     # Check 16: trust-surfaces (v3.0-120) -- (a) head-identity, (b) signatures via a stub
     # trust.py report, (c) wiring, (d) pin typing, (e) unpublished retirements. Real git

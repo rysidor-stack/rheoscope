@@ -879,26 +879,32 @@ fi
 # /doctor: post-init sanity check. Degrades gracefully — the doctor.py file is being
 # authored in a parallel work leg, so this invocation silently skips if it hasn't landed
 # yet. A doctor failure NEVER fails init; it only surfaces issues to fix before first use.
+PY_BIN=""
+if command -v python3 >/dev/null 2>&1; then
+    PY_BIN="python3"
+elif command -v python >/dev/null 2>&1; then
+    PY_BIN="python"
+fi
+
+# Skill-discovery adapters for non-Claude agents (.agents/skills/, backlog v3.0-201 /
+# v3.0-236): generated UNCONDITIONALLY -- the generator ships with the core doctor skill,
+# not with knowledge-os, so a core-only project gives Codex the same skill menu. Never
+# fatal: a failure is a WARNING with the command to run by hand. Commit the generated tree
+# with the rest of the birth commit.
+GEN_ADAPTERS="$SCRIPT_ROOT/.claude/skills/doctor/gen-skill-adapters.py"
+if [[ -n "$PY_BIN" && -f "$GEN_ADAPTERS" ]]; then
+    if "$PY_BIN" "$GEN_ADAPTERS" --root "$SCRIPT_ROOT" >/dev/null 2>&1; then
+        info "skill adapters generated (.agents/skills/) for non-Claude agents"
+    else
+        echo "WARNING: could not generate .agents/skills/ -- run: $PY_BIN .claude/skills/doctor/gen-skill-adapters.py"
+    fi
+else
+    echo "WARNING: skill adapters not generated (python or .claude/skills/doctor/gen-skill-adapters.py missing) -- run: python .claude/skills/doctor/gen-skill-adapters.py"
+fi
+
 DOCTOR_PY="$SCRIPT_ROOT/.claude/skills/doctor/doctor.py"
 if [[ -f "$DOCTOR_PY" ]]; then
-    PY_BIN=""
-    if command -v python3 >/dev/null 2>&1; then
-        PY_BIN="python3"
-    elif command -v python >/dev/null 2>&1; then
-        PY_BIN="python"
-    fi
     if [[ -n "$PY_BIN" ]]; then
-        # v3.0-201: the skill-discovery adapters for non-Claude agents are generated here, so a
-        # fresh project's doctor does not WARN "skill-adapters: 14 missing" (commit them with the
-        # rest of the birth commit)
-        GEN_ADAPTERS="$SCRIPT_ROOT/deploy/gen-skill-adapters.py"
-        if [[ -f "$GEN_ADAPTERS" ]]; then
-            if "$PY_BIN" "$GEN_ADAPTERS" --root "$SCRIPT_ROOT" >/dev/null 2>&1; then
-                info "skill adapters generated (.agents/skills/) for non-Claude agents"
-            else
-                echo "WARNING: could not generate .agents/skills/ -- run: $PY_BIN deploy/gen-skill-adapters.py"
-            fi
-        fi
         echo "Running /doctor ($PY_BIN .claude/skills/doctor/doctor.py)..."
         # Pass the project root explicitly: init may be invoked from outside the project
         # root, and doctor.py defaults to cwd — --root pins it to the right directory.

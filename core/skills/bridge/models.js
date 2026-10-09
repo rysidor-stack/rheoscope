@@ -51,8 +51,83 @@ const LEGS = [
   { leg: 'openai/handoff', provider: 'openai', env: ['HANDOFF_LEG_MODEL'] },
   { leg: 'xai/verify', provider: 'xai', env: ['GROK_VERIFY_MODEL'] },
   { leg: 'anthropic/verify', provider: 'anthropic', env: ['VERIFY_MODEL'] },
+  // v3.0-234: the Claude-direction handoff leg (handoff-leg.js --vendor anthropic) reads the same
+  // HANDOFF_LEG_MODEL its OpenAI sibling does, each in its own process for its own provider.
+  { leg: 'anthropic/handoff', provider: 'anthropic', env: ['HANDOFF_LEG_MODEL'] },
 ];
 const PROVIDERS = Object.keys(FALLBACK);
+
+// ---- vendor identity helpers (v3.0-233 / v3.0-234) --------------------------------------------
+// Every leg's prompt used to carry the literal "The requester is a different AI vendor (Anthropic
+// Claude)". Under a Codex-led project that sentence is false, and a close leg that believes it
+// locks a same-family T1. The requester vendor is now an ARGUMENT (--requester-vendor /
+// VERIFY_REQUESTER_VENDOR), defaulting to the opposite of the leg's own vendor, and the prompt
+// text is built from it here -- one home, both directions. A leg whose requester equals its own
+// vendor REFUSES (verify: isError; handoff-leg: exit 64) -- a same-family leg is not a leg.
+const VENDOR_NAMES = {
+  anthropic: 'Anthropic Claude',
+  openai: 'OpenAI Codex/GPT',
+  xai: 'xAI Grok',
+  google: 'Google Gemini',
+};
+const VENDOR_ALIASES = { claude: 'anthropic', codex: 'openai', gpt: 'openai', grok: 'xai', gemini: 'google' };
+const OPPOSITE_VENDOR = { anthropic: 'openai', openai: 'anthropic', xai: 'anthropic', google: 'anthropic' };
+
+function normalizeVendor(v) {
+  const t = (typeof v === 'string' ? v.trim().toLowerCase() : '');
+  if (!t) return null;
+  if (VENDOR_NAMES[t]) return t;
+  return VENDOR_ALIASES[t] || null;           // unknown token -> null (caller decides: refuse)
+}
+function vendorDisplay(v) { return VENDOR_NAMES[v] || String(v); }
+function oppositeVendor(v) { return OPPOSITE_VENDOR[v] || 'anthropic'; }
+
+/**
+ * resolveRequesterVendor(legVendor, {explicit, env, envName})
+ *   -> {vendor, source, error}  source in explicit|env:<NAME>|default
+ * The leg vendor is the substrate the leg itself runs (the verifier/closer). The requester is
+ * who authored the work under test. error is set (vendor null) when the value is unknown or
+ * equals the leg vendor -- the caller MUST refuse, never run.
+ */
+// v3.0.63 review round 1 (packet A): the default requester is read from the SESSION's own agent
+// markers -- the same ones the doctor's session_driver() reads -- never assumed. A Codex session that
+// passes no flag is an OpenAI requester; defaulting it to "the opposite of the leg" labelled a
+// GPT-reviews-GPT verdict cross-vendor.
+const CLAUDE_MARKERS = ['CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT'];
+const CODEX_MARKERS = ['CODEX_SANDBOX', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'CODEX_HOME_SESSION'];
+function sessionVendor(env) {
+  const e = env || process.env;
+  const on = k => e[k] != null && String(e[k]).trim() !== '';
+  const c = CLAUDE_MARKERS.some(on), x = CODEX_MARKERS.some(on);
+  return (c && x) ? 'both' : c ? 'anthropic' : x ? 'openai' : null;
+}
+
+function resolveRequesterVendor(legVendor, opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  let raw = null, source = 'default';
+  if (o.explicit != null && String(o.explicit).trim() !== '') { raw = o.explicit; source = 'explicit'; }
+  else if (o.envName && env[o.envName] != null && String(env[o.envName]).trim() !== '') { raw = env[o.envName]; source = 'env:' + o.envName; }
+  if (raw == null) {
+    const sv = sessionVendor(env);
+    if (sv === 'both') return { vendor: null, source: 'session', error: 'this process carries BOTH Claude and ' +
+      'Codex session markers, so who is asking is ambiguous -- pass --requester-vendor explicitly' };
+    if (sv) { raw = sv; source = 'session'; }
+    else return { vendor: oppositeVendor(legVendor), source: 'default-assumed', error: null };
+  }
+  const v = normalizeVendor(raw);
+  if (!v) return { vendor: null, source, error: 'unknown requester vendor ' + JSON.stringify(String(raw)) +
+    ' (known: ' + Object.keys(VENDOR_NAMES).join('|') + ')' };
+  if (v === legVendor) return { vendor: null, source, error: 'requester vendor ' + v + ' equals the leg vendor ' +
+    legVendor + ' -- a same-vendor leg is not cross-vendor; pick the other direction' };
+  return { vendor: v, source, error: null };
+}
+
+/** The sentence every leg prompt opens with, built from the real requester vendor. */
+function requesterSentence(requesterVendor, legVendor) {
+  return 'The requester is a different AI vendor (' + vendorDisplay(requesterVendor) + '); you are ' +
+    vendorDisplay(legVendor) + '.';
+}
 
 function registryPath(home) {
   return path.join(home || os.homedir() || '', '.rheoscope', 'frontier-models.json');
@@ -171,7 +246,9 @@ function report(opts) {
 }
 
 module.exports = { resolveModel, report, registryPath, FALLBACK, PROVIDERS, WEAK, LEGS,
-                   codexConfigModel, grokDefaultModel, claudeSettingsModel };
+                   codexConfigModel, grokDefaultModel, claudeSettingsModel,
+                   VENDOR_NAMES, normalizeVendor, vendorDisplay, oppositeVendor, sessionVendor,
+                   resolveRequesterVendor, requesterSentence };
 
 // ---------------- CLI + hermetic self-test ----------------
 if (require.main === module) {
@@ -249,6 +326,39 @@ if (require.main === module) {
       fs.writeFileSync(registryPath(tmp), '{not json');
       r = resolveModel('openai', { home: tmp, env: E });
       ok('an unreadable registry is ignored', r.source === 'live');
+      // v3.0-234: the anthropic handoff row reads HANDOFF_LEG_MODEL, not VERIFY_MODEL
+      const rows5 = report({ home: tmp, env: { HANDOFF_LEG_MODEL: 'opus' }, grokRunner: noGrok });
+      ok('anthropic/handoff row exists and reads HANDOFF_LEG_MODEL',
+         rows5.find(x => x.leg === 'anthropic/handoff').source === 'env:HANDOFF_LEG_MODEL');
+      ok('...and anthropic/verify does NOT read it', rows5.find(x => x.leg === 'anthropic/verify').source !== 'env:HANDOFF_LEG_MODEL');
+      // v3.0-233/234: requester vendor is an argument; same-vendor refuses; unknown refuses
+      let q = resolveRequesterVendor('openai', { env: E });
+      ok('with no session marker, requester defaults to the opposite of the leg vendor, labelled assumed',
+         q.vendor === 'anthropic' && q.source === 'default-assumed');
+      // v3.0.63 review round 1: the default comes from the session's own markers
+      q = resolveRequesterVendor('openai', { env: { CODEX_SANDBOX: 'seatbelt' } });
+      ok('a CODEX session asking the OpenAI verifier with no flag is REFUSED (GPT reviewing GPT)',
+         q.vendor === null && q.source === 'session' && /equals the leg vendor/.test(q.error));
+      q = resolveRequesterVendor('anthropic', { env: { CODEX_SANDBOX: 'seatbelt' } });
+      ok('...and the same session asking the Claude verifier is an OpenAI requester',
+         q.vendor === 'openai' && q.source === 'session');
+      q = resolveRequesterVendor('openai', { env: { CLAUDECODE: '1' } });
+      ok('a Claude session asking the OpenAI verifier is an Anthropic requester',
+         q.vendor === 'anthropic' && q.source === 'session');
+      q = resolveRequesterVendor('openai', { env: { CLAUDECODE: '1', CODEX_SANDBOX: 'x' } });
+      ok('both markers with no flag is ambiguous and REFUSED', q.vendor === null && /ambiguous/.test(q.error));
+      q = resolveRequesterVendor('openai', { explicit: 'anthropic', env: { CODEX_SANDBOX: 'x' } });
+      ok('an explicit flag still wins over the markers', q.vendor === 'anthropic' && q.source === 'explicit');
+      q = resolveRequesterVendor('anthropic', { env: E });
+      ok('...in both directions', q.vendor === 'openai');
+      q = resolveRequesterVendor('openai', { explicit: 'Claude', env: E });
+      ok('an alias token (Claude) normalizes', q.vendor === 'anthropic' && q.source === 'explicit');
+      q = resolveRequesterVendor('openai', { env: { X: 'openai' }, envName: 'X' });
+      ok('requester == leg vendor is REFUSED', q.vendor === null && /equals the leg vendor/.test(q.error));
+      q = resolveRequesterVendor('openai', { explicit: 'martian', env: E });
+      ok('an unknown vendor token is REFUSED', q.vendor === null && /unknown requester vendor/.test(q.error));
+      ok('the prompt sentence names the real requester', requesterSentence('openai', 'anthropic') ===
+         'The requester is a different AI vendor (OpenAI Codex/GPT); you are Anthropic Claude.');
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
     process.stdout.write('models self-test: ' + (fail ? 'FAIL' : 'PASS') + ' (' + pass + '/' + (pass + fail) + ')\n');
     process.exit(fail ? 1 : 0);
